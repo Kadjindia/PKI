@@ -41,8 +41,21 @@ export function KpiProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const addEntryFromFile = useCallback((entry: Omit<KpiEntry, "id" | "createdAt">) => {
+    const newEntry: KpiEntry = {
+      ...entry,
+      id: `${entry.kpiId}-${entry.period}-file-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+    };
+    setEntries((prev) => [...prev, newEntry]);
+  }, []);
+
   const updateEntry = useCallback((id: string, value: number) => {
     setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, value, updatedAt: new Date().toISOString() } : e)));
+  }, []);
+
+  const removeEntry = useCallback((id: string) => {
+    setEntries((prev) => prev.filter((e) => e.id !== id));
   }, []);
 
   const addKpi = useCallback((kpi: Omit<KpiDefinition, "id">) => {
