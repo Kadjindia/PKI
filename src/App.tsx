@@ -7,6 +7,7 @@ import { KpiProvider } from "@/context/KpiContext";
 import Index from "./pages/Index";
 import DataEntry from "./pages/DataEntry";
 import Alerts from "./pages/Alerts";
+import Connectors from "./pages/Connectors";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ const App = () => (
             <Route path="/" element={<Index />} />
             <Route path="/saisie" element={<DataEntry />} />
             <Route path="/alertes" element={<Alerts />} />
+            <Route path="/connecteurs" element={<Connectors />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
