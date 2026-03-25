@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useKpi } from "@/context/KpiContext";
 import { KpiDefinition, CATEGORY_COLORS, DATA_SOURCE_LABELS, DATA_SOURCE_COLORS } from "@/types/kpi";
-import { TrendingUp, TrendingDown, Minus, Search } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, Search, Upload, FileSpreadsheet, Keyboard } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import KpiDetailDialog from "./KpiDetailDialog";
+import FileUploadDialog from "../data-sources/FileUploadDialog";
 
 interface KpiCardProps {
   kpi: KpiDefinition;
@@ -12,6 +13,7 @@ interface KpiCardProps {
 export default function KpiCard({ kpi }: KpiCardProps) {
   const { getLatestValue, getPreviousValue, getEntriesForKpi } = useKpi();
   const [detailOpen, setDetailOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   const value = getLatestValue(kpi.id);
   const prev = getPreviousValue(kpi.id);
@@ -35,6 +37,14 @@ export default function KpiCard({ kpi }: KpiCardProps) {
   const categoryColor = CATEGORY_COLORS[kpi.category];
   const trendColor = trend > 0 ? "hsl(152 60% 45%)" : trend < 0 ? "hsl(0 72% 55%)" : categoryColor;
 
+  // Determine source type for badge
+  const sourceType = latestEntry?.source?.type;
+  const isFileSource = sourceType === "excel" || sourceType === "csv";
+  const isManualSource = !sourceType || sourceType === "manual";
+
+  // Current period
+  const currentPeriod = latestEntry?.period || new Date().toISOString().slice(0, 7);
+
   return (
     <>
       <div
@@ -44,8 +54,18 @@ export default function KpiCard({ kpi }: KpiCardProps) {
         tabIndex={0}
         onKeyDown={(e) => e.key === "Enter" && setDetailOpen(true)}
       >
-        {/* Drill-down hint */}
-        <div className="absolute top-2.5 right-2.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Action buttons */}
+        <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setUploadOpen(true);
+            }}
+            className="p-1.5 rounded-md hover:bg-primary/10 transition-colors"
+            title="Ajouter une source (fichier)"
+          >
+            <Upload className="w-3.5 h-3.5 text-primary" />
+          </button>
           <Search className="w-3.5 h-3.5 text-primary" />
         </div>
 
@@ -95,13 +115,30 @@ export default function KpiCard({ kpi }: KpiCardProps) {
           )}
         </div>
 
-        {/* Source badge */}
-        {latestEntry?.source && (
-          <div className="mt-2 flex items-center gap-1.5">
-            <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: DATA_SOURCE_COLORS[latestEntry.source.type] }} />
-            <span className="text-[10px] text-muted-foreground">{DATA_SOURCE_LABELS[latestEntry.source.type]}</span>
+        {/* Source badge with type distinction */}
+        <div className="mt-2 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            {isManualSource ? (
+              <>
+                <Keyboard className="w-3 h-3 text-muted-foreground" />
+                <span className="text-[10px] text-muted-foreground">Saisie manuelle</span>
+              </>
+            ) : latestEntry?.source ? (
+              <>
+                <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: DATA_SOURCE_COLORS[latestEntry.source.type] }} />
+                <span className="text-[10px] text-muted-foreground">{DATA_SOURCE_LABELS[latestEntry.source.type]}</span>
+                {isFileSource && latestEntry.source.fileName && (
+                  <span className="text-[10px] text-muted-foreground/60 truncate max-w-[80px]">
+                    — {latestEntry.source.fileName}
+                  </span>
+                )}
+              </>
+            ) : null}
           </div>
-        )}
+          {isFileSource && (
+            <FileSpreadsheet className="w-3 h-3 text-success/60" />
+          )}
+        </div>
 
         {kpi.target && isPercentage && (
           <div className="mt-3">
@@ -123,6 +160,7 @@ export default function KpiCard({ kpi }: KpiCardProps) {
       </div>
 
       <KpiDetailDialog kpi={kpi} open={detailOpen} onClose={() => setDetailOpen(false)} />
+      <FileUploadDialog kpi={kpi} open={uploadOpen} onClose={() => setUploadOpen(false)} period={currentPeriod} />
     </>
   );
 }
