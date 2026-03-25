@@ -8,7 +8,9 @@ interface KpiContextType {
   periodFilter: PeriodFilter;
   setPeriodFilter: (f: PeriodFilter) => void;
   addEntry: (entry: Omit<KpiEntry, "id" | "createdAt">) => void;
+  addEntryFromFile: (entry: Omit<KpiEntry, "id" | "createdAt">) => void;
   updateEntry: (id: string, value: number) => void;
+  removeEntry: (id: string) => void;
   addKpi: (kpi: Omit<KpiDefinition, "id">) => void;
   getLatestValue: (kpiId: string) => number | undefined;
   getEntriesForKpi: (kpiId: string) => KpiEntry[];
