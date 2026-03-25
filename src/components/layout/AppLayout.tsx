@@ -1,11 +1,12 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, PenLine, Shield, Bell, Settings } from "lucide-react";
+import { LayoutDashboard, PenLine, Shield, Bell, Settings, Plug } from "lucide-react";
 
 const NAV_ITEMS = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/saisie", label: "Saisie des données", icon: PenLine },
   { path: "/alertes", label: "Alertes", icon: Bell },
+  { path: "/connecteurs", label: "Connecteurs", icon: Plug },
 ];
 
 export default function AppLayout({ children }: { children: ReactNode }) {
