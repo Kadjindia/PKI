@@ -88,7 +88,7 @@ export function KpiProvider({ children }: { children: ReactNode }) {
 
   return (
     <KpiContext.Provider
-      value={{ kpis, entries, periodFilter, setPeriodFilter, addEntry, updateEntry, addKpi, getLatestValue, getEntriesForKpi, getPreviousValue }}
+      value={{ kpis, entries, periodFilter, setPeriodFilter, addEntry, addEntryFromFile, updateEntry, removeEntry, addKpi, getLatestValue, getEntriesForKpi, getPreviousValue }}
     >
       {children}
     </KpiContext.Provider>
