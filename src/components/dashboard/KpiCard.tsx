@@ -1,15 +1,17 @@
 import { useKpi } from "@/context/KpiContext";
 import { KpiDefinition, CATEGORY_COLORS } from "@/types/kpi";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { ResponsiveContainer, AreaChart, Area } from "recharts";
 
 interface KpiCardProps {
   kpi: KpiDefinition;
 }
 
 export default function KpiCard({ kpi }: KpiCardProps) {
-  const { getLatestValue, getPreviousValue } = useKpi();
+  const { getLatestValue, getPreviousValue, getEntriesForKpi } = useKpi();
   const value = getLatestValue(kpi.id);
   const prev = getPreviousValue(kpi.id);
+  const sparkData = getEntriesForKpi(kpi.id).slice(-6).map((e) => ({ v: e.value }));
 
   const trend = value !== undefined && prev !== undefined ? value - prev : 0;
   const trendPercent = prev ? Math.round((trend / prev) * 100) : 0;
@@ -25,23 +27,61 @@ export default function KpiCard({ kpi }: KpiCardProps) {
   }
 
   const categoryColor = CATEGORY_COLORS[kpi.category];
+  const trendColor = trend > 0 ? "hsl(152 60% 45%)" : trend < 0 ? "hsl(0 72% 55%)" : categoryColor;
 
   return (
-    <div className="kpi-card animate-slide-up">
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: categoryColor }} />
-          <span className="text-xs text-muted-foreground font-medium truncate max-w-[180px]">{kpi.name}</span>
+    <div className="kpi-card animate-slide-up group">
+      <div className="flex items-start justify-between mb-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: categoryColor }} />
+          <span className="text-xs text-muted-foreground font-medium truncate">{kpi.name}</span>
         </div>
-        {statusClass && <span className={`status-badge ${statusClass}`}>{statusClass === "danger" ? "Critique" : statusClass === "warning" ? "Attention" : "OK"}</span>}
+        {statusClass && (
+          <span className={`status-badge ${statusClass} shrink-0`}>
+            {statusClass === "danger" ? "Critique" : statusClass === "warning" ? "Attention" : "OK"}
+          </span>
+        )}
       </div>
 
-      <div className="kpi-value mb-2">{displayValue}</div>
+      <div className="flex items-end justify-between gap-2">
+        <div>
+          <div className="kpi-value mb-1">{displayValue}</div>
+          {trend !== 0 ? (
+            <div className="flex items-center gap-1 text-xs">
+              {trend > 0 ? <TrendingUp className="w-3 h-3 text-success" /> : <TrendingDown className="w-3 h-3 text-destructive" />}
+              <span className={trend > 0 ? "text-success" : "text-destructive"}>
+                {trend > 0 ? "+" : ""}{trendPercent}%
+              </span>
+            </div>
+          ) : value !== undefined ? (
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Minus className="w-3 h-3" /> Stable
+            </div>
+          ) : null}
+        </div>
+
+        {/* Sparkline */}
+        {sparkData.length > 2 && (
+          <div className="w-20 h-10 opacity-60 group-hover:opacity-100 transition-opacity">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={sparkData} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
+                <defs>
+                  <linearGradient id={`spark-${kpi.id}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={trendColor} stopOpacity={0.3} />
+                    <stop offset="95%" stopColor={trendColor} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <Area type="monotone" dataKey="v" stroke={trendColor} fill={`url(#spark-${kpi.id})`} strokeWidth={1.5} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
 
       {kpi.target && isPercentage && (
-        <div className="mb-2">
-          <div className="flex justify-between text-xs text-muted-foreground mb-1">
-            <span>Objectif: {kpi.target}%</span>
+        <div className="mt-3">
+          <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
+            <span>Obj. {kpi.target}%</span>
             <span>{value ?? 0}%</span>
           </div>
           <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
@@ -53,25 +93,6 @@ export default function KpiCard({ kpi }: KpiCardProps) {
               }}
             />
           </div>
-        </div>
-      )}
-
-      {trend !== 0 && (
-        <div className="flex items-center gap-1 text-xs">
-          {trend > 0 ? (
-            <TrendingUp className="w-3 h-3 text-success" />
-          ) : (
-            <TrendingDown className="w-3 h-3 text-destructive" />
-          )}
-          <span className={trend > 0 ? "text-success" : "text-destructive"}>
-            {trend > 0 ? "+" : ""}{trendPercent}%
-          </span>
-          <span className="text-muted-foreground ml-1">vs période préc.</span>
-        </div>
-      )}
-      {trend === 0 && value !== undefined && (
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          <Minus className="w-3 h-3" /> Stable
         </div>
       )}
     </div>
