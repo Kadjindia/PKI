@@ -12,11 +12,14 @@ export interface DataSourceMeta {
   label: string;
   fileName?: string;
   fileUrl?: string;
-  embedUrl?: string; // For Power BI embed
+  embedUrl?: string;
   apiEndpoint?: string;
   lastSync?: string;
-  rawData?: Record<string, unknown>[]; // Preview rows from source
+  rawData?: Record<string, unknown>[];
   columns?: string[];
+  aggregation?: string;
+  selectedColumn?: string;
+  selectedSheet?: string;
 }
 
 export interface KpiDefinition {

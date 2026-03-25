@@ -8,7 +8,9 @@ interface KpiContextType {
   periodFilter: PeriodFilter;
   setPeriodFilter: (f: PeriodFilter) => void;
   addEntry: (entry: Omit<KpiEntry, "id" | "createdAt">) => void;
+  addEntryFromFile: (entry: Omit<KpiEntry, "id" | "createdAt">) => void;
   updateEntry: (id: string, value: number) => void;
+  removeEntry: (id: string) => void;
   addKpi: (kpi: Omit<KpiDefinition, "id">) => void;
   getLatestValue: (kpiId: string) => number | undefined;
   getEntriesForKpi: (kpiId: string) => KpiEntry[];
@@ -39,8 +41,21 @@ export function KpiProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const addEntryFromFile = useCallback((entry: Omit<KpiEntry, "id" | "createdAt">) => {
+    const newEntry: KpiEntry = {
+      ...entry,
+      id: `${entry.kpiId}-${entry.period}-file-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+    };
+    setEntries((prev) => [...prev, newEntry]);
+  }, []);
+
   const updateEntry = useCallback((id: string, value: number) => {
     setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, value, updatedAt: new Date().toISOString() } : e)));
+  }, []);
+
+  const removeEntry = useCallback((id: string) => {
+    setEntries((prev) => prev.filter((e) => e.id !== id));
   }, []);
 
   const addKpi = useCallback((kpi: Omit<KpiDefinition, "id">) => {
@@ -73,7 +88,7 @@ export function KpiProvider({ children }: { children: ReactNode }) {
 
   return (
     <KpiContext.Provider
-      value={{ kpis, entries, periodFilter, setPeriodFilter, addEntry, updateEntry, addKpi, getLatestValue, getEntriesForKpi, getPreviousValue }}
+      value={{ kpis, entries, periodFilter, setPeriodFilter, addEntry, addEntryFromFile, updateEntry, removeEntry, addKpi, getLatestValue, getEntriesForKpi, getPreviousValue }}
     >
       {children}
     </KpiContext.Provider>
