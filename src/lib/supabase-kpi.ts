@@ -136,8 +136,31 @@ export async function updateKpiEntry(id: string, value: number): Promise<void> {
 }
 
 export async function deleteKpiEntry(id: string): Promise<void> {
-  const { error } = await supabase.from("kpi_entries").delete().eq("id", id);
-  if (error) throw error;
+  // 1. Récupérer d'abord les infos de l'entrée qu'on veut supprimer
+  const { data: entry } = await supabase
+    .from("kpi_entries")
+    .select("source_file_name, period")
+    .eq("id", id)
+    .single();
+
+  // 2. Si l'entrée a un nom de fichier, on supprime tout ce qui vient de ce fichier pour ce mois
+  if (entry?.source_file_name) {
+    const { error } = await supabase
+      .from("kpi_entries")
+      .delete()
+      .eq("source_file_name", entry.source_file_name)
+      .eq("period", entry.period);
+
+    if (error) throw error;
+  } else {
+    // 3. Sinon (saisie manuelle sans fichier), on ne supprime que l'unité
+    const { error } = await supabase
+      .from("kpi_entries")
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+  }
 }
 
 function fileToBase64(file: File): Promise<string> {
