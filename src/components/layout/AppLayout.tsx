@@ -22,7 +22,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               <Shield className="w-5 h-5 text-primary" />
             </div>
             <div>
-              <h1 className="text-sm font-bold text-foreground tracking-tight">CyberDash</h1>
+              <h1 className="text-sm font-bold text-foreground tracking-tight">PKI SSI</h1>
               <p className="text-xs text-muted-foreground">Indicateurs SSI</p>
             </div>
           </div>
