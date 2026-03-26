@@ -24,9 +24,11 @@ import {
 } from "@/components/ui/table";
 import { KpiDefinition } from "@/types/kpi";
 import { useKpi } from "@/context/KpiContext";
-import { Upload, FileSpreadsheet, X, Check, Calculator, Columns } from "lucide-react";
+import { uploadFileForKpi } from "@/lib/supabase-kpi";
+import { Upload, FileSpreadsheet, X, Check, Calculator, Columns, Loader2 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { toast } from "sonner";
 
 interface Props {
   kpi: KpiDefinition;
@@ -47,7 +49,7 @@ const AGG_LABELS: Record<AggMethod, string> = {
 };
 
 export default function FileUploadDialog({ kpi, open, onClose, period }: Props) {
-  const { addEntryFromFile } = useKpi();
+  const { refreshData } = useKpi();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -60,6 +62,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
   const [rawData, setRawData] = useState<Record<string, unknown>[]>([]);
   const [computedValue, setComputedValue] = useState<number | null>(null);
   const [step, setStep] = useState<"upload" | "configure" | "confirm">("upload");
+  const [uploading, setUploading] = useState(false);
 
   const reset = () => {
     setFile(null);
@@ -72,6 +75,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     setRawData([]);
     setComputedValue(null);
     setStep("upload");
+    setUploading(false);
   };
 
   const handleClose = () => {
@@ -127,75 +131,47 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     if (!f) return;
     setFile(f);
     const ext = f.name.split(".").pop()?.toLowerCase();
-    if (ext === "csv") {
-      parseCSV(f);
-    } else if (ext === "xlsx" || ext === "xls") {
-      parseExcel(f);
-    }
+    if (ext === "csv") parseCSV(f);
+    else if (ext === "xlsx" || ext === "xls") parseExcel(f);
   };
 
   const computeValue = useCallback(() => {
     if (!selectedColumn || rawData.length === 0) return;
-    const values = rawData
-      .map((r) => Number(r[selectedColumn]))
-      .filter((v) => !isNaN(v));
-
+    const values = rawData.map((r) => Number(r[selectedColumn])).filter((v) => !isNaN(v));
     let result: number;
     switch (aggMethod) {
-      case "sum":
-        result = values.reduce((a, b) => a + b, 0);
-        break;
-      case "average":
-        result = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-        break;
-      case "count":
-        result = values.length;
-        break;
-      case "max":
-        result = Math.max(...values);
-        break;
-      case "min":
-        result = Math.min(...values);
-        break;
-      case "last":
-        result = values[values.length - 1] ?? 0;
-        break;
-      default:
-        result = 0;
+      case "sum": result = values.reduce((a, b) => a + b, 0); break;
+      case "average": result = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0; break;
+      case "count": result = values.length; break;
+      case "max": result = Math.max(...values); break;
+      case "min": result = Math.min(...values); break;
+      case "last": result = values[values.length - 1] ?? 0; break;
+      default: result = 0;
     }
     setComputedValue(Math.round(result * 100) / 100);
     setStep("confirm");
   }, [selectedColumn, rawData, aggMethod]);
 
-  const handleConfirm = () => {
-    if (computedValue === null || !file) return;
-    addEntryFromFile({
-      kpiId: kpi.id,
-      value: computedValue,
-      period,
-      source: {
-        type: fileType!,
-        label: file.name,
-        fileName: file.name,
-        lastSync: new Date().toISOString(),
-        rawData: rawData.slice(0, 20),
-        columns,
-        aggregation: aggMethod,
+  const handleConfirm = async () => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const result = await uploadFileForKpi({
+        file,
+        kpiId: kpi.id,
+        period,
         selectedColumn,
+        aggregation: aggMethod,
         selectedSheet: fileType === "excel" ? selectedSheet : undefined,
-      },
-      details: rawData.slice(0, 20).map((row) => ({
-        label: String(Object.values(row)[0] || ""),
-        value: Number(row[selectedColumn]) || 0,
-        metadata: Object.fromEntries(
-          Object.entries(row)
-            .filter(([k]) => k !== selectedColumn)
-            .slice(0, 3)
-            .map(([k, v]) => [k, String(v)])
-        ),
-      })),
-    });
-    handleClose();
+      });
+      toast.success(`Fichier traité : ${result.rowsParsed} lignes, valeur = ${result.computedValue}`);
+      await refreshData();
+      handleClose();
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || "Erreur lors du traitement du fichier");
+      setUploading(false);
+    }
   };
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -217,7 +193,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             Ajouter une source — {kpi.name}
           </DialogTitle>
           <DialogDescription className="text-muted-foreground">
-            Importez un fichier Excel ou CSV pour alimenter cet indicateur
+            Le fichier sera uploadé et traité par le serveur. Les données seront persistées en base.
           </DialogDescription>
         </DialogHeader>
 
@@ -234,11 +210,9 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                 {i > 0 && <div className="w-8 h-px bg-border" />}
                 <div
                   className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                    isActive
-                      ? "bg-primary/15 text-primary"
-                      : isDone
-                      ? "bg-success/15 text-success"
-                      : "bg-secondary text-muted-foreground"
+                    isActive ? "bg-primary/15 text-primary"
+                    : isDone ? "bg-success/15 text-success"
+                    : "bg-secondary text-muted-foreground"
                   }`}
                 >
                   {isDone ? <Check className="w-3 h-3" /> : <span>{i + 1}</span>}
@@ -262,7 +236,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
               Glissez-déposez un fichier ou cliquez pour sélectionner
             </p>
             <p className="text-xs text-muted-foreground">
-              Formats supportés : .xlsx, .xls, .csv
+              Formats supportés : .xlsx, .xls, .csv — Le fichier sera stocké côté serveur
             </p>
             <input
               ref={fileInputRef}
@@ -277,41 +251,32 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         {/* Step 2: Configure */}
         {step === "configure" && (
           <div className="space-y-4">
-            {/* File info */}
             <div className="flex items-center justify-between glass-panel p-3">
               <div className="flex items-center gap-2">
                 <FileSpreadsheet className="w-4 h-4 text-success" />
                 <span className="text-sm font-medium text-foreground">{file?.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  ({rawData.length} lignes)
-                </span>
+                <span className="text-xs text-muted-foreground">({rawData.length} lignes)</span>
               </div>
               <Button variant="ghost" size="sm" onClick={reset}>
                 <X className="w-4 h-4" />
               </Button>
             </div>
 
-            {/* Sheet selector (Excel only) */}
             {fileType === "excel" && sheets.length > 1 && (
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
                   <Columns className="w-3.5 h-3.5" /> Feuille
                 </label>
                 <Select value={selectedSheet} onValueChange={handleSheetChange}>
-                  <SelectTrigger className="w-full bg-secondary/50">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="w-full bg-secondary/50"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {sheets.map((s) => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
+                    {sheets.map((s) => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                   </SelectContent>
                 </Select>
               </div>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Column selector */}
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
                   <Columns className="w-3.5 h-3.5" /> Colonne de valeur
@@ -321,32 +286,23 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                     <SelectValue placeholder="Sélectionnez une colonne" />
                   </SelectTrigger>
                   <SelectContent>
-                    {columns.map((c) => (
-                      <SelectItem key={c} value={c}>{c}</SelectItem>
-                    ))}
+                    {columns.map((c) => (<SelectItem key={c} value={c}>{c}</SelectItem>))}
                   </SelectContent>
                 </Select>
               </div>
-
-              {/* Aggregation method */}
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
                   <Calculator className="w-3.5 h-3.5" /> Méthode de calcul
                 </label>
                 <Select value={aggMethod} onValueChange={(v) => setAggMethod(v as AggMethod)}>
-                  <SelectTrigger className="w-full bg-secondary/50">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="w-full bg-secondary/50"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {Object.entries(AGG_LABELS).map(([k, v]) => (
-                      <SelectItem key={k} value={k}>{v}</SelectItem>
-                    ))}
+                    {Object.entries(AGG_LABELS).map(([k, v]) => (<SelectItem key={k} value={k}>{v}</SelectItem>))}
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
-            {/* Data preview */}
             {rawData.length > 0 && (
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">
@@ -359,12 +315,9 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                         {columns.slice(0, 8).map((col) => (
                           <TableHead
                             key={col}
-                            className={`text-[10px] uppercase tracking-wider whitespace-nowrap ${
-                              col === selectedColumn ? "text-primary font-bold" : ""
-                            }`}
+                            className={`text-[10px] uppercase tracking-wider whitespace-nowrap ${col === selectedColumn ? "text-primary font-bold" : ""}`}
                           >
-                            {col}
-                            {col === selectedColumn && " ✓"}
+                            {col}{col === selectedColumn && " ✓"}
                           </TableHead>
                         ))}
                       </TableRow>
@@ -375,9 +328,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                           {columns.slice(0, 8).map((col) => (
                             <TableCell
                               key={col}
-                              className={`text-xs font-mono py-1.5 ${
-                                col === selectedColumn ? "text-primary font-bold" : ""
-                              }`}
+                              className={`text-xs font-mono py-1.5 ${col === selectedColumn ? "text-primary font-bold" : ""}`}
                             >
                               {String(row[col] ?? "")}
                             </TableCell>
@@ -391,11 +342,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             )}
 
             <div className="flex justify-end">
-              <Button
-                onClick={computeValue}
-                disabled={!selectedColumn}
-                className="gap-2"
-              >
+              <Button onClick={computeValue} disabled={!selectedColumn} className="gap-2">
                 <Calculator className="w-4 h-4" />
                 Calculer la valeur
               </Button>
@@ -417,15 +364,17 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
               <p className="text-xs text-muted-foreground">
                 Période : {period} · Source : {file?.name}
               </p>
+              <p className="text-xs text-muted-foreground/60">
+                📦 Le fichier sera stocké sur le serveur et les données persistées en base PostgreSQL
+              </p>
             </div>
-
             <div className="flex justify-between">
-              <Button variant="outline" onClick={() => setStep("configure")}>
+              <Button variant="outline" onClick={() => setStep("configure")} disabled={uploading}>
                 ← Modifier
               </Button>
-              <Button onClick={handleConfirm} className="gap-2">
-                <Check className="w-4 h-4" />
-                Valider et enregistrer
+              <Button onClick={handleConfirm} disabled={uploading} className="gap-2">
+                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {uploading ? "Envoi en cours…" : "Valider et enregistrer"}
               </Button>
             </div>
           </div>
