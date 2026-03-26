@@ -14,7 +14,116 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      kpi_definitions: {
+        Row: {
+          category: string
+          created_at: string
+          description: string | null
+          icon: string | null
+          id: string
+          name: string
+          target: number | null
+          threshold_danger: number | null
+          threshold_warning: number | null
+          unit: string
+          updated_at: string
+        }
+        Insert: {
+          category: string
+          created_at?: string
+          description?: string | null
+          icon?: string | null
+          id?: string
+          name: string
+          target?: number | null
+          threshold_danger?: number | null
+          threshold_warning?: number | null
+          unit: string
+          updated_at?: string
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          description?: string | null
+          icon?: string | null
+          id?: string
+          name?: string
+          target?: number | null
+          threshold_danger?: number | null
+          threshold_warning?: number | null
+          unit?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      kpi_entries: {
+        Row: {
+          aggregation: string | null
+          created_at: string
+          detail_rows: Json | null
+          id: string
+          kpi_id: string
+          period: string
+          raw_data: Json | null
+          selected_column: string | null
+          selected_sheet: string | null
+          source_api_endpoint: string | null
+          source_embed_url: string | null
+          source_file_name: string | null
+          source_file_path: string | null
+          source_label: string | null
+          source_type: string
+          updated_at: string
+          value: number
+        }
+        Insert: {
+          aggregation?: string | null
+          created_at?: string
+          detail_rows?: Json | null
+          id?: string
+          kpi_id: string
+          period: string
+          raw_data?: Json | null
+          selected_column?: string | null
+          selected_sheet?: string | null
+          source_api_endpoint?: string | null
+          source_embed_url?: string | null
+          source_file_name?: string | null
+          source_file_path?: string | null
+          source_label?: string | null
+          source_type?: string
+          updated_at?: string
+          value: number
+        }
+        Update: {
+          aggregation?: string | null
+          created_at?: string
+          detail_rows?: Json | null
+          id?: string
+          kpi_id?: string
+          period?: string
+          raw_data?: Json | null
+          selected_column?: string | null
+          selected_sheet?: string | null
+          source_api_endpoint?: string | null
+          source_embed_url?: string | null
+          source_file_name?: string | null
+          source_file_path?: string | null
+          source_label?: string | null
+          source_type?: string
+          updated_at?: string
+          value?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "kpi_entries_kpi_id_fkey"
+            columns: ["kpi_id"]
+            isOneToOne: false
+            referencedRelation: "kpi_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
