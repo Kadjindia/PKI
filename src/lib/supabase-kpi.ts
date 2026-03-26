@@ -1,7 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import { KpiDefinition, KpiEntry, DataSourceMeta, KpiDetailRow } from "@/types/kpi";
 
-// --- Mappers ---
 function mapDefinition(row: any): KpiDefinition {
   return {
     id: row.id,
@@ -46,7 +45,6 @@ function mapEntry(row: any): KpiEntry {
   };
 }
 
-// --- KPI Definitions ---
 export async function fetchKpiDefinitions(): Promise<KpiDefinition[]> {
   const { data, error } = await supabase
     .from("kpi_definitions")
@@ -78,7 +76,6 @@ export async function upsertKpiDefinition(kpi: Omit<KpiDefinition, "id"> & { id?
   return mapDefinition(data);
 }
 
-// --- KPI Entries ---
 export async function fetchKpiEntries(): Promise<KpiEntry[]> {
   const { data, error } = await supabase
     .from("kpi_entries")
@@ -95,7 +92,6 @@ export async function addKpiEntry(entry: {
   sourceType?: string;
   sourceLabel?: string;
 }): Promise<KpiEntry> {
-  // Upsert: same kpi + period + manual source
   const { data: existing } = await supabase
     .from("kpi_entries")
     .select("id")
@@ -144,7 +140,18 @@ export async function deleteKpiEntry(id: string): Promise<void> {
   if (error) throw error;
 }
 
-// --- File upload via edge function ---
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(",")[1]); // Remove data:...;base64, prefix
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function uploadFileForKpi(params: {
   file: File;
   kpiId: string;
@@ -152,45 +159,49 @@ export async function uploadFileForKpi(params: {
   selectedColumn: string;
   aggregation: string;
   selectedSheet?: string;
-}): Promise<{ entry: KpiEntry; computedValue: number; fileUrl: string; rowsParsed: number; columns: string[] }> {
-  const formData = new FormData();
-  formData.append("file", params.file);
-  formData.append("kpi_id", params.kpiId);
-  formData.append("period", params.period);
-  formData.append("selected_column", params.selectedColumn);
-  formData.append("aggregation", params.aggregation);
-  if (params.selectedSheet) formData.append("selected_sheet", params.selectedSheet);
+  computedValue: number;
+  rawData: Record<string, unknown>[];
+  detailRows: any[];
+}): Promise<{ entry: KpiEntry; fileUrl: string | null }> {
+  const base64 = await fileToBase64(params.file);
+  const ext = params.file.name.split(".").pop()?.toLowerCase();
 
-  const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
-  const url = `https://${projectId}.supabase.co/functions/v1/process-file`;
+  const body = {
+    kpi_id: params.kpiId,
+    period: params.period,
+    value: params.computedValue,
+    source_type: ext === "csv" ? "csv" : "excel",
+    source_label: params.file.name,
+    source_file_name: params.file.name,
+    aggregation: params.aggregation,
+    selected_column: params.selectedColumn,
+    selected_sheet: params.selectedSheet || null,
+    raw_data: params.rawData.slice(0, 20),
+    detail_rows: params.detailRows,
+    file_base64: base64,
+    file_name: params.file.name,
+    file_content_type: params.file.type || "application/octet-stream",
+  };
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-    },
-    body: formData,
+  const { data, error } = await supabase.functions.invoke("process-file", {
+    body,
   });
 
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || "Upload failed");
+  if (error) throw error;
+  if (!data?.success) throw new Error(data?.error || "Processing failed");
 
   return {
-    entry: mapEntry(json.entry),
-    computedValue: json.computed_value,
-    fileUrl: json.file_url,
-    rowsParsed: json.rows_parsed,
-    columns: json.columns,
+    entry: mapEntry(data.entry),
+    fileUrl: data.file_url,
   };
 }
 
-// --- Seed defaults ---
-export async function seedDefaultKpis(defaults: Omit<KpiDefinition, "">[]): Promise<void> {
+export async function seedDefaultKpis(defaults: KpiDefinition[]): Promise<void> {
   const { data: existing } = await supabase
     .from("kpi_definitions")
     .select("id")
     .limit(1);
-  if (existing && existing.length > 0) return; // Already seeded
+  if (existing && existing.length > 0) return;
 
   const rows = defaults.map((kpi) => ({
     id: kpi.id,
