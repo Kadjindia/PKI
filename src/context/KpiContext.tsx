@@ -1,6 +1,16 @@
-import React, { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react";
 import { KpiDefinition, KpiEntry, PeriodFilter } from "@/types/kpi";
-import { DEFAULT_KPIS, SAMPLE_ENTRIES } from "@/data/defaultIndicators";
+import { DEFAULT_KPIS } from "@/data/defaultIndicators";
+import {
+  fetchKpiDefinitions,
+  fetchKpiEntries,
+  addKpiEntry,
+  updateKpiEntry as apiUpdateEntry,
+  deleteKpiEntry,
+  upsertKpiDefinition,
+  seedDefaultKpis,
+} from "@/lib/supabase-kpi";
+import { toast } from "sonner";
 
 interface KpiContextType {
   kpis: KpiDefinition[];
@@ -15,52 +25,98 @@ interface KpiContextType {
   getLatestValue: (kpiId: string) => number | undefined;
   getEntriesForKpi: (kpiId: string) => KpiEntry[];
   getPreviousValue: (kpiId: string) => number | undefined;
+  loading: boolean;
+  refreshData: () => Promise<void>;
 }
 
 const KpiContext = createContext<KpiContextType | null>(null);
 
 export function KpiProvider({ children }: { children: ReactNode }) {
-  const [kpis, setKpis] = useState<KpiDefinition[]>(DEFAULT_KPIS);
-  const [entries, setEntries] = useState<KpiEntry[]>(SAMPLE_ENTRIES);
+  const [kpis, setKpis] = useState<KpiDefinition[]>([]);
+  const [entries, setEntries] = useState<KpiEntry[]>([]);
   const [periodFilter, setPeriodFilter] = useState<PeriodFilter>("monthly");
+  const [loading, setLoading] = useState(true);
 
-  const addEntry = useCallback((entry: Omit<KpiEntry, "id" | "createdAt">) => {
-    const newEntry: KpiEntry = {
-      ...entry,
-      id: `${entry.kpiId}-${entry.period}-${Date.now()}`,
-      createdAt: new Date().toISOString(),
-    };
-    setEntries((prev) => {
-      const existing = prev.findIndex((e) => e.kpiId === entry.kpiId && e.period === entry.period);
-      if (existing >= 0) {
-        const updated = [...prev];
-        updated[existing] = { ...updated[existing], value: entry.value, updatedAt: new Date().toISOString() };
-        return updated;
-      }
-      return [...prev, newEntry];
-    });
+  const loadData = useCallback(async () => {
+    try {
+      // Seed defaults if empty
+      await seedDefaultKpis(DEFAULT_KPIS);
+      const [defs, ents] = await Promise.all([fetchKpiDefinitions(), fetchKpiEntries()]);
+      setKpis(defs);
+      setEntries(ents);
+    } catch (err) {
+      console.error("Failed to load KPI data:", err);
+      toast.error("Erreur de chargement des données");
+      // Fallback to defaults for offline dev
+      setKpis(DEFAULT_KPIS);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const addEntryFromFile = useCallback((entry: Omit<KpiEntry, "id" | "createdAt">) => {
-    const newEntry: KpiEntry = {
-      ...entry,
-      id: `${entry.kpiId}-${entry.period}-file-${Date.now()}`,
-      createdAt: new Date().toISOString(),
-    };
-    setEntries((prev) => [...prev, newEntry]);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const addEntry = useCallback(async (entry: Omit<KpiEntry, "id" | "createdAt">) => {
+    try {
+      const newEntry = await addKpiEntry({
+        kpiId: entry.kpiId,
+        value: entry.value,
+        period: entry.period,
+      });
+      setEntries((prev) => {
+        const idx = prev.findIndex((e) => e.kpiId === entry.kpiId && e.period === entry.period && (!e.source || e.source.type === "manual"));
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = newEntry;
+          return updated;
+        }
+        return [...prev, newEntry];
+      });
+      toast.success("Valeur enregistrée");
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de l'enregistrement");
+    }
   }, []);
 
-  const updateEntry = useCallback((id: string, value: number) => {
-    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, value, updatedAt: new Date().toISOString() } : e)));
+  const addEntryFromFile = useCallback(async (_entry: Omit<KpiEntry, "id" | "createdAt">) => {
+    // File entries are added via the edge function; just refresh
+    await loadData();
+  }, [loadData]);
+
+  const updateEntry = useCallback(async (id: string, value: number) => {
+    try {
+      await apiUpdateEntry(id, value);
+      setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, value, updatedAt: new Date().toISOString() } : e)));
+      toast.success("Valeur mise à jour");
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de la mise à jour");
+    }
   }, []);
 
-  const removeEntry = useCallback((id: string) => {
-    setEntries((prev) => prev.filter((e) => e.id !== id));
+  const removeEntry = useCallback(async (id: string) => {
+    try {
+      await deleteKpiEntry(id);
+      setEntries((prev) => prev.filter((e) => e.id !== id));
+      toast.success("Entrée supprimée");
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de la suppression");
+    }
   }, []);
 
-  const addKpi = useCallback((kpi: Omit<KpiDefinition, "id">) => {
-    const newKpi: KpiDefinition = { ...kpi, id: `custom-${Date.now()}` };
-    setKpis((prev) => [...prev, newKpi]);
+  const addKpi = useCallback(async (kpi: Omit<KpiDefinition, "id">) => {
+    try {
+      const newKpi = await upsertKpiDefinition(kpi);
+      setKpis((prev) => [...prev, newKpi]);
+      toast.success("Indicateur ajouté");
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de l'ajout");
+    }
   }, []);
 
   const sortedEntries = [...entries].sort((a, b) => a.period.localeCompare(b.period));
@@ -88,7 +144,12 @@ export function KpiProvider({ children }: { children: ReactNode }) {
 
   return (
     <KpiContext.Provider
-      value={{ kpis, entries, periodFilter, setPeriodFilter, addEntry, addEntryFromFile, updateEntry, removeEntry, addKpi, getLatestValue, getEntriesForKpi, getPreviousValue }}
+      value={{
+        kpis, entries, periodFilter, setPeriodFilter,
+        addEntry, addEntryFromFile, updateEntry, removeEntry, addKpi,
+        getLatestValue, getEntriesForKpi, getPreviousValue,
+        loading, refreshData: loadData,
+      }}
     >
       {children}
     </KpiContext.Provider>
