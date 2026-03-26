@@ -42,14 +42,14 @@ type AggMethod = "sum" | "average" | "count" | "max" | "min" | "last";
 const AGG_LABELS: Record<AggMethod, string> = {
   sum: "Somme",
   average: "Moyenne",
-  count: "Comptage",
+  count: "Comptage (Nombre de lignes)",
   max: "Maximum",
   min: "Minimum",
   last: "Dernière valeur",
 };
 
 export default function FileUploadDialog({ kpi, open, onClose, period }: Props) {
-  const { refreshData } = useKpi();
+  const { refreshData, kpis } = useKpi();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -59,7 +59,10 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
   const [columns, setColumns] = useState<string[]>([]);
   const [selectedColumn, setSelectedColumn] = useState<string>("");
   const [aggMethod, setAggMethod] = useState<AggMethod>("sum");
+
+  const [fullData, setFullData] = useState<Record<string, unknown>[]>([]);
   const [rawData, setRawData] = useState<Record<string, unknown>[]>([]);
+
   const [computedValue, setComputedValue] = useState<number | null>(null);
   const [step, setStep] = useState<"upload" | "configure" | "confirm">("upload");
   const [uploading, setUploading] = useState(false);
@@ -73,6 +76,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     setSelectedColumn("");
     setAggMethod("sum");
     setRawData([]);
+    setFullData([]);
     setComputedValue(null);
     setStep("upload");
     setUploading(false);
@@ -90,7 +94,8 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
       complete: (results) => {
         const data = results.data as Record<string, unknown>[];
         const cols = results.meta.fields || [];
-        setRawData(data.slice(0, 100));
+        setFullData(data);
+        setRawData(data.slice(0, 10));
         setColumns(cols);
         setFileType("csv");
         setStep("configure");
@@ -111,8 +116,9 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
   const loadSheet = (wb: XLSX.WorkBook, sheetName: string) => {
     const ws = wb.Sheets[sheetName];
     const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+    setFullData(data);
     const cols = data.length > 0 ? Object.keys(data[0]) : [];
-    setRawData(data.slice(0, 100));
+    setRawData(data.slice(0, 10));
     setColumns(cols);
   };
 
@@ -136,36 +142,36 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
   };
 
   const computeValue = useCallback(() => {
-    if (!selectedColumn || rawData.length === 0) return;
-    const values = rawData.map((r) => Number(r[selectedColumn])).filter((v) => !isNaN(v));
-    let result: number;
-    switch (aggMethod) {
-      case "sum": result = values.reduce((a, b) => a + b, 0); break;
-      case "average": result = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0; break;
-      case "count": result = values.length; break;
-      case "max": result = Math.max(...values); break;
-      case "min": result = Math.min(...values); break;
-      case "last": result = values[values.length - 1] ?? 0; break;
-      default: result = 0;
+    if (!selectedColumn || fullData.length === 0) return;
+
+    let result: number = 0;
+
+    if (aggMethod === "count") {
+      result = fullData.filter(r => r[selectedColumn] !== "" && r[selectedColumn] !== null).length;
+    } else {
+      const values = fullData
+        .map((r) => Number(String(r[selectedColumn]).replace(',', '.')))
+        .filter((v) => !isNaN(v));
+
+      switch (aggMethod) {
+        case "sum": result = values.reduce((a, b) => a + b, 0); break;
+        case "average": result = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0; break;
+        case "max": result = Math.max(...values); break;
+        case "min": result = Math.min(...values); break;
+        case "last": result = values[values.length - 1] ?? 0; break;
+      }
     }
+
     setComputedValue(Math.round(result * 100) / 100);
     setStep("confirm");
-  }, [selectedColumn, rawData, aggMethod]);
+  }, [selectedColumn, fullData, aggMethod]);
 
   const handleConfirm = async () => {
-    if (!file) return;
+    if (!file || computedValue === null) return;
     setUploading(true);
+
     try {
-      const detailRows = rawData.slice(0, 20).map((row) => ({
-        label: String(Object.values(row)[0] || ""),
-        value: Number(row[selectedColumn]) || 0,
-        metadata: Object.fromEntries(
-          Object.entries(row)
-            .filter(([k]) => k !== selectedColumn)
-            .slice(0, 3)
-            .map(([k, v]) => [k, String(v)])
-        ),
-      }));
+      // 1. ENREGISTREMENT DE L'INDICATEUR PRINCIPAL
       await uploadFileForKpi({
         file,
         kpiId: kpi.id,
@@ -173,16 +179,84 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         selectedColumn,
         aggregation: aggMethod,
         selectedSheet: fileType === "excel" ? selectedSheet : undefined,
-        computedValue: computedValue!,
-        rawData,
-        detailRows,
+        computedValue: computedValue,
+        rawData: fullData.slice(0, 100),
+        detailRows: fullData.slice(0, 20).map((row) => ({
+          label: String(Object.values(row)[0] || ""),
+          value: Number(row[selectedColumn]) || 0,
+          metadata: {},
+        })),
       });
-      toast.success(`Fichier traité et enregistré en base`);
+
+      // --- AUTOMATISATIONS ---
+
+      // Identification des colonnes communes (ignorer la casse)
+      const emailCol = columns.find(c => c.toLowerCase() === "email");
+      const typeCol = columns.find(c => c.toLowerCase() === "type");
+      const dossierCol = columns.find(c => c.toLowerCase() === "dossier");
+
+      // 2. "Messages 1212"
+      const kpi1212 = kpis.find(k => k.name.toLowerCase().includes("1212"));
+      if (kpi1212 && emailCol) {
+        const data1212 = fullData.filter(row =>
+          String(row[emailCol] || "").toLowerCase().trim() === "le1212@actionlogement.fr"
+        );
+        await uploadFileForKpi({
+          file, kpiId: kpi1212.id, period, selectedColumn: emailCol,
+          aggregation: "count", computedValue: data1212.length,
+          rawData: data1212.slice(0, 50), detailRows: [],
+        });
+        toast.success(`Indicateur 1212 mis à jour : ${data1212.length}`);
+      }
+
+      // 3. "Message externe"
+      const kpiExterne = kpis.find(k => k.name.toLowerCase().includes("externe"));
+      if (kpiExterne && typeCol) {
+        const dataExterne = fullData.filter(row =>
+          String(row[typeCol] || "").toUpperCase().trim() === "EXTERNE"
+        );
+        await uploadFileForKpi({
+          file, kpiId: kpiExterne.id, period, selectedColumn: typeCol,
+          aggregation: "count", computedValue: dataExterne.length,
+          rawData: dataExterne.slice(0, 50), detailRows: [],
+        });
+        toast.success(`Indicateur externe mis à jour : ${dataExterne.length}`);
+      }
+
+      // 4. "Erreur d'adressage"
+      const kpiAdressage = kpis.find(k => k.name.toLowerCase().includes("adressage"));
+      if (kpiAdressage && dossierCol) {
+        const dataAdressage = fullData.filter(row =>
+          String(row[dossierCol] || "").trim() === "05 - Erreur d'adressage"
+        );
+        await uploadFileForKpi({
+          file, kpiId: kpiAdressage.id, period, selectedColumn: dossierCol,
+          aggregation: "count", computedValue: dataAdressage.length,
+          rawData: dataAdressage.slice(0, 50), detailRows: [],
+        });
+        toast.success(`Erreurs d'adressage mises à jour : ${dataAdressage.length}`);
+      }
+
+      // 5. "Messages fraude"
+      const kpiFraude = kpis.find(k => k.name.toLowerCase().includes("fraude"));
+      if (kpiFraude && dossierCol) {
+        const dataFraude = fullData.filter(row =>
+          String(row[dossierCol] || "").trim() === "02 - Fraudes"
+        );
+        await uploadFileForKpi({
+          file, kpiId: kpiFraude.id, period, selectedColumn: dossierCol,
+          aggregation: "count", computedValue: dataFraude.length,
+          rawData: dataFraude.slice(0, 50), detailRows: [],
+        });
+        toast.success(`Messages fraude mis à jour : ${dataFraude.length}`);
+      }
+
+      toast.success(`Traitement réussi pour tous les indicateurs liés`);
       await refreshData();
       handleClose();
     } catch (err: any) {
-      console.error(err);
-      toast.error(err.message || "Erreur lors du traitement du fichier");
+      console.error("Erreur d'importation multiple:", err);
+      toast.error(err.message || "Erreur lors de l'enregistrement des données");
       setUploading(false);
     }
   };
@@ -203,31 +277,26 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         <DialogHeader>
           <DialogTitle className="text-foreground flex items-center gap-2">
             <FileSpreadsheet className="w-5 h-5 text-primary" />
-            Ajouter une source — {kpi.name}
+            Importer des données — {kpi.name}
           </DialogTitle>
           <DialogDescription className="text-muted-foreground">
-            Le fichier sera uploadé et traité par le serveur. Les données seront persistées en base.
+            Sélectionnez la colonne et la méthode pour calculer l'indicateur.
           </DialogDescription>
         </DialogHeader>
 
-        {/* Step indicator */}
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-2 mb-4">
           {["Upload", "Configuration", "Validation"].map((label, i) => {
             const stepIdx = i === 0 ? "upload" : i === 1 ? "configure" : "confirm";
             const isActive = step === stepIdx;
-            const isDone =
-              (stepIdx === "upload" && step !== "upload") ||
-              (stepIdx === "configure" && step === "confirm");
+            const isDone = (stepIdx === "upload" && step !== "upload") || (stepIdx === "configure" && step === "confirm");
             return (
               <div key={label} className="flex items-center gap-2">
                 {i > 0 && <div className="w-8 h-px bg-border" />}
-                <div
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                    isActive ? "bg-primary/15 text-primary"
-                    : isDone ? "bg-success/15 text-success"
-                    : "bg-secondary text-muted-foreground"
-                  }`}
-                >
+                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  isActive ? "bg-primary/15 text-primary"
+                  : isDone ? "bg-success/15 text-success"
+                  : "bg-secondary text-muted-foreground"
+                }`}>
                   {isDone ? <Check className="w-3 h-3" /> : <span>{i + 1}</span>}
                   {label}
                 </div>
@@ -236,7 +305,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
           })}
         </div>
 
-        {/* Step 1: Upload */}
         {step === "upload" && (
           <div
             className="border-2 border-dashed border-border rounded-xl p-12 text-center hover:border-primary/50 transition-colors cursor-pointer"
@@ -249,7 +317,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
               Glissez-déposez un fichier ou cliquez pour sélectionner
             </p>
             <p className="text-xs text-muted-foreground">
-              Formats supportés : .xlsx, .xls, .csv — Le fichier sera stocké côté serveur
+              Formats supportés : .xlsx, .xls, .csv
             </p>
             <input
               ref={fileInputRef}
@@ -261,14 +329,15 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
           </div>
         )}
 
-        {/* Step 2: Configure */}
         {step === "configure" && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between glass-panel p-3">
+            <div className="flex items-center justify-between bg-secondary/30 p-3 rounded-lg">
               <div className="flex items-center gap-2">
                 <FileSpreadsheet className="w-4 h-4 text-success" />
                 <span className="text-sm font-medium text-foreground">{file?.name}</span>
-                <span className="text-xs text-muted-foreground">({rawData.length} lignes)</span>
+                <span className="text-xs text-muted-foreground font-semibold text-primary">
+                  ({fullData.length} lignes détectées au total)
+                </span>
               </div>
               <Button variant="ghost" size="sm" onClick={reset}>
                 <X className="w-4 h-4" />
@@ -281,7 +350,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                   <Columns className="w-3.5 h-3.5" /> Feuille
                 </label>
                 <Select value={selectedSheet} onValueChange={handleSheetChange}>
-                  <SelectTrigger className="w-full bg-secondary/50"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full bg-background"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {sheets.map((s) => (<SelectItem key={s} value={s}>{s}</SelectItem>))}
                   </SelectContent>
@@ -292,10 +361,10 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                  <Columns className="w-3.5 h-3.5" /> Colonne de valeur
+                  <Columns className="w-3.5 h-3.5" /> Colonne cible
                 </label>
                 <Select value={selectedColumn} onValueChange={setSelectedColumn}>
-                  <SelectTrigger className="w-full bg-secondary/50">
+                  <SelectTrigger className="w-full bg-background">
                     <SelectValue placeholder="Sélectionnez une colonne" />
                   </SelectTrigger>
                   <SelectContent>
@@ -308,7 +377,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                   <Calculator className="w-3.5 h-3.5" /> Méthode de calcul
                 </label>
                 <Select value={aggMethod} onValueChange={(v) => setAggMethod(v as AggMethod)}>
-                  <SelectTrigger className="w-full bg-secondary/50"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full bg-background"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {Object.entries(AGG_LABELS).map(([k, v]) => (<SelectItem key={k} value={k}>{v}</SelectItem>))}
                   </SelectContent>
@@ -316,69 +385,59 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
               </div>
             </div>
 
-            {rawData.length > 0 && (
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Aperçu des données ({Math.min(rawData.length, 10)} premières lignes)
-                </label>
-                <div className="rounded-lg border border-border overflow-auto max-h-[220px]">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-secondary/30">
-                        {columns.slice(0, 8).map((col) => (
-                          <TableHead
-                            key={col}
-                            className={`text-[10px] uppercase tracking-wider whitespace-nowrap ${col === selectedColumn ? "text-primary font-bold" : ""}`}
-                          >
-                            {col}{col === selectedColumn && " ✓"}
-                          </TableHead>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Aperçu des données (échantillon des premières lignes)
+              </label>
+              <div className="rounded-lg border border-border overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      {columns.slice(0, 5).map((col) => (
+                        <TableHead key={col} className="text-[10px] uppercase tracking-wider">
+                          {col}{col === selectedColumn && " ✓"}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rawData.map((row, i) => (
+                      <TableRow key={i}>
+                        {columns.slice(0, 5).map((col) => (
+                          <TableCell key={col} className={`text-xs py-2 ${col === selectedColumn ? "text-primary font-bold" : ""}`}>
+                            {String(row[col] ?? "")}
+                          </TableCell>
                         ))}
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {rawData.slice(0, 10).map((row, i) => (
-                        <TableRow key={i} className="hover:bg-secondary/20">
-                          {columns.slice(0, 8).map((col) => (
-                            <TableCell
-                              key={col}
-                              className={`text-xs font-mono py-1.5 ${col === selectedColumn ? "text-primary font-bold" : ""}`}
-                            >
-                              {String(row[col] ?? "")}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
-            )}
+            </div>
 
-            <div className="flex justify-end">
+            <div className="flex justify-end pt-2">
               <Button onClick={computeValue} disabled={!selectedColumn} className="gap-2">
                 <Calculator className="w-4 h-4" />
-                Calculer la valeur
+                Calculer le résultat final
               </Button>
             </div>
           </div>
         )}
 
-        {/* Step 3: Confirm */}
         {step === "confirm" && (
-          <div className="space-y-4">
-            <div className="glass-panel p-6 text-center space-y-3">
-              <p className="text-xs text-muted-foreground uppercase tracking-wider">
-                Valeur calculée ({AGG_LABELS[aggMethod]} de « {selectedColumn} »)
+          <div className="space-y-6 py-4">
+            <div className="text-center space-y-3 p-8 bg-primary/5 rounded-2xl border border-primary/10">
+              <p className="text-xs font-semibold text-primary uppercase tracking-widest">
+                Résultat du calcul final
               </p>
-              <div className="text-4xl font-bold font-mono" style={{ color: "hsl(var(--primary))" }}>
-                {computedValue}
-                {(kpi.unit === "pourcentage" || kpi.unit === "taux") && "%"}
+              <div className="text-6xl font-black text-foreground">
+                {computedValue}{(kpi.unit === "pourcentage" || kpi.unit === "taux") && "%"}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Période : {period} · Source : {file?.name}
+              <p className="text-sm text-muted-foreground">
+                Ce résultat est basé sur l'intégralité des <strong>{fullData.length} lignes</strong> de votre fichier.
               </p>
-              <p className="text-xs text-muted-foreground/60">
-                📦 Le fichier sera stocké sur le serveur et les données persistées en base PostgreSQL
+              <p className="text-[10px] text-success font-medium flex items-center justify-center gap-1">
+                <Check className="w-3 h-3" /> Plusieurs indicateurs liés seront mis à jour automatiquement
               </p>
             </div>
             <div className="flex justify-between">
@@ -387,7 +446,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
               </Button>
               <Button onClick={handleConfirm} disabled={uploading} className="gap-2">
                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                {uploading ? "Envoi en cours…" : "Valider et enregistrer"}
+                {uploading ? "Enregistrement..." : "Confirmer et enregistrer en base"}
               </Button>
             </div>
           </div>
