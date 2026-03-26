@@ -156,15 +156,28 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     if (!file) return;
     setUploading(true);
     try {
-      const result = await uploadFileForKpi({
+      const detailRows = rawData.slice(0, 20).map((row) => ({
+        label: String(Object.values(row)[0] || ""),
+        value: Number(row[selectedColumn]) || 0,
+        metadata: Object.fromEntries(
+          Object.entries(row)
+            .filter(([k]) => k !== selectedColumn)
+            .slice(0, 3)
+            .map(([k, v]) => [k, String(v)])
+        ),
+      }));
+      await uploadFileForKpi({
         file,
         kpiId: kpi.id,
         period,
         selectedColumn,
         aggregation: aggMethod,
         selectedSheet: fileType === "excel" ? selectedSheet : undefined,
+        computedValue: computedValue!,
+        rawData,
+        detailRows,
       });
-      toast.success(`Fichier traité : ${result.rowsParsed} lignes, valeur = ${result.computedValue}`);
+      toast.success(`Fichier traité et enregistré en base`);
       await refreshData();
       handleClose();
     } catch (err: any) {
