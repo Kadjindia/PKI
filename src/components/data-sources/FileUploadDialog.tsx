@@ -209,7 +209,21 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         toast.success(`Indicateur 1212 mis à jour : ${data1212.length}`);
       }
 
-      // 3. "Message externe"
+        // 3. "Messages fraude"
+          const kpiFraude = kpis.find(k => k.name.toLowerCase().includes("fraude"));
+          if (kpiFraude && emailCol) {
+            const dataFraude = fullData.filter(row =>
+              String(row[emailCol] || "").toLowerCase().trim() === "fraude.als@actionlogement.fr"
+            );
+            await uploadFileForKpi({
+              file, kpiId: kpiFraude.id, period, selectedColumn: emailCol,
+              aggregation: "count", computedValue: dataFraude.length,
+              rawData: dataFraude.slice(0, 50), detailRows: [],
+            });
+            toast.success(`Messages fraude mis à jour : ${dataFraude.length}`);
+          }
+
+      // 4. "Message externe"
       const kpiExterne = kpis.find(k => k.name.toLowerCase().includes("externe"));
       if (kpiExterne && typeCol) {
         const dataExterne = fullData.filter(row =>
@@ -223,7 +237,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         toast.success(`Indicateur externe mis à jour : ${dataExterne.length}`);
       }
 
-      // 4. "Erreur d'adressage"
+      // 5. "Erreur d'adressage"
       const kpiAdressage = kpis.find(k => k.name.toLowerCase().includes("adressage"));
       if (kpiAdressage && dossierCol) {
         const dataAdressage = fullData.filter(row =>
@@ -237,19 +251,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         toast.success(`Erreurs d'adressage mises à jour : ${dataAdressage.length}`);
       }
 
-      // 5. "Messages fraude"
-      const kpiFraude = kpis.find(k => k.name.toLowerCase().includes("fraude"));
-      if (kpiFraude && dossierCol) {
-        const dataFraude = fullData.filter(row =>
-          String(row[dossierCol] || "").trim() === "02 - Fraudes"
-        );
-        await uploadFileForKpi({
-          file, kpiId: kpiFraude.id, period, selectedColumn: dossierCol,
-          aggregation: "count", computedValue: dataFraude.length,
-          rawData: dataFraude.slice(0, 50), detailRows: [],
-        });
-        toast.success(`Messages fraude mis à jour : ${dataFraude.length}`);
-      }
+
 
       toast.success(`Traitement réussi pour tous les indicateurs liés`);
       await refreshData();
