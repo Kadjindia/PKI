@@ -1,12 +1,13 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen, ShieldAlert } from "lucide-react";
+import { LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen, ShieldAlert, Users } from "lucide-react";
 
 const NAV_ITEMS = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/saisie", label: "Saisie des données", icon: PenLine },
   { path: "/gouvernance", label: "Revue des Politiques", icon: BookOpen },
-  { path: "/security-ops", label: "PAS & Audits", icon: ShieldAlert }, // <-- LE NOUVEAU MENU EST ICI
+  { path: "/security-ops", label: "PAS & Audits", icon: ShieldAlert },
+  { path: "/sensibilisation", label: "Sensibilisation", icon: Users }, // <-- LE NOUVEAU MENU EST ICI
   { path: "/alertes", label: "Alertes", icon: Bell },
   { path: "/connecteurs", label: "Connecteurs", icon: Plug },
 ];

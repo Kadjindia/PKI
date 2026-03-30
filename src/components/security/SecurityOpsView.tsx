@@ -318,7 +318,7 @@ export default function SecurityOpsView() {
                 Plans d'Assurance Sécurité
               </TabsTrigger>
               <TabsTrigger value="audits" className="data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-0 pb-3">
-                Registre des Audits & Risques
+                Audits & Analyses de Risques
               </TabsTrigger>
             </TabsList>
 
