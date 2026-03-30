@@ -23,54 +23,98 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 
 // --- ICÔNES ---
-import { ShieldAlert, ShieldCheck, Rocket, Bug, Plus, AlertTriangle, Loader2, Trash2, CheckCircle2, Pencil, Network, FileSearch, Settings2 } from "lucide-react";
+import { ShieldAlert, ShieldCheck, Rocket, Bug, Plus, AlertTriangle, Loader2, Trash2, CheckCircle2, Pencil, Network, FileSearch, Settings2, Search, Clock, History, Target } from "lucide-react";
 
 // ============================================================================
-// 1. UTILITAIRES DE DESIGN ET DE CALCUL
+// 1. UTILITAIRES DE DESIGN ET DE CALCUL (CORRIGÉS POUR LE DARK MODE)
 // ============================================================================
 
-/** Formate une date au format français (JJ/MM/AAAA) */
 const formatFrDate = (dateStr: string | null) => {
   if (!dateStr) return "Non définie";
   return new Date(dateStr).toLocaleDateString("fr-FR");
 };
 
-/** Calcule la date du prochain audit et vérifie si elle est dépassée */
-const calculateNextAudit = (lastDate: string | null, freqMonths: number) => {
+const calculateNextDeadlineStr = (lastDate: string | null, freqMonths: number) => {
   if (!lastDate) return "À planifier";
   const d = new Date(lastDate);
   d.setMonth(d.getMonth() + (freqMonths || 12));
-  if (d < new Date()) return "Dépassé";
   return d.toLocaleDateString("fr-FR");
 };
 
-/** Renvoie le bon badge visuel selon le statut du PAS */
+const getDeadlineStatus = (lastDate: string | null, freqMonths: number) => {
+  if (!lastDate) return "missing";
+  const deadline = new Date(lastDate);
+  deadline.setMonth(deadline.getMonth() + (freqMonths || 12));
+  const diffDays = Math.ceil((deadline.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) return "expired";
+  if (diffDays <= 90) return "warning";
+  return "ok";
+};
+
+// BADGES 100% TAILWIND (S'adaptent parfaitement au Dark Mode)
+const getDeadlineBadge = (status: string, dateStr: string, isRiskAnalysis = false) => {
+  const icon = isRiskAnalysis ? <Target className="w-3 h-3 mr-1" /> : <Clock className="w-3 h-3 mr-1" />;
+
+  switch (status) {
+    case "ok":
+      return <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20">{icon} {dateStr}</Badge>;
+    case "warning":
+      return <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20" title="Échéance < 3 mois">{icon} {dateStr} (Bientôt)</Badge>;
+    case "expired":
+      return <Badge variant="outline" className="bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20"><AlertTriangle className="w-3 h-3 mr-1" /> Dépassé</Badge>;
+    case "missing":
+      return <Badge variant="outline" className="bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20"><AlertTriangle className="w-3 h-3 mr-1" /> Manquant</Badge>;
+    default:
+      return <Badge variant="outline" className="bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-500/10 dark:text-slate-400 dark:border-slate-500/20">Inconnu</Badge>;
+  }
+};
+
 const getPasStatusBadge = (status: string) => {
   switch (status) {
-    case "validated": return <Badge className="theme-badge-success">✅ Validé</Badge>;
-    case "review": return <Badge className="theme-badge-info">👀 En revue SSI</Badge>;
-    case "draft": return <Badge className="theme-badge-neutral">📝 En rédaction</Badge>;
-    default: return <Badge className="theme-badge-neutral">Inconnu</Badge>;
+    case "validated": return <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20">✅ Validé</Badge>;
+    case "review": return <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/20">👀 En revue SSI</Badge>;
+    case "draft": return <Badge variant="outline" className="bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-500/10 dark:text-slate-400 dark:border-slate-500/20">📝 En rédaction</Badge>;
+    default: return <Badge variant="outline">Inconnu</Badge>;
   }
 };
 
-/** Renvoie le badge de couleur pour le risque métier d'un projet */
 const getRiskBadge = (risk: string) => {
   switch (risk) {
-    case "fort": return <Badge className="theme-badge-danger">Fort</Badge>;
-    case "moyen": return <Badge className="theme-badge-warning">Moyen</Badge>;
-    case "faible": return <Badge className="theme-badge-success">Faible</Badge>;
-    default: return <Badge className="theme-badge-neutral">Inconnu</Badge>;
+    case "fort": return <Badge variant="outline" className="bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20">Fort</Badge>;
+    case "moyen": return <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/20">Moyen</Badge>;
+    case "faible": return <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20">Faible</Badge>;
+    default: return <Badge variant="outline">Inconnu</Badge>;
   }
 };
 
-/** Renvoie l'icône et le label adaptés au type d'audit */
+// Design des cartes Vulnérabilités dans le panneau latéral (Fini le gros bloc blanc)
+const getVulnColor = (sev: string, isResolved: boolean) => {
+  if (isResolved) return 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/30 dark:bg-emerald-900/10 opacity-70';
+  switch(sev) {
+    case 'critique': return 'border-rose-200 bg-rose-50 dark:border-rose-900/50 dark:bg-rose-900/10';
+    case 'eleve': return 'border-orange-200 bg-orange-50 dark:border-orange-900/50 dark:bg-orange-900/10';
+    case 'moyen': return 'border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-900/10';
+    default: return 'border-slate-200 bg-slate-50 dark:border-slate-700/50 dark:bg-slate-800/20';
+  }
+};
+
+const checkSlaOverdue = (createdAt: string, severity: string) => {
+  const createdDate = new Date(createdAt);
+  const diffDays = Math.ceil(Math.abs(new Date().getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
+  switch (severity) {
+    case 'critique': return diffDays > 7;
+    case 'eleve': return diffDays > 30;
+    case 'moyen': return diffDays > 90;
+    default: return false;
+  }
+};
+
 const getAuditTypeInfo = (type: string) => {
   switch (type) {
-    case "pentest": return { icon: <Bug className="w-3.5 h-3.5 mr-1 text-rose-500"/>, label: "Test d'intrusion" };
-    case "architecture": return { icon: <Network className="w-3.5 h-3.5 mr-1 text-blue-500"/>, label: "Audit d'Architecture" };
-    case "configuration": return { icon: <Settings2 className="w-3.5 h-3.5 mr-1 text-slate-500"/>, label: "Audit de Configuration" };
-    case "gouvernance": return { icon: <FileSearch className="w-3.5 h-3.5 mr-1 text-amber-500"/>, label: "Audit Organisationnel" };
+    case "pentest": return { icon: <Bug className="w-3.5 h-3.5 mr-1 text-rose-500 dark:text-rose-400"/>, label: "Test d'intrusion" };
+    case "architecture": return { icon: <Network className="w-3.5 h-3.5 mr-1 text-blue-500 dark:text-blue-400"/>, label: "Audit d'Architecture" };
+    case "configuration": return { icon: <Settings2 className="w-3.5 h-3.5 mr-1 text-slate-500 dark:text-slate-400"/>, label: "Audit de Configuration" };
+    case "gouvernance": return { icon: <FileSearch className="w-3.5 h-3.5 mr-1 text-amber-500 dark:text-amber-400"/>, label: "Audit Organisationnel" };
     default: return { icon: <ShieldAlert className="w-3.5 h-3.5 mr-1"/>, label: "Audit" };
   }
 };
@@ -81,12 +125,14 @@ const getAuditTypeInfo = (type: string) => {
 export default function SecurityOpsView() {
   const queryClient = useQueryClient();
 
-  // --- ÉTATS DE NAVIGATION ET SÉLECTION ---
+  // --- ÉTATS ---
   const [activeTab, setActiveTab] = useState("projects");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showResolvedHistory, setShowResolvedHistory] = useState(false);
+
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedApp, setSelectedApp] = useState<Application | null>(null);
 
-  // --- ÉTATS DES MODALES (Création & Édition) ---
   const [isAddProjectOpen, setIsAddProjectOpen] = useState(false);
   const [isAddAppOpen, setIsAddAppOpen] = useState(false);
   const [isAddVulnOpen, setIsAddVulnOpen] = useState(false);
@@ -94,158 +140,119 @@ export default function SecurityOpsView() {
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
   const [appToEdit, setAppToEdit] = useState<Application | null>(null);
 
-  // --- ÉTATS DES FORMULAIRES ---
   const [newProject, setNewProject] = useState({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen" });
-  const [newApp, setNewApp] = useState({ name: "", auditType: "pentest", criticality: "majeure", lastAuditDate: "" });
+  const [newApp, setNewApp] = useState({ name: "", auditType: "pentest", criticality: "majeure", lastAuditDate: "", lastRiskAnalysisDate: "" });
   const [newVuln, setNewVuln] = useState({ title: "", cve: "", description: "", severity: "moyen" });
 
-  // --- ÉTATS DES MODALES DE CONFIRMATION (Actions critiques) ---
   const [projectStatusToUpdate, setProjectStatusToUpdate] = useState<{id: string, status: string, name: string} | null>(null);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [appToMarkAudited, setAppToMarkAudited] = useState<Application | null>(null);
+  const [appToMarkRiskAnalyzed, setAppToMarkRiskAnalyzed] = useState<Application | null>(null);
   const [appToDelete, setAppToDelete] = useState<Application | null>(null);
   const [vulnToClose, setVulnToClose] = useState<string | null>(null);
 
-  // ============================================================================
-  // 3. APPELS API (Supabase)
-  // ============================================================================
-
-  // LECTURE
+  // --- REQUÊTES ---
   const { data: projects = [], isLoading: isLoadingProjects } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
   const { data: apps = [], isLoading: isLoadingApps } = useQuery({ queryKey: ['applications'], queryFn: fetchApplications });
   const { data: vulns = [], isLoading: isLoadingVulns } = useQuery({ queryKey: ['vulnerabilities'], queryFn: fetchVulnerabilities });
 
-  // --- MUTATIONS PROJETS ---
+  // --- MUTATIONS ---
   const addProjectMutation = useMutation({
     mutationFn: createProject,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      toast.success("Projet ajouté au suivi");
-      setIsAddProjectOpen(false);
-      setNewProject({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen" });
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['projects'] }); toast.success("Projet ajouté"); setIsAddProjectOpen(false); setNewProject({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen" }); }
   });
-
   const updateProjectMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string, updates: Partial<Project> }) => updateProject(id, updates),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      toast.success("Projet mis à jour avec succès");
-      setProjectToEdit(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['projects'] }); toast.success("Projet mis à jour"); setProjectToEdit(null); }
   });
-
   const delProjectMutation = useMutation({
     mutationFn: deleteProject,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      toast.success("Projet supprimé définitivement");
-      setSelectedProject(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['projects'] }); toast.success("Projet supprimé"); setSelectedProject(null); }
   });
 
-  // --- MUTATIONS AUDITS ET VULNÉRABILITÉS ---
   const addAppMutation = useMutation({
     mutationFn: createApplication,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['applications'] });
-      toast.success("Périmètre ajouté au registre");
-      setIsAddAppOpen(false);
-      setNewApp({ name: "", auditType: "pentest", criticality: "majeure", lastAuditDate: "" });
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['applications'] }); toast.success("Périmètre ajouté"); setIsAddAppOpen(false); setNewApp({ name: "", auditType: "pentest", criticality: "majeure", lastAuditDate: "", lastRiskAnalysisDate: "" }); }
   });
-
   const updateAppMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string, updates: Partial<Application> }) => updateApplication(id, updates),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['applications'] });
-      toast.success("Périmètre mis à jour");
-      setAppToEdit(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['applications'] }); toast.success("Périmètre mis à jour"); setAppToEdit(null); }
   });
-
   const delAppMutation = useMutation({
     mutationFn: deleteApplication,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['applications'] });
-      toast.success("Périmètre supprimé définitivement");
-      setSelectedApp(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['applications'] }); toast.success("Périmètre supprimé"); setSelectedApp(null); }
   });
 
   const addVulnMutation = useMutation({
     mutationFn: createVulnerability,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] });
-      toast.success("Constat déclaré avec succès");
-      setIsAddVulnOpen(false);
-      setNewVuln({ title: "", cve: "", description: "", severity: "moyen" });
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] }); toast.success("Constat déclaré"); setIsAddVulnOpen(false); setNewVuln({ title: "", cve: "", description: "", severity: "moyen" }); }
   });
-
   const closeVulnMutation = useMutation({
     mutationFn: ({ id, status }: { id: string, status: any }) => updateVulnerabilityStatus(id, status),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] });
-      toast.success("Vulnérabilité clôturée ! Dette technique réduite.");
-      setVulnToClose(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] }); toast.success("Vulnérabilité clôturée !"); setVulnToClose(null); }
   });
 
-  // ============================================================================
-  // 4. CALCULS GLOBAUX POUR LES CARTES INDICATEURS
-  // ============================================================================
-
-  // KPIs Projets (PAS)
+  // --- CALCULS GLOBAUX ---
   const totalProjects = projects.length;
   const validatedPas = projects.filter(p => p.pasStatus === "validated").length;
   const pasCoverage = totalProjects > 0 ? Math.round((validatedPas / totalProjects) * 100) : 0;
   const projectsAtRisk = projects.filter(p => p.pasStatus !== "validated" && p.riskLevel === "fort").length;
 
-  // KPIs Audits (Applications)
   const totalApps = apps.length;
-  const auditedApps = apps.filter(a => calculateNextAudit(a.lastAuditDate, a.auditFrequencyMonths) !== "Dépassé" && a.lastAuditDate).length;
+  const auditedApps = apps.filter(a => getDeadlineStatus(a.lastAuditDate, a.auditFrequencyMonths) !== "expired" && a.lastAuditDate).length;
   const auditCoverage = totalApps > 0 ? Math.round((auditedApps / totalApps) * 100) : 0;
 
-  // Dette technique calculée dynamiquement à partir des vraies vulnérabilités ouvertes
+  const appsWithRiskAnalysis = apps.filter(a => getDeadlineStatus(a.lastRiskAnalysisDate, a.riskAnalysisFrequencyMonths) !== "expired" && a.lastRiskAnalysisDate).length;
+  const riskAnalysisCoverage = totalApps > 0 ? Math.round((appsWithRiskAnalysis / totalApps) * 100) : 0;
+
   const activeVulns = vulns.filter(v => v.status === "ouvert");
   const totalCriticalVulns = activeVulns.filter(v => v.severity === "critique").length;
   const totalHighVulns = activeVulns.filter(v => v.severity === "eleve").length;
 
-  // ============================================================================
-  // 5. HANDLERS (Soumissions de formulaires)
-  // ============================================================================
+  // FILTRES DE RECHERCHE
+  const filteredProjects = projects.filter(p =>
+    p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (p.manager && p.manager.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+
+  const filteredApps = apps.filter(a =>
+    a.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // --- HANDLERS ---
   const handleCreateProject = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newProject.name || !newProject.goLiveDate) return toast.error("Veuillez remplir les champs requis");
-    addProjectMutation.mutate({ name: newProject.name, manager: newProject.manager, riskLevel: newProject.riskLevel as any, goLiveDate: newProject.goLiveDate, pasStatus: 'draft' });
+    if (!newProject.name) return;
+    addProjectMutation.mutate({ ...newProject, pasStatus: 'draft' } as any);
   };
 
   const handleCreateApp = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newApp.name) return toast.error("Le nom est requis");
-    addAppMutation.mutate({ name: newApp.name, auditType: newApp.auditType as any, criticality: newApp.criticality as any, lastAuditDate: newApp.lastAuditDate || null, auditFrequencyMonths: 12 });
+    if (!newApp.name) return;
+    addAppMutation.mutate({
+      ...newApp,
+      lastAuditDate: newApp.lastAuditDate || null,
+      auditFrequencyMonths: 12,
+      lastRiskAnalysisDate: newApp.lastRiskAnalysisDate || null,
+      riskAnalysisFrequencyMonths: 36
+    } as any);
   };
 
   const handleCreateVuln = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedApp) return;
-    if (!newVuln.title || !newVuln.description) return toast.error("Titre et description requis");
-    addVulnMutation.mutate({ appId: selectedApp.id, title: newVuln.title, cve: newVuln.cve, description: newVuln.description, severity: newVuln.severity as any, status: 'ouvert' });
+    if (!selectedApp || !newVuln.title) return;
+    addVulnMutation.mutate({ appId: selectedApp.id, ...newVuln, status: 'ouvert' } as any);
   };
 
   if (isLoadingProjects || isLoadingApps || isLoadingVulns) {
     return <div className="flex justify-center p-12"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
   }
 
-  // ============================================================================
-  // 6. RENDU DE L'INTERFACE (JSX)
-  // ============================================================================
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
 
-      {/* --- ZONE A : CARTES DE SYNTHÈSE --- */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* --- ZONE A : CARTES DE SYNTHÈSE (5 Colonnes) --- */}
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
         <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Couverture PAS</CardTitle>
@@ -253,7 +260,7 @@ export default function SecurityOpsView() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{pasCoverage}%</div>
-            <p className="text-xs text-muted-foreground mt-1">{validatedPas} projets sécurisés sur {totalProjects}</p>
+            <p className="text-xs text-muted-foreground mt-1">{validatedPas} projets sur {totalProjects}</p>
           </CardContent>
         </Card>
 
@@ -264,7 +271,18 @@ export default function SecurityOpsView() {
           </CardHeader>
           <CardContent>
             <div className={`text-2xl font-bold ${projectsAtRisk > 0 ? 'text-rose-600' : ''}`}>{projectsAtRisk}</div>
-            <p className="text-xs text-muted-foreground mt-1">Projets risqués sans PAS validé</p>
+            <p className="text-xs text-muted-foreground mt-1">Projets risqués sans PAS</p>
+          </CardContent>
+        </Card>
+
+        <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Couverture Analyses Risques</CardTitle>
+            <Target className="w-4 h-4 text-primary" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
+            <p className="text-xs text-muted-foreground mt-1">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
           </CardContent>
         </Card>
 
@@ -275,7 +293,7 @@ export default function SecurityOpsView() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{auditCoverage}%</div>
-            <p className="text-xs text-muted-foreground mt-1">{auditedApps} périmètres à jour sur {totalApps}</p>
+            <p className="text-xs text-muted-foreground mt-1">{auditedApps} périmètres sur {totalApps}</p>
           </CardContent>
         </Card>
 
@@ -286,32 +304,44 @@ export default function SecurityOpsView() {
           </CardHeader>
           <CardContent>
             <div className={`text-2xl font-bold ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{totalCriticalVulns + totalHighVulns}</div>
-            <p className="text-xs text-muted-foreground mt-1">Vulnérabilités Critiques/Élevées</p>
+            <p className="text-xs text-muted-foreground mt-1">Vulnérabilités Crit/Élev</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* --- ZONE B : SYSTÈME D'ONGLETS (Tableaux) --- */}
+      {/* --- ZONE B : ONGLETS ET RECHERCHE --- */}
       <Card className="shadow-sm">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <div className="px-6 pt-4 border-b border-border flex justify-between items-end">
             <TabsList className="bg-transparent space-x-4">
               <TabsTrigger value="projects" className="data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-0 pb-3">
-                Plan d'assurance Sécurité
+                Plans d'Assurance Sécurité
               </TabsTrigger>
               <TabsTrigger value="audits" className="data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-0 pb-3">
-                Registre des Audits
+                Registre des Audits & Risques
               </TabsTrigger>
             </TabsList>
-            <Button className="mb-2" size="sm" onClick={() => activeTab === "projects" ? setIsAddProjectOpen(true) : setIsAddAppOpen(true)}>
-              <Plus className="w-4 h-4 mr-2" /> {activeTab === "projects" ? "Nouveau Projet" : "Nouveau Périmètre"}
-            </Button>
+
+            <div className="flex items-center gap-3 mb-2">
+              <div className="relative w-64 hidden sm:block">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Rechercher un nom..."
+                  className="pl-9 h-9 bg-muted/50 border-transparent focus:border-primary"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+              <Button size="sm" onClick={() => activeTab === "projects" ? setIsAddProjectOpen(true) : setIsAddAppOpen(true)}>
+                <Plus className="w-4 h-4 mr-2" /> {activeTab === "projects" ? "Nouveau Projet" : "Nouveau Périmètre"}
+              </Button>
+            </div>
           </div>
 
           {/* ONGLET 1 : PROJETS */}
           <TabsContent value="projects" className="m-0">
-            {projects.length === 0 ? (
-              <div className="p-12 text-center text-muted-foreground">Aucun projet en cours.</div>
+            {filteredProjects.length === 0 ? (
+              <div className="p-12 text-center text-muted-foreground">Aucun projet trouvé.</div>
             ) : (
               <Table>
                 <TableHeader>
@@ -324,10 +354,10 @@ export default function SecurityOpsView() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {projects.map((project) => (
+                  {filteredProjects.map((project) => (
                     <TableRow key={project.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedProject(project)}>
                       <TableCell className="font-medium">{project.name}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{project.manager || "Non assigné"}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{project.manager || "-"}</TableCell>
                       <TableCell>{getRiskBadge(project.riskLevel)}</TableCell>
                       <TableCell className="text-sm font-medium flex items-center gap-1.5 mt-2">
                         <Rocket className="w-3.5 h-3.5 text-muted-foreground" />
@@ -341,27 +371,31 @@ export default function SecurityOpsView() {
             )}
           </TabsContent>
 
-          {/* ONGLET 2 : AUDITS ET VULNÉRABILITÉS */}
+          {/* ONGLET 2 : AUDITS ET RISQUES */}
           <TabsContent value="audits" className="m-0">
-             {apps.length === 0 ? (
-              <div className="p-12 text-center text-muted-foreground">Aucun périmètre référencé.</div>
+             {filteredApps.length === 0 ? (
+              <div className="p-12 text-center text-muted-foreground">Aucun périmètre trouvé.</div>
             ) : (
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/30">
-                    <TableHead>Périmètre Audité</TableHead>
-                    <TableHead>Type d'Audit</TableHead>
-                    <TableHead>Criticité</TableHead>
+                    <TableHead>Périmètre</TableHead>
+                    <TableHead>Type de Contrôle</TableHead>
+                    <TableHead>Prochaine Analyse de Risques</TableHead>
                     <TableHead>Vuln. Actives</TableHead>
-                    <TableHead className="text-right">Prochaine Campagne</TableHead>
+                    <TableHead className="text-right">Prochain Audit</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {apps.map((app) => {
-                    const nextAudit = calculateNextAudit(app.lastAuditDate, app.auditFrequencyMonths);
+                  {filteredApps.map((app) => {
                     const appInfo = getAuditTypeInfo(app.auditType);
 
-                    // Calcul de toutes les vulnérabilités actives pour ce périmètre
+                    const riskStatus = getDeadlineStatus(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
+                    const riskNextDateStr = calculateNextDeadlineStr(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
+
+                    const auditStatus = getDeadlineStatus(app.lastAuditDate, app.auditFrequencyMonths);
+                    const auditNextDateStr = calculateNextDeadlineStr(app.lastAuditDate, app.auditFrequencyMonths);
+
                     const appVulns = activeVulns.filter(v => v.appId === app.id);
                     const vCrit = appVulns.filter(v => v.severity === 'critique').length;
                     const vHigh = appVulns.filter(v => v.severity === 'eleve').length;
@@ -369,30 +403,39 @@ export default function SecurityOpsView() {
                     const vLow = appVulns.filter(v => v.severity === 'faible').length;
 
                     return (
-                      <TableRow key={app.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedApp(app)}>
-                        <TableCell className="font-medium">{app.name}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground flex items-center mt-2.5">{appInfo.icon} {appInfo.label}</TableCell>
-                        <TableCell><Badge variant="outline" className="text-slate-600 bg-slate-50">{app.criticality}</Badge></TableCell>
+                      <TableRow key={app.id} className="cursor-pointer hover:bg-muted/50" onClick={() => { setSelectedApp(app); setShowResolvedHistory(false); }}>
 
-                        {/* AFFICHAGE COMPLET DE TOUTES LES VULNÉRABILITÉS */}
+                        <TableCell>
+                          <div className="font-medium text-foreground">{app.name}</div>
+                          <Badge variant="outline" className="text-muted-foreground bg-muted/50 dark:bg-muted/20 w-max text-[10px] py-0 mt-1">
+                            Criticité : {app.criticality}
+                          </Badge>
+                        </TableCell>
+
+                        <TableCell className="text-sm text-muted-foreground">
+                          <div className="flex items-center">
+                            {appInfo.icon} {appInfo.label}
+                          </div>
+                        </TableCell>
+
+                        <TableCell className="text-sm">
+                          {getDeadlineBadge(riskStatus, riskNextDateStr, true)}
+                        </TableCell>
+
                         <TableCell>
                           <div className="flex flex-wrap items-center gap-1.5">
-                            {vCrit > 0 && <Badge className="bg-red-600 text-white border-transparent hover:bg-red-600/80">{vCrit} Crit.</Badge>}
-                            {vHigh > 0 && <Badge className="bg-orange-500 text-white border-transparent hover:bg-orange-500/80">{vHigh} Élev.</Badge>}
-                            {vMed > 0 && <Badge className="bg-yellow-500 text-white border-transparent hover:bg-yellow-500/80">{vMed} Moy.</Badge>}
-                            {vLow > 0 && <Badge className="bg-slate-500 text-white border-transparent hover:bg-slate-500/80">{vLow} Fble</Badge>}
-
-                            {vCrit === 0 && vHigh === 0 && vMed === 0 && vLow === 0 && (
-                              <span className="text-xs text-emerald-600 font-medium">✅ Zéro dette</span>
-                            )}
+                            {vCrit > 0 && <Badge variant="outline" className="bg-rose-500 text-white border-transparent dark:bg-rose-500/20 dark:text-rose-400 dark:border-rose-500/30">{vCrit} Crit.</Badge>}
+                            {vHigh > 0 && <Badge variant="outline" className="bg-orange-500 text-white border-transparent dark:bg-orange-500/20 dark:text-orange-400 dark:border-orange-500/30">{vHigh} Élev.</Badge>}
+                            {vMed > 0 && <Badge variant="outline" className="bg-amber-500 text-white border-transparent dark:bg-amber-500/20 dark:text-amber-400 dark:border-amber-500/30">{vMed} Moy.</Badge>}
+                            {vLow > 0 && <Badge variant="outline" className="bg-slate-500 text-white border-transparent dark:bg-slate-500/20 dark:text-slate-400 dark:border-slate-500/30">{vLow} Fble</Badge>}
+                            {appVulns.length === 0 && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✅ Zéro dette</span>}
                           </div>
                         </TableCell>
 
                         <TableCell className="text-right text-sm">
-                          <span className={nextAudit === "Dépassé" ? "text-rose-600 font-bold" : "text-muted-foreground"}>
-                            {nextAudit === "Dépassé" ? "⚠️ Dépassé" : nextAudit}
-                          </span>
+                          {getDeadlineBadge(auditStatus, auditNextDateStr, false)}
                         </TableCell>
+
                       </TableRow>
                     )
                   })}
@@ -404,7 +447,7 @@ export default function SecurityOpsView() {
       </Card>
 
       {/* ============================================================================ */}
-      {/* 7. PANNEAUX LATÉRAUX (DÉTAILS AU CLIC) */}
+      {/* 7. PANNEAUX LATÉRAUX (DÉTAILS) */}
       {/* ============================================================================ */}
 
       {/* --- PANNEAU PROJET --- */}
@@ -414,20 +457,23 @@ export default function SecurityOpsView() {
             <div className="flex justify-between items-start">
               <div>
                 <SheetTitle className="text-xl">{selectedProject?.name}</SheetTitle>
-                <SheetDescription>Détails du projet et suivi du PAS</SheetDescription>
+                <SheetDescription>Détails du projet</SheetDescription>
               </div>
-              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => setProjectToEdit(selectedProject)}><Pencil className="w-4 h-4" /></Button>
+              <Button variant="ghost" size="icon" onClick={() => setProjectToEdit(selectedProject)}>
+                <Pencil className="w-4 h-4" />
+              </Button>
             </div>
           </SheetHeader>
+
           {selectedProject && (
             <div className="space-y-6">
               <div className="flex items-center justify-between p-4 rounded-lg bg-secondary/50">
                 <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">Statut actuel du PAS</p>
+                  <p className="text-xs text-muted-foreground">Statut du PAS</p>
                   {getPasStatusBadge(selectedProject.pasStatus)}
                 </div>
                 <div className="space-y-1 text-right">
-                  <p className="text-xs text-muted-foreground">Risque Métier</p>
+                  <p className="text-xs text-muted-foreground">Risque</p>
                   {getRiskBadge(selectedProject.riskLevel)}
                 </div>
               </div>
@@ -435,31 +481,34 @@ export default function SecurityOpsView() {
               <div className="p-4 border border-border rounded-lg bg-card space-y-2">
                 <p className="text-sm font-semibold flex items-center gap-2"><Rocket className="w-4 h-4 text-primary"/> Objectif Go-Live</p>
                 <p className="text-lg font-bold">{formatFrDate(selectedProject.goLiveDate)}</p>
-                {selectedProject.pasStatus !== "validated" && (
-                  <p className="text-xs text-amber-600 flex items-center gap-1 mt-2">
-                    <AlertTriangle className="w-3 h-3" /> La production risque d'être bloquée si le PAS n'est pas validé.
-                  </p>
-                )}
               </div>
 
               <div className="space-y-3 pt-4 border-t border-border">
                 <h4 className="text-sm font-semibold">Faire avancer le PAS</h4>
                 <div className="grid grid-cols-1 gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setProjectStatusToUpdate({id: selectedProject.id, status: 'draft', name: selectedProject.name})} className={`justify-start ${selectedProject.pasStatus === 'draft' ? 'border-primary bg-primary/5' : ''}`}>📝 Repasser en rédaction</Button>
-                  <Button variant="outline" size="sm" onClick={() => setProjectStatusToUpdate({id: selectedProject.id, status: 'review', name: selectedProject.name})} className={`justify-start ${selectedProject.pasStatus === 'review' ? 'border-primary bg-primary/5' : ''}`}>👀 Passer en revue (SSI)</Button>
-                  <Button variant="outline" size="sm" onClick={() => setProjectStatusToUpdate({id: selectedProject.id, status: 'validated', name: selectedProject.name})} className={`justify-start ${selectedProject.pasStatus === 'validated' ? 'border-emerald-500 text-emerald-600 bg-emerald-50' : ''}`}>✅ Valider définitivement le PAS</Button>
+                  <Button variant="outline" size="sm" onClick={() => setProjectStatusToUpdate({id: selectedProject.id, status: 'draft', name: selectedProject.name})} className={`justify-start ${selectedProject.pasStatus === 'draft' ? 'border-primary bg-primary/5 text-primary' : ''}`}>
+                    📝 Repasser en rédaction
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setProjectStatusToUpdate({id: selectedProject.id, status: 'review', name: selectedProject.name})} className={`justify-start ${selectedProject.pasStatus === 'review' ? 'border-primary bg-primary/5 text-primary' : ''}`}>
+                    👀 Passer en revue (SSI)
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setProjectStatusToUpdate({id: selectedProject.id, status: 'validated', name: selectedProject.name})} className={`justify-start ${selectedProject.pasStatus === 'validated' ? 'border-emerald-500 text-emerald-700 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-400' : ''}`}>
+                    ✅ Valider définitivement le PAS
+                  </Button>
                 </div>
               </div>
 
               <div className="mt-12 pt-6 border-t border-border">
-                <Button variant="destructive" className="w-full" onClick={() => setProjectToDelete(selectedProject)}><Trash2 className="w-4 h-4 mr-2" /> Supprimer le projet</Button>
+                <Button variant="destructive" className="w-full" onClick={() => setProjectToDelete(selectedProject)}>
+                  <Trash2 className="w-4 h-4 mr-2" /> Supprimer le projet
+                </Button>
               </div>
             </div>
           )}
         </SheetContent>
       </Sheet>
 
-      {/* --- PANNEAU AUDITS ET VULNÉRABILITÉS --- */}
+      {/* --- PANNEAU AUDITS ET RISQUES --- */}
       <Sheet open={!!selectedApp} onOpenChange={(open) => !open && setSelectedApp(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
@@ -471,73 +520,124 @@ export default function SecurityOpsView() {
                 </div>
                 <SheetTitle className="text-xl">{selectedApp?.name}</SheetTitle>
               </div>
-              <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" onClick={() => setAppToEdit(selectedApp)}><Pencil className="w-4 h-4" /></Button>
+              <Button variant="ghost" size="icon" onClick={() => setAppToEdit(selectedApp)}>
+                <Pencil className="w-4 h-4" />
+              </Button>
             </div>
           </SheetHeader>
 
           {selectedApp && (
             <div className="space-y-6">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-3 border border-border rounded-md text-center">
-                  <p className="text-[10px] text-muted-foreground uppercase mb-1">Dernier Audit</p>
-                  <p className="font-medium text-sm">{formatFrDate(selectedApp.lastAuditDate)}</p>
+
+              {/* Bloc Analyse de Risques */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-semibold flex items-center gap-2">
+                  <Target className="w-4 h-4 text-primary" /> Analyse de Risques (EBIOS/PIA)
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-3 border border-border rounded-md text-center">
+                    <p className="text-[10px] text-muted-foreground uppercase mb-1">Dernière Analyse</p>
+                    <p className="font-medium text-sm">{formatFrDate(selectedApp.lastRiskAnalysisDate)}</p>
+                  </div>
+                  <div className="p-3 border border-border rounded-md text-center bg-primary/5">
+                    <p className="text-[10px] text-primary uppercase mb-1">Prochaine Analyse</p>
+                    <p className="font-medium text-sm flex items-center justify-center">
+                      {getDeadlineBadge(
+                        getDeadlineStatus(selectedApp.lastRiskAnalysisDate, selectedApp.riskAnalysisFrequencyMonths),
+                        calculateNextDeadlineStr(selectedApp.lastRiskAnalysisDate, selectedApp.riskAnalysisFrequencyMonths),
+                        true
+                      )}
+                    </p>
+                  </div>
                 </div>
-                <div className="p-3 border border-border rounded-md text-center bg-muted/20">
-                  <p className="text-[10px] text-muted-foreground uppercase mb-1">Prochain Audit</p>
-                  <p className={`font-medium text-sm ${calculateNextAudit(selectedApp.lastAuditDate, selectedApp.auditFrequencyMonths) === 'Dépassé' ? 'text-rose-600' : ''}`}>
-                    {calculateNextAudit(selectedApp.lastAuditDate, selectedApp.auditFrequencyMonths)}
-                  </p>
-                </div>
+                <Button variant="outline" size="sm" className="w-full bg-primary/5 hover:bg-primary/10 border-primary/20 text-primary" onClick={() => setAppToMarkRiskAnalyzed(selectedApp)}>
+                  <CheckCircle2 className="w-4 h-4 mr-2" /> Marquer l'analyse effectuée aujourd'hui
+                </Button>
               </div>
 
-              <Button variant="outline" size="sm" className="w-full bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-600" onClick={() => setAppToMarkAudited(selectedApp)}>
-                <ShieldAlert className="w-4 h-4 mr-2" /> Marquer comme audité aujourd'hui
-              </Button>
+              {/* Bloc Audit */}
+              <div className="space-y-3 pt-4 border-t border-border">
+                <h4 className="text-sm font-semibold flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-blue-500" /> Audit Technique
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-3 border border-border rounded-md text-center">
+                    <p className="text-[10px] text-muted-foreground uppercase mb-1">Dernier Audit</p>
+                    <p className="font-medium text-sm">{formatFrDate(selectedApp.lastAuditDate)}</p>
+                  </div>
+                  <div className="p-3 border border-border rounded-md text-center bg-blue-50/50 dark:bg-blue-900/10">
+                    <p className="text-[10px] text-blue-600 uppercase mb-1">Prochain Audit</p>
+                    <p className="font-medium text-sm flex items-center justify-center">
+                      {getDeadlineBadge(
+                        getDeadlineStatus(selectedApp.lastAuditDate, selectedApp.auditFrequencyMonths),
+                        calculateNextDeadlineStr(selectedApp.lastAuditDate, selectedApp.auditFrequencyMonths),
+                        false
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <Button variant="outline" size="sm" className="w-full bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 dark:border-blue-800 dark:text-blue-400" onClick={() => setAppToMarkAudited(selectedApp)}>
+                  <CheckCircle2 className="w-4 h-4 mr-2" /> Marquer l'audit effectué aujourd'hui
+                </Button>
+              </div>
 
-              {/* LISTE DES VULNÉRABILITÉS DÉTAILLÉES */}
+              {/* LISTE DES VULNÉRABILITÉS */}
               <div className="space-y-4 pt-4 border-t border-border">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-semibold flex items-center gap-2">
-                    <Bug className="w-4 h-4 text-rose-500" /> Constats & Vulnérabilités
+                    <Bug className="w-4 h-4 text-rose-500" /> Constats & Remédiation
                   </h4>
                   <Button size="sm" variant="outline" onClick={() => setIsAddVulnOpen(true)}>
                     <Plus className="w-3 h-3 mr-1" /> Déclarer
                   </Button>
                 </div>
 
+                <div className="flex p-1 bg-muted/50 rounded-lg">
+                  <button
+                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${!showResolvedHistory ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+                    onClick={() => setShowResolvedHistory(false)}
+                  >
+                    Actives ({activeVulns.filter(v => v.appId === selectedApp.id).length})
+                  </button>
+                  <button
+                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1 ${showResolvedHistory ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+                    onClick={() => setShowResolvedHistory(true)}
+                  >
+                    <History className="w-3 h-3" /> Résolues ({vulns.filter(v => v.appId === selectedApp.id && v.status === 'resolu').length})
+                  </button>
+                </div>
+
                 <div className="space-y-3">
-                  {activeVulns.filter(v => v.appId === selectedApp.id).length === 0 ? (
-                    <p className="text-sm text-muted-foreground italic bg-muted/20 p-4 rounded-md border border-border text-center">Aucune vulnérabilité active. Beau travail !</p>
+                  {vulns.filter(v => v.appId === selectedApp.id && v.status === (showResolvedHistory ? 'resolu' : 'ouvert')).length === 0 ? (
+                    <p className="text-sm text-muted-foreground italic bg-muted/20 p-4 rounded-md border border-border text-center">
+                      {showResolvedHistory ? "Aucun historique de correction pour le moment." : "Aucune vulnérabilité active. Beau travail !"}
+                    </p>
                   ) : (
-                    activeVulns.filter(v => v.appId === selectedApp.id).map(vuln => {
-                      const getVulnColor = (sev: string) => {
-                        switch(sev) {
-                          case 'critique': return 'border-red-200 bg-red-50/50';
-                          case 'eleve': return 'border-orange-200 bg-orange-50/50';
-                          case 'moyen': return 'border-yellow-200 bg-yellow-50/50';
-                          default: return 'border-slate-200 bg-slate-50/50';
-                        }
-                      };
+                    vulns.filter(v => v.appId === selectedApp.id && v.status === (showResolvedHistory ? 'resolu' : 'ouvert')).map(vuln => {
+
+                      const isOverdue = !showResolvedHistory && checkSlaOverdue(vuln.createdAt, vuln.severity);
 
                       return (
-                        <div key={vuln.id} className={`p-4 border rounded-lg ${getVulnColor(vuln.severity)}`}>
+                        <div key={vuln.id} className={`p-4 border rounded-lg ${getVulnColor(vuln.severity, showResolvedHistory)}`}>
                           <div className="flex justify-between items-start mb-2">
                             <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className={`text-[10px] uppercase font-bold tracking-wider ${vuln.severity === 'critique' ? 'text-red-600' : vuln.severity === 'eleve' ? 'text-orange-600' : vuln.severity === 'moyen' ? 'text-yellow-600' : 'text-slate-600'}`}>
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <span className={`text-[10px] uppercase font-bold tracking-wider ${showResolvedHistory ? 'text-emerald-600 dark:text-emerald-400' : vuln.severity === 'critique' ? 'text-rose-600 dark:text-rose-400' : vuln.severity === 'eleve' ? 'text-orange-600 dark:text-orange-400' : vuln.severity === 'moyen' ? 'text-amber-600 dark:text-amber-400' : 'text-slate-600 dark:text-slate-400'}`}>
                                   Impact {vuln.severity}
                                 </span>
-                                {vuln.cve && <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-white text-black">{vuln.cve}</Badge>}
+                                {vuln.cve && <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-background text-foreground">{vuln.cve}</Badge>}
+                                {isOverdue && <Badge variant="outline" className="bg-rose-500 text-white dark:bg-rose-500/20 dark:text-rose-400 border-none text-[10px] px-1 py-0 h-4 flex items-center gap-1"><Clock className="w-2.5 h-2.5"/> SLA dépassé</Badge>}
+                                {showResolvedHistory && <Badge variant="outline" className="bg-emerald-500 text-white dark:bg-emerald-500/20 dark:text-emerald-400 border-none text-[10px] px-1 py-0 h-4">Corrigée</Badge>}
                               </div>
-                              <h5 className="font-semibold text-sm">{vuln.title}</h5>
+                              <h5 className="font-semibold text-sm line-clamp-2 text-foreground">{vuln.title}</h5>
                             </div>
-                            {/* Bouton pour clôturer spécifiquement cette vulnérabilité */}
-                            <Button variant="ghost" size="icon" className="h-7 w-7 bg-white shadow-sm hover:bg-emerald-50 hover:text-emerald-600 border border-slate-200 text-slate-700" onClick={() => setVulnToClose(vuln.id)}>
-                              <CheckCircle2 className="w-4 h-4" />
-                            </Button>
+                            {!showResolvedHistory && (
+                              <Button variant="ghost" size="icon" className="h-7 w-7 bg-background shadow-sm hover:bg-emerald-50 hover:text-emerald-600 border border-border flex-shrink-0" onClick={() => setVulnToClose(vuln.id)}>
+                                <CheckCircle2 className="w-4 h-4" />
+                              </Button>
+                            )}
                           </div>
-                          {/* L'explication vulgarisée */}
-                          <p className="text-xs text-slate-700 leading-relaxed mt-2 bg-white/60 p-2 rounded border border-white/40">
+                          <p className="text-xs leading-relaxed mt-2 p-2 rounded border border-border/50 bg-background/50 text-foreground">
                             {vuln.description}
                           </p>
                         </div>
@@ -561,126 +661,249 @@ export default function SecurityOpsView() {
       {/* 8. MODALES DE FORMULAIRES (Création & Édition) */}
       {/* ============================================================================ */}
 
-      {/* Création Projet */}
+      {/* Modale de création - PROJET */}
       <Dialog open={isAddProjectOpen} onOpenChange={setIsAddProjectOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Nouveau Projet (PAS)</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Nouveau Projet (PAS)</DialogTitle>
+          </DialogHeader>
           <form onSubmit={handleCreateProject} className="space-y-4">
-            <div className="space-y-2"><Label>Nom du Projet</Label><Input required value={newProject.name} onChange={(e) => setNewProject({...newProject, name: e.target.value})} /></div>
-            <div className="space-y-2"><Label>Chef de Projet</Label><Input placeholder="Ex: Jean Dupont" value={newProject.manager} onChange={(e) => setNewProject({...newProject, manager: e.target.value})} /></div>
+            <div className="space-y-2">
+              <Label>Nom du Projet</Label>
+              <Input required placeholder="Ex: Refonte de l'Intranet" value={newProject.name} onChange={(e) => setNewProject({...newProject, name: e.target.value})} />
+            </div>
+            <div className="space-y-2">
+              <Label>Chef de Projet</Label>
+              <Input placeholder="Ex: Jean Dupont" value={newProject.manager} onChange={(e) => setNewProject({...newProject, manager: e.target.value})} />
+            </div>
             <div className="space-y-2">
               <Label>Niveau de Risque Métier</Label>
               <Select value={newProject.riskLevel} onValueChange={(v) => setNewProject({...newProject, riskLevel: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="faible">Faible</SelectItem><SelectItem value="moyen">Moyen</SelectItem><SelectItem value="fort">Fort</SelectItem></SelectContent>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="faible">Faible</SelectItem>
+                  <SelectItem value="moyen">Moyen</SelectItem>
+                  <SelectItem value="fort">Fort</SelectItem>
+                </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2"><Label>Date prévue de mise en production</Label><Input required type="date" value={newProject.goLiveDate} onChange={(e) => setNewProject({...newProject, goLiveDate: e.target.value})} /></div>
-            <DialogFooter><Button type="button" variant="outline" onClick={() => setIsAddProjectOpen(false)}>Annuler</Button><Button type="submit" disabled={addProjectMutation.isPending}>Ajouter au suivi</Button></DialogFooter>
+            <div className="space-y-2">
+              <Label>Date prévue de mise en prod</Label>
+              <Input required type="date" value={newProject.goLiveDate} onChange={(e) => setNewProject({...newProject, goLiveDate: e.target.value})} />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setIsAddProjectOpen(false)}>Annuler</Button>
+              <Button type="submit" disabled={addProjectMutation.isPending}>Ajouter au suivi</Button>
+            </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Édition Projet */}
+      {/* Modale d'édition - PROJET */}
       <Dialog open={!!projectToEdit} onOpenChange={(open) => !open && setProjectToEdit(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Modifier le projet</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Modifier le projet</DialogTitle>
+          </DialogHeader>
           {projectToEdit && (
             <form onSubmit={(e) => {
               e.preventDefault();
               updateProjectMutation.mutate({ id: projectToEdit.id, updates: projectToEdit });
               setSelectedProject(projectToEdit);
             }} className="space-y-4">
-              <div className="space-y-2"><Label>Nom du Projet</Label><Input required value={projectToEdit.name} onChange={(e) => setProjectToEdit({...projectToEdit, name: e.target.value})} /></div>
-              <div className="space-y-2"><Label>Chef de Projet</Label><Input value={projectToEdit.manager || ""} onChange={(e) => setProjectToEdit({...projectToEdit, manager: e.target.value})} /></div>
+              <div className="space-y-2">
+                <Label>Nom du Projet</Label>
+                <Input required placeholder="Ex: Refonte de l'Intranet" value={projectToEdit.name} onChange={(e) => setProjectToEdit({...projectToEdit, name: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Chef de Projet</Label>
+                <Input placeholder="Ex: Jean Dupont" value={projectToEdit.manager || ""} onChange={(e) => setProjectToEdit({...projectToEdit, manager: e.target.value})} />
+              </div>
               <div className="space-y-2">
                 <Label>Niveau de Risque Métier</Label>
                 <Select value={projectToEdit.riskLevel} onValueChange={(v: any) => setProjectToEdit({...projectToEdit, riskLevel: v})}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="faible">Faible</SelectItem><SelectItem value="moyen">Moyen</SelectItem><SelectItem value="fort">Fort</SelectItem></SelectContent>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="faible">Faible</SelectItem>
+                    <SelectItem value="moyen">Moyen</SelectItem>
+                    <SelectItem value="fort">Fort</SelectItem>
+                  </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2"><Label>Date de mise en prod</Label><Input required type="date" value={projectToEdit.goLiveDate} onChange={(e) => setProjectToEdit({...projectToEdit, goLiveDate: e.target.value})} /></div>
-              <DialogFooter><Button type="button" variant="outline" onClick={() => setProjectToEdit(null)}>Annuler</Button><Button type="submit" disabled={updateProjectMutation.isPending}>Enregistrer</Button></DialogFooter>
+              <div className="space-y-2">
+                <Label>Date de mise en prod</Label>
+                <Input required type="date" value={projectToEdit.goLiveDate} onChange={(e) => setProjectToEdit({...projectToEdit, goLiveDate: e.target.value})} />
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setProjectToEdit(null)}>Annuler</Button>
+                <Button type="submit" disabled={updateProjectMutation.isPending}>Enregistrer</Button>
+              </DialogFooter>
             </form>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* Création Application */}
+      {/* Modale de création - APPLICATION */}
       <Dialog open={isAddAppOpen} onOpenChange={setIsAddAppOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Nouveau Périmètre d'Audit</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Nouveau Périmètre d'Audit</DialogTitle>
+          </DialogHeader>
           <form onSubmit={handleCreateApp} className="space-y-4">
-            <div className="space-y-2"><Label>Nom du périmètre</Label><Input required value={newApp.name} onChange={(e) => setNewApp({...newApp, name: e.target.value})} /></div>
             <div className="space-y-2">
-              <Label>Type d'audit prévu</Label>
-              <Select value={newApp.auditType} onValueChange={(v) => setNewApp({...newApp, auditType: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="pentest">Test d'Intrusion (Pentest)</SelectItem><SelectItem value="architecture">Audit d'Architecture</SelectItem><SelectItem value="configuration">Audit de Configuration</SelectItem><SelectItem value="gouvernance">Audit Organisationnel / Gouvernance</SelectItem></SelectContent>
-              </Select>
+              <Label>Nom du périmètre</Label>
+              <Input required placeholder="Ex: ERP, Site E-commerce, Active Directory" value={newApp.name} onChange={(e) => setNewApp({...newApp, name: e.target.value})} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Type d'audit prévu</Label>
+                <Select value={newApp.auditType} onValueChange={(v) => setNewApp({...newApp, auditType: v})}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="pentest">Test d'Intrusion (Pentest)</SelectItem>
+                    <SelectItem value="architecture">Audit d'Architecture</SelectItem>
+                    <SelectItem value="configuration">Audit de Configuration</SelectItem>
+                    <SelectItem value="gouvernance">Audit Organisationnel</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Criticité Métier</Label>
+                <Select value={newApp.criticality} onValueChange={(v) => setNewApp({...newApp, criticality: v})}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="mineure">Mineure</SelectItem>
+                    <SelectItem value="majeure">Majeure</SelectItem>
+                    <SelectItem value="critique">Critique</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="space-y-2">
-              <Label>Criticité Métier</Label>
-              <Select value={newApp.criticality} onValueChange={(v) => setNewApp({...newApp, criticality: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="mineure">Mineure</SelectItem><SelectItem value="majeure">Majeure</SelectItem><SelectItem value="critique">Critique</SelectItem></SelectContent>
-              </Select>
+              <Label>Date de la dernière Analyse de Risques (EBIOS/PIA)</Label>
+              <Input type="date" value={newApp.lastRiskAnalysisDate} onChange={(e) => setNewApp({...newApp, lastRiskAnalysisDate: e.target.value})} />
             </div>
-            <div className="space-y-2"><Label>Date du dernier audit</Label><Input type="date" value={newApp.lastAuditDate} onChange={(e) => setNewApp({...newApp, lastAuditDate: e.target.value})} /></div>
-            <DialogFooter><Button type="button" variant="outline" onClick={() => setIsAddAppOpen(false)}>Annuler</Button><Button type="submit" disabled={addAppMutation.isPending}>Enregistrer</Button></DialogFooter>
+            <div className="space-y-2">
+              <Label>Date du dernier audit technique</Label>
+              <Input type="date" value={newApp.lastAuditDate} onChange={(e) => setNewApp({...newApp, lastAuditDate: e.target.value})} />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setIsAddAppOpen(false)}>Annuler</Button>
+              <Button type="submit" disabled={addAppMutation.isPending}>Enregistrer</Button>
+            </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Édition Application */}
+      {/* Modale d'édition - APPLICATION */}
       <Dialog open={!!appToEdit} onOpenChange={(open) => !open && setAppToEdit(null)}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Modifier le Périmètre</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Modifier le Périmètre</DialogTitle>
+          </DialogHeader>
           {appToEdit && (
             <form onSubmit={(e) => {
               e.preventDefault();
               updateAppMutation.mutate({ id: appToEdit.id, updates: appToEdit });
               setSelectedApp(appToEdit);
             }} className="space-y-4">
-              <div className="space-y-2"><Label>Nom du Périmètre</Label><Input required value={appToEdit.name} onChange={(e) => setAppToEdit({...appToEdit, name: e.target.value})} /></div>
               <div className="space-y-2">
-                <Label>Type d'Audit</Label>
-                <Select value={appToEdit.auditType} onValueChange={(v: any) => setAppToEdit({...appToEdit, auditType: v})}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="pentest">Test d'Intrusion</SelectItem><SelectItem value="architecture">Audit d'Architecture</SelectItem><SelectItem value="configuration">Audit de Config</SelectItem><SelectItem value="gouvernance">Audit Orga</SelectItem></SelectContent>
-                </Select>
+                <Label>Nom du Périmètre</Label>
+                <Input required placeholder="Ex: ERP, Site E-commerce, Active Directory" value={appToEdit.name} onChange={(e) => setAppToEdit({...appToEdit, name: e.target.value})} />
               </div>
-              <div className="space-y-2">
-                <Label>Criticité Métier</Label>
-                <Select value={appToEdit.criticality} onValueChange={(v: any) => setAppToEdit({...appToEdit, criticality: v})}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="mineure">Mineure</SelectItem><SelectItem value="majeure">Majeure</SelectItem><SelectItem value="critique">Critique</SelectItem></SelectContent>
-                </Select>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Type d'Audit</Label>
+                  <Select value={appToEdit.auditType} onValueChange={(v: any) => setAppToEdit({...appToEdit, auditType: v})}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pentest">Test d'Intrusion</SelectItem>
+                      <SelectItem value="architecture">Audit d'Architecture</SelectItem>
+                      <SelectItem value="configuration">Audit de Config</SelectItem>
+                      <SelectItem value="gouvernance">Audit Organisationnel</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Criticité Métier</Label>
+                  <Select value={appToEdit.criticality} onValueChange={(v: any) => setAppToEdit({...appToEdit, criticality: v})}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mineure">Mineure</SelectItem>
+                      <SelectItem value="majeure">Majeure</SelectItem>
+                      <SelectItem value="critique">Critique</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="space-y-2"><Label>Fréquence (mois)</Label><Input type="number" min="1" value={appToEdit.auditFrequencyMonths} onChange={(e) => setAppToEdit({...appToEdit, auditFrequencyMonths: parseInt(e.target.value) || 12})} /></div>
-              <DialogFooter><Button type="button" variant="outline" onClick={() => setAppToEdit(null)}>Annuler</Button><Button type="submit" disabled={updateAppMutation.isPending}>Enregistrer</Button></DialogFooter>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Fréquence Audit (mois)</Label>
+                  <Input type="number" min="1" value={appToEdit.auditFrequencyMonths} onChange={(e) => setAppToEdit({...appToEdit, auditFrequencyMonths: parseInt(e.target.value) || 12})} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Fréq. Risques (mois)</Label>
+                  <Input type="number" min="1" value={appToEdit.riskAnalysisFrequencyMonths} onChange={(e) => setAppToEdit({...appToEdit, riskAnalysisFrequencyMonths: parseInt(e.target.value) || 36})} />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setAppToEdit(null)}>Annuler</Button>
+                <Button type="submit" disabled={updateAppMutation.isPending}>Enregistrer</Button>
+              </DialogFooter>
             </form>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* Création Vulnérabilité */}
+      {/* Modale de création - VULNÉRABILITÉ */}
       <Dialog open={isAddVulnOpen} onOpenChange={setIsAddVulnOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Déclarer un constat</DialogTitle><SheetDescription>Sur le périmètre : {selectedApp?.name}</SheetDescription></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Déclarer un constat</DialogTitle>
+          </DialogHeader>
           <form onSubmit={handleCreateVuln} className="space-y-4">
-            <div className="space-y-2"><Label>Titre (Technique ou Résumé)</Label><Input required placeholder="Ex: Injection SQL sur la page de login" value={newVuln.title} onChange={(e) => setNewVuln({...newVuln, title: e.target.value})} /></div>
-            <div className="space-y-2"><Label>Référence CVE (Optionnel)</Label><Input placeholder="Ex: CVE-2023-12345" value={newVuln.cve} onChange={(e) => setNewVuln({...newVuln, cve: e.target.value})} /></div>
-            <div className="space-y-2"><Label>Explication vulgarisée & Impact métier</Label><Textarea required placeholder="Expliquez le risque..." value={newVuln.description} onChange={(e) => setNewVuln({...newVuln, description: e.target.value})} className="h-24" /></div>
             <div className="space-y-2">
-              <Label>Sévérité du constat</Label>
+              <Label>Titre du constat</Label>
+              <Input required placeholder="Ex: Injection SQL sur la page de login" value={newVuln.title} onChange={(e) => setNewVuln({...newVuln, title: e.target.value})} />
+            </div>
+            <div className="space-y-2">
+              <Label>Référence CVE (Optionnel)</Label>
+              <Input placeholder="Ex: CVE-2023-12345" value={newVuln.cve} onChange={(e) => setNewVuln({...newVuln, cve: e.target.value})} />
+            </div>
+            <div className="space-y-2">
+              <Label>Impact métier (Vulgarisation)</Label>
+              <Textarea required placeholder="Expliquez le risque avec des mots simples pour la direction. (Ex: Un attaquant pourrait extraire la base de données des clients sans avoir besoin de mot de passe...)" value={newVuln.description} onChange={(e) => setNewVuln({...newVuln, description: e.target.value})} className="h-24"/>
+            </div>
+            <div className="space-y-2">
+              <Label>Sévérité</Label>
               <Select value={newVuln.severity} onValueChange={(v) => setNewVuln({...newVuln, severity: v})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="faible">Faible</SelectItem><SelectItem value="moyen">Moyen</SelectItem><SelectItem value="eleve">Élevé</SelectItem><SelectItem value="critique">Critique</SelectItem></SelectContent>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="faible">Faible</SelectItem>
+                  <SelectItem value="moyen">Moyen</SelectItem>
+                  <SelectItem value="eleve">Élevé</SelectItem>
+                  <SelectItem value="critique">Critique</SelectItem>
+                </SelectContent>
               </Select>
             </div>
-            <DialogFooter><Button type="button" variant="outline" onClick={() => setIsAddVulnOpen(false)}>Annuler</Button><Button type="submit" disabled={addVulnMutation.isPending}>Ajouter</Button></DialogFooter>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setIsAddVulnOpen(false)}>Annuler</Button>
+              <Button type="submit" disabled={addVulnMutation.isPending}>Ajouter</Button>
+            </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
@@ -691,36 +914,131 @@ export default function SecurityOpsView() {
 
       <AlertDialog open={!!projectStatusToUpdate} onOpenChange={(open) => !open && setProjectStatusToUpdate(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Changement de statut (PAS)</AlertDialogTitle><AlertDialogDescription>Confirmez-vous le changement de statut de sécurité du projet <strong>{projectStatusToUpdate?.name}</strong> ?</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Annuler</AlertDialogCancel><AlertDialogAction onClick={() => { if (!projectStatusToUpdate || !selectedProject) return; updateProjectMutation.mutate({ id: projectStatusToUpdate.id, updates: { pasStatus: projectStatusToUpdate.status as any } }); setSelectedProject({ ...selectedProject, pasStatus: projectStatusToUpdate.status as any }); setProjectStatusToUpdate(null); }}>Oui, modifier</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Changement de statut (PAS)</AlertDialogTitle>
+            <AlertDialogDescription>
+              Confirmez-vous le changement de statut de sécurité du projet <strong>{projectStatusToUpdate?.name}</strong> vers "{projectStatusToUpdate?.status}" ?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              if (!projectStatusToUpdate || !selectedProject) return;
+              updateProjectMutation.mutate({ id: projectStatusToUpdate.id, updates: { pasStatus: projectStatusToUpdate.status as any } });
+              setSelectedProject({ ...selectedProject, pasStatus: projectStatusToUpdate.status as any });
+              setProjectStatusToUpdate(null);
+            }}>
+              Oui, modifier
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!appToMarkRiskAnalyzed} onOpenChange={(open) => !open && setAppToMarkRiskAnalyzed(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Analyse de risques effectuée</AlertDialogTitle>
+            <AlertDialogDescription>
+              Marquer l'analyse de risques pour <strong>{appToMarkRiskAnalyzed?.name}</strong> comme ayant été mise à jour aujourd'hui ? Cela repoussera la prochaine échéance selon la fréquence configurée.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction className="bg-primary hover:bg-primary/90 text-primary-foreground" onClick={() => {
+              if (!appToMarkRiskAnalyzed || !selectedApp) return;
+              const today = new Date().toISOString().split('T')[0];
+              updateAppMutation.mutate({ id: appToMarkRiskAnalyzed.id, updates: { lastRiskAnalysisDate: today } });
+              setSelectedApp({ ...selectedApp, lastRiskAnalysisDate: today });
+              setAppToMarkRiskAnalyzed(null);
+            }}>
+              Oui, marquer à jour
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={!!appToMarkAudited} onOpenChange={(open) => !open && setAppToMarkAudited(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Renouveler l'audit</AlertDialogTitle><AlertDialogDescription>Marquer <strong>{appToMarkAudited?.name}</strong> comme audité aujourd'hui ? Cela va repousser la prochaine date d'échéance.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Annuler</AlertDialogCancel><AlertDialogAction className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => { if (!appToMarkAudited || !selectedApp) return; const today = new Date().toISOString().split('T')[0]; updateAppMutation.mutate({ id: appToMarkAudited.id, updates: { lastAuditDate: today } }); setSelectedApp({ ...selectedApp, lastAuditDate: today }); setAppToMarkAudited(null); }}>Oui, marquer audité</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Renouveler l'audit</AlertDialogTitle>
+            <AlertDialogDescription>
+              Marquer <strong>{appToMarkAudited?.name}</strong> comme ayant été audité aujourd'hui ? Cela repoussera automatiquement la prochaine date d'échéance.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction className="bg-blue-600 hover:bg-blue-700 text-white" onClick={() => {
+              if (!appToMarkAudited || !selectedApp) return;
+              const today = new Date().toISOString().split('T')[0];
+              updateAppMutation.mutate({ id: appToMarkAudited.id, updates: { lastAuditDate: today } });
+              setSelectedApp({ ...selectedApp, lastAuditDate: today });
+              setAppToMarkAudited(null);
+            }}>
+              Oui, marquer audité
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={!!vulnToClose} onOpenChange={(open) => !open && setVulnToClose(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Correction validée</AlertDialogTitle><AlertDialogDescription>Confirmez-vous que cette vulnérabilité a été corrigée ? Elle disparaîtra des indicateurs de dette technique.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Annuler</AlertDialogCancel><AlertDialogAction className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => { if (!vulnToClose) return; closeVulnMutation.mutate({ id: vulnToClose, status: 'resolu' }); }}>Oui, clôturer</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Correction validée</AlertDialogTitle>
+            <AlertDialogDescription>
+              Confirmez-vous que cette vulnérabilité a été corrigée ? Elle sera archivée dans l'historique.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => {
+              if (!vulnToClose) return;
+              closeVulnMutation.mutate({ id: vulnToClose, status: 'resolu' });
+            }}>
+              Oui, clôturer
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={!!projectToDelete} onOpenChange={(open) => !open && setProjectToDelete(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle className="text-destructive">Supprimer ce projet ?</AlertDialogTitle><AlertDialogDescription>Êtes-vous sûr de vouloir supprimer définitivement <strong>{projectToDelete?.name}</strong> ?</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Annuler</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (!projectToDelete) return; delProjectMutation.mutate(projectToDelete.id); setProjectToDelete(null); }}>Supprimer</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Supprimer ce projet ?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Cette action est irréversible et supprimera le projet de vos indicateurs.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => {
+              if (!projectToDelete) return;
+              delProjectMutation.mutate(projectToDelete.id);
+              setProjectToDelete(null);
+            }}>
+              Supprimer
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={!!appToDelete} onOpenChange={(open) => !open && setAppToDelete(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle className="text-destructive">Supprimer ce périmètre ?</AlertDialogTitle><AlertDialogDescription>Êtes-vous sûr de vouloir retirer <strong>{appToDelete?.name}</strong> ? Toutes les vulnérabilités associées seront supprimées.</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>Annuler</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (!appToDelete) return; delAppMutation.mutate(appToDelete.id); setAppToDelete(null); }}>Supprimer</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Supprimer ce périmètre ?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Toutes les vulnérabilités (actives et résolues) associées seront également supprimées.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => {
+              if (!appToDelete) return;
+              delAppMutation.mutate(appToDelete.id);
+              setAppToDelete(null);
+            }}>
+              Supprimer
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 

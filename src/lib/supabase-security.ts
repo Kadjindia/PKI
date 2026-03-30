@@ -17,6 +17,8 @@ export interface Application {
   criticality: 'mineure' | 'majeure' | 'critique';
   lastAuditDate: string | null;
   auditFrequencyMonths: number;
+  lastRiskAnalysisDate: string | null; // NOUVEAU
+  riskAnalysisFrequencyMonths: number; // NOUVEAU
 }
 
 export interface Vulnerability {
@@ -27,6 +29,7 @@ export interface Vulnerability {
   description: string;
   severity: 'faible' | 'moyen' | 'eleve' | 'critique';
   status: 'ouvert' | 'resolu';
+  createdAt: string;
 }
 
 // ==========================================
@@ -67,21 +70,23 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 // ==========================================
-// API AUDITS (APPLICATIONS / PÉRIMÈTRES)
+// API AUDITS ET ANALYSES DE RISQUES
 // ==========================================
 export async function fetchApplications(): Promise<Application[]> {
   const { data, error } = await supabase.from('applications').select('*').order('name');
   if (error) throw error;
   return data.map(row => ({
     id: row.id, name: row.name, auditType: row.audit_type as any, criticality: row.criticality as any,
-    lastAuditDate: row.last_audit_date, auditFrequencyMonths: row.audit_frequency_months
+    lastAuditDate: row.last_audit_date, auditFrequencyMonths: row.audit_frequency_months,
+    lastRiskAnalysisDate: row.last_risk_analysis_date, riskAnalysisFrequencyMonths: row.risk_analysis_frequency_months
   }));
 }
 
 export async function createApplication(app: Omit<Application, 'id'>): Promise<void> {
   const { error } = await supabase.from('applications').insert({
     name: app.name, audit_type: app.auditType, criticality: app.criticality,
-    last_audit_date: app.lastAuditDate, audit_frequency_months: app.auditFrequencyMonths
+    last_audit_date: app.lastAuditDate, audit_frequency_months: app.auditFrequencyMonths,
+    last_risk_analysis_date: app.lastRiskAnalysisDate, risk_analysis_frequency_months: app.riskAnalysisFrequencyMonths
   });
   if (error) throw error;
 }
@@ -93,6 +98,8 @@ export async function updateApplication(id: string, updates: Partial<Application
   if (updates.criticality) payload.criticality = updates.criticality;
   if (updates.lastAuditDate !== undefined) payload.last_audit_date = updates.lastAuditDate;
   if (updates.auditFrequencyMonths !== undefined) payload.audit_frequency_months = updates.auditFrequencyMonths;
+  if (updates.lastRiskAnalysisDate !== undefined) payload.last_risk_analysis_date = updates.lastRiskAnalysisDate;
+  if (updates.riskAnalysisFrequencyMonths !== undefined) payload.risk_analysis_frequency_months = updates.riskAnalysisFrequencyMonths;
 
   const { error } = await supabase.from('applications').update(payload).eq('id', id);
   if (error) throw error;
@@ -111,11 +118,12 @@ export async function fetchVulnerabilities(): Promise<Vulnerability[]> {
   if (error) throw error;
   return data.map(row => ({
     id: row.id, appId: row.app_id, cve: row.cve, title: row.title,
-    description: row.description, severity: row.severity as any, status: row.status as any
+    description: row.description, severity: row.severity as any, status: row.status as any,
+    createdAt: row.created_at
   }));
 }
 
-export async function createVulnerability(vuln: Omit<Vulnerability, 'id'>): Promise<void> {
+export async function createVulnerability(vuln: Omit<Vulnerability, 'id' | 'createdAt'>): Promise<void> {
   const { error } = await supabase.from('vulnerabilities').insert({
     app_id: vuln.appId, cve: vuln.cve, title: vuln.title,
     description: vuln.description, severity: vuln.severity, status: vuln.status
