@@ -10,6 +10,8 @@ import Alerts from "./pages/Alerts";
 import Connectors from "./pages/Connectors";
 import NotFound from "./pages/NotFound";
 import Governance from "./pages/Governance";
+import SecurityOps from "./pages/SecurityOps";
+import Settings from "./pages/Settings";
 
 const queryClient = new QueryClient();
 
@@ -25,7 +27,9 @@ const App = () => (
             <Route path="/saisie" element={<DataEntry />} />
             <Route path="/alertes" element={<Alerts />} />
             <Route path="/connecteurs" element={<Connectors />} />
-            <Route path="/gouvernance" element={<Governance />} /> {/* <-- AJOUT ICI */}
+            <Route path="/gouvernance" element={<Governance />} />
+            <Route path="/security-ops" element={<SecurityOps />} />
+            <Route path="/parametres" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

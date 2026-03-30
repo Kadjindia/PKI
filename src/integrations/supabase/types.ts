@@ -124,6 +124,83 @@ export type Database = {
           },
         ]
       }
+      policies: {
+        Row: {
+          compliance_score: number | null
+          created_at: string | null
+          id: string
+          last_review_date: string | null
+          name: string
+          owner: string | null
+          review_frequency_months: number
+          status: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          compliance_score?: number | null
+          created_at?: string | null
+          id?: string
+          last_review_date?: string | null
+          name: string
+          owner?: string | null
+          review_frequency_months?: number
+          status?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          compliance_score?: number | null
+          created_at?: string | null
+          id?: string
+          last_review_date?: string | null
+          name?: string
+          owner?: string | null
+          review_frequency_months?: number
+          status?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      policy_gaps: {
+        Row: {
+          created_at: string | null
+          description: string
+          due_date: string | null
+          id: string
+          policy_id: string
+          severity: string
+          status: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          description: string
+          due_date?: string | null
+          id?: string
+          policy_id: string
+          severity: string
+          status?: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          description?: string
+          due_date?: string | null
+          id?: string
+          policy_id?: string
+          severity?: string
+          status?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "policy_gaps_policy_id_fkey"
+            columns: ["policy_id"]
+            isOneToOne: false
+            referencedRelation: "policies"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
