@@ -11,6 +11,7 @@ import Connectors from "./pages/Connectors";
 import NotFound from "./pages/NotFound";
 import Governance from "./pages/Governance";
 import SecurityOps from "./pages/SecurityOps";
+import Awareness from "./pages/Awareness";
 import Settings from "./pages/Settings";
 
 const queryClient = new QueryClient();
@@ -29,6 +30,7 @@ const App = () => (
             <Route path="/connecteurs" element={<Connectors />} />
             <Route path="/gouvernance" element={<Governance />} />
             <Route path="/security-ops" element={<SecurityOps />} />
+            <Route path="/sensibilisation" element={<Awareness />} /> {/* <-- NOUVEAU */}
             <Route path="/parametres" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
