@@ -9,6 +9,7 @@ import DataEntry from "./pages/DataEntry";
 import Alerts from "./pages/Alerts";
 import Connectors from "./pages/Connectors";
 import NotFound from "./pages/NotFound";
+import Governance from "./pages/Governance";
 
 const queryClient = new QueryClient();
 
@@ -24,6 +25,7 @@ const App = () => (
             <Route path="/saisie" element={<DataEntry />} />
             <Route path="/alertes" element={<Alerts />} />
             <Route path="/connecteurs" element={<Connectors />} />
+            <Route path="/gouvernance" element={<Governance />} /> {/* <-- AJOUT ICI */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
