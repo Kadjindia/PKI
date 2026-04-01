@@ -310,7 +310,7 @@ export default function MessagerieView() {
               {currentMonthData?.interne || 0} <span className="text-sm font-normal opacity-70">({currentMonthData?.tauxInterne || 0}%)</span>
             </div>
             <div className="flex items-center justify-between mt-1">
-              <p className="text-[10px] text-muted-foreground">Remontées collaborateurs</p>
+              <p className="text-[10px] text-muted-foreground">Mails provenant du 1212</p>
               {currentMonthData && previousMonthData && getTrend(currentMonthData.interne, previousMonthData.interne)}
             </div>
           </CardContent>

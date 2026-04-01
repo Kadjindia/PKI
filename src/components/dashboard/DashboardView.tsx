@@ -5,23 +5,20 @@ import KpiChartTabs from "./KpiChartTabs";
 import PeriodFilterBar from "./PeriodFilterBar";
 import ExecutiveSummary from "./ExecutiveSummary";
 import TopAlerts from "./TopAlerts";
-import { Activity, ChevronLeft, ChevronRight, Calendar, ShieldAlert, TrendingUp, Rocket, Target, ShieldCheck, Bug, FileText, AlertTriangle, UserX, Mic, Mail, Monitor, Inbox, Globe, AlertCircle } from "lucide-react";
+import { Activity, ChevronLeft, ChevronRight, Calendar, ShieldAlert, TrendingUp, TrendingDown, Minus, Rocket, Target, ShieldCheck, Bug, FileText, AlertTriangle, UserX, Mic, Monitor, Inbox, Globe, AlertCircle } from "lucide-react";
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-// Imports des requêtes Supabase de tous les modules
 import { fetchProjects, fetchApplications, fetchVulnerabilities } from "@/lib/supabase-security";
 import { fetchPolicies, fetchGaps } from "@/lib/supabase-governance";
 import { fetchPhishingCampaigns, fetchPhishingProfiles, fetchElearningModules } from "@/lib/supabase-awareness";
 
-// --- COMPOSANTS UI ---
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 
-// On a retiré "messagerie" de la liste du bas pour ne pas faire doublon avec les belles cartes du haut
 const CATEGORIES: KpiCategory[] = ["gouvernance", "sensibilisation", "risques", "continuite"];
 
-// --- FONCTIONS UTILITAIRES ---
+// --- FONCTIONS UTILITAIRES COMMUNES ---
 const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
@@ -35,16 +32,6 @@ const calculatePercentage = (part: number, total: number) => {
   return Math.round((p / t) * 100);
 };
 
-const getDeadlineStatus = (lastDate: string | null, freqMonths: number) => {
-  if (!lastDate) return "missing";
-  const deadline = new Date(lastDate);
-  deadline.setMonth(deadline.getMonth() + (freqMonths || 12));
-  const diffDays = Math.ceil((deadline.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays < 0) return "expired";
-  if (diffDays <= 90) return "warning";
-  return "ok";
-};
-
 const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualStatus: string) => {
   if (manualStatus === "draft") return "draft";
   if (!lastDate) return "warning";
@@ -56,27 +43,33 @@ const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualSta
   return "ok";
 };
 
-const calculateDynamicCompliance = (policy: any, allGaps: any[]) => {
-  const status = getDynamicStatus(policy.lastReviewDate, policy.reviewFrequencyMonths, policy.status);
-  if (status === "expired") return 0;
-  let score = 100;
-  const openGaps = allGaps.filter(g => g.policyId === policy.id && g.status !== 'resolu');
-  openGaps.forEach(gap => {
-    switch(gap.severity) {
-      case 'critique': score -= 20; break;
-      case 'eleve': score -= 10; break;
-      case 'moyen': score -= 5; break;
-      case 'faible': score -= 2; break;
-    }
-  });
-  return Math.max(0, score);
+// --- COMPOSANT DE TENDANCE ---
+const TrendIndicator = ({ current, previous, inverseColors = false }: { current?: number | null, previous?: number | null, inverseColors?: boolean }) => {
+  if (previous === undefined || previous === null || current === undefined || current === null) return null;
+  const diff = current - previous;
+
+  if (diff === 0) return (
+    <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-1 font-medium">
+      <Minus className="w-3 h-3" /> Stable
+    </div>
+  );
+
+  const percent = previous !== 0 ? Math.round((Math.abs(diff) / previous) * 100) : 100;
+  const isGood = inverseColors ? diff < 0 : diff > 0;
+  const textColor = isGood ? 'text-emerald-500' : 'text-rose-500';
+
+  return (
+    <div className={`flex items-center gap-1 text-[10px] mt-1 font-bold ${textColor}`}>
+      {diff > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+      <span>{diff > 0 ? '+' : '-'}{percent}%</span>
+    </div>
+  );
 };
 
 export default function Dashboard() {
-  const { kpis, entries } = useKpi();
+  const { kpis, entries, getPreviousValue, getLatestValue } = useKpi();
   const [expandedCategory, setExpandedCategory] = useState<KpiCategory | null>(null);
 
-  // Navigations (Mois du Comité)
   const availablePeriods = useMemo(() => {
     return [...new Set(entries.map((e) => e.period))].sort();
   }, [entries]);
@@ -94,21 +87,19 @@ export default function Dashboard() {
   const canNext = selectedPeriodIdx < availablePeriods.length - 1;
 
   // ============================================================================
-  // FETCH DE TOUTES LES DONNÉES (Console Centrale)
+  // FETCH DES DONNÉES EXACTES
   // ============================================================================
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
   const { data: apps = [] } = useQuery({ queryKey: ['applications'], queryFn: fetchApplications });
   const { data: vulns = [] } = useQuery({ queryKey: ['vulnerabilities'], queryFn: fetchVulnerabilities });
-
   const { data: policies = [] } = useQuery({ queryKey: ['policies'], queryFn: fetchPolicies });
   const { data: gaps = [] } = useQuery({ queryKey: ['gaps'], queryFn: fetchGaps });
-
   const { data: campaigns = [] } = useQuery({ queryKey: ['phishing'], queryFn: fetchPhishingCampaigns });
   const { data: profiles = [] } = useQuery({ queryKey: ['profiles'], queryFn: fetchPhishingProfiles });
   const { data: modules = [] } = useQuery({ queryKey: ['elearning'], queryFn: fetchElearningModules });
 
   // ============================================================================
-  // CALCULS : SÉCURITÉ OPÉRATIONNELLE
+  // CALCULS : PAS & AUDITS (Sécurité)
   // ============================================================================
   const totalProjects = projects.length;
   const validatedPas = projects.filter(p => p.pasStatus === "validated").length;
@@ -116,10 +107,10 @@ export default function Dashboard() {
   const projectsAtRisk = projects.filter(p => p.pasStatus !== "validated" && p.riskLevel === "fort").length;
 
   const totalApps = apps.length;
-  const auditedApps = apps.filter(a => getDeadlineStatus(a.lastAuditDate, a.auditFrequencyMonths) !== "expired" && a.lastAuditDate).length;
+  const auditedApps = apps.filter(a => a.lastAuditDate && getDynamicStatus(a.lastAuditDate, a.auditFrequencyMonths || 12, "active") !== "expired").length;
   const auditCoverage = totalApps > 0 ? Math.round((auditedApps / totalApps) * 100) : 0;
 
-  const appsWithRiskAnalysis = apps.filter(a => getDeadlineStatus(a.lastRiskAnalysisDate, a.riskAnalysisFrequencyMonths) !== "expired" && a.lastRiskAnalysisDate).length;
+  const appsWithRiskAnalysis = apps.filter(a => a.lastRiskAnalysisDate && getDynamicStatus(a.lastRiskAnalysisDate, a.riskAnalysisFrequencyMonths || 36, "active") !== "expired").length;
   const riskAnalysisCoverage = totalApps > 0 ? Math.round((appsWithRiskAnalysis / totalApps) * 100) : 0;
 
   const activeVulns = vulns.filter(v => v.status === "ouvert");
@@ -127,28 +118,34 @@ export default function Dashboard() {
   const totalHighVulns = activeVulns.filter(v => v.severity === "eleve").length;
 
   // ============================================================================
-  // CALCULS : GOUVERNANCE
+  // CALCULS : REVUE DES POLITIQUES (Gouvernance)
   // ============================================================================
   const totalPolicies = policies.length;
-  const avgCompliance = totalPolicies > 0 ? Math.round(policies.reduce((acc, p) => acc + calculateDynamicCompliance(p, gaps), 0) / totalPolicies) : 0;
   const activeGaps = gaps.filter(g => g.status !== 'resolu');
   const openGapsCount = activeGaps.length;
   const criticalGapsCount = activeGaps.filter(g => g.severity === "critique").length;
   const okPoliciesCount = policies.filter(p => getDynamicStatus(p.lastReviewDate, p.reviewFrequencyMonths, p.status) === 'ok').length;
 
+  const avgCompliance = totalPolicies > 0 ? Math.round(policies.reduce((acc, p) => {
+    const status = getDynamicStatus(p.lastReviewDate, p.reviewFrequencyMonths, p.status);
+    if (status === "expired") return acc;
+    let score = 100;
+    activeGaps.filter(g => g.policyId === p.id).forEach(gap => {
+      score -= gap.severity === 'critique' ? 20 : gap.severity === 'eleve' ? 10 : gap.severity === 'moyen' ? 5 : 2;
+    });
+    return acc + Math.max(0, score);
+  }, 0) / totalPolicies) : 0;
+
   // ============================================================================
-  // CALCULS : SENSIBILISATION & RISQUE HUMAIN
+  // CALCULS : SENSIBILISATION
   // ============================================================================
   const highRiskProfiles = profiles.filter(p => safeNum(p.riskScore) >= 60);
   const currentYear = new Date().getFullYear();
-  const sortedCampaigns = [...campaigns].sort((a, b) => new Date(b.sendDate).getTime() - new Date(a.sendDate).getTime());
 
   const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === currentYear);
-  const campaignProgress = Math.min(100, Math.round((campaignsThisYear.length / 4) * 100));
-
-  const latestCampaign = sortedCampaigns.length > 0 ? sortedCampaigns[0] : null;
-  const compromiseRate = latestCampaign ? calculatePercentage(latestCampaign.compromisedCount, latestCampaign.targetCount) : 0;
-  const reportRate = latestCampaign ? calculatePercentage(latestCampaign.reportedCount, latestCampaign.targetCount) : 0;
+  const targetCampaignsPerYear = 4;
+  const campaignProgress = Math.min(100, Math.round((campaignsThisYear.length / targetCampaignsPerYear) * 100));
+  const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
 
   const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
   const sessionModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning");
@@ -156,10 +153,17 @@ export default function Dashboard() {
   const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
   const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
   const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
+  const elearningGoalReached = elearningRate >= 95;
   const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100));
 
-  const sessionsThisYear = sessionModules.filter(m => new Date(m.startDate || m.createdAt || "").getFullYear() === currentYear);
-  const sessionProgress = Math.min(100, Math.round((sessionsThisYear.length / 4) * 100));
+  const sessionsThisYear = sessionModules.filter(m => {
+    const dStr = m.startDate || m.createdAt || "";
+    if (!dStr) return false;
+    return new Date(dStr).getFullYear() === currentYear;
+  });
+  const targetSessionsPerYear = 4;
+  const sessionProgress = Math.min(100, Math.round((sessionsThisYear.length / targetSessionsPerYear) * 100));
+  const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
 
   // ============================================================================
   // CALCULS : MESSAGERIE SSI
@@ -169,24 +173,25 @@ export default function Dashboard() {
     return [...new Set(msgEntries.map((e) => e.period))].sort();
   }, [msgEntries]);
 
-  const msgCurrentData = useMemo(() => {
-    if (msgAvailablePeriods.length === 0) return null;
-    const lastPeriod = msgAvailablePeriods[msgAvailablePeriods.length - 1];
-    const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === lastPeriod)?.value);
-
-    const total = getVal('msg-total');
-    const fraude = getVal('msg-fraude');
-    const interne = getVal('msg-1212');
-    const externe = getVal('msg-externe');
-    const erreur = getVal('msg-erreur');
-
-    return {
-      total, fraude, interne, externe, erreur,
-      tauxFraude: calculatePercentage(fraude, total),
-      tauxInterne: calculatePercentage(interne, total)
-    };
+  const monthlyData = useMemo(() => {
+    return msgAvailablePeriods.map(period => {
+      const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === period)?.value);
+      const total = getVal('msg-total');
+      const fraude = getVal('msg-fraude');
+      const interne = getVal('msg-1212');
+      const externe = getVal('msg-externe');
+      const erreur = getVal('msg-erreur');
+      return {
+        period,
+        total, fraude, interne, externe, erreur,
+        tauxFraude: calculatePercentage(fraude, total),
+        tauxInterne: calculatePercentage(interne, total)
+      };
+    });
   }, [msgAvailablePeriods, msgEntries]);
 
+  const msgCurrentData = monthlyData.length > 0 ? monthlyData[monthlyData.length - 1] : null;
+  const msgPreviousData = monthlyData.length > 1 ? monthlyData[monthlyData.length - 2] : null;
 
   return (
     <div className="space-y-8 pb-12 animate-in fade-in duration-500">
@@ -226,135 +231,105 @@ export default function Dashboard() {
         <h2 className="text-lg font-bold flex items-center gap-2 mb-4 border-b pb-2">
           <ShieldAlert className="w-5 h-5 text-rose-500" /> Indicateurs de Maîtrise des Risques (KRI)
         </h2>
-        {/* On passe sur xl:grid-cols-5 pour avoir 2 belles lignes de 5 cartes équilibrées (10 cartes total) */}
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-4">
 
-          <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-emerald-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Rocket className="w-3 h-3" /> Alerte Go-Live
-              </CardTitle>
+          <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className={`text-xs font-medium ${projectsAtRisk > 0 ? 'text-rose-600' : 'text-muted-foreground'} uppercase`}>Alerte Go-Live</CardTitle>
+              <Rocket className={`w-4 h-4 ${projectsAtRisk > 0 ? 'text-rose-600' : 'text-muted-foreground'}`} />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className={`text-2xl font-bold ${projectsAtRisk > 0 ? 'text-rose-600 dark:text-rose-400' : ''}`}>{projectsAtRisk}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Projets risqués sans PAS</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${(totalCriticalVulns + totalHighVulns) > 0 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-emerald-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Bug className="w-3 h-3" /> Dette Majeure
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className={`text-2xl font-bold ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600'}`}>{totalCriticalVulns + totalHighVulns}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Vuln. Critiques/Élevées (pentest)</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${avgCompliance >= 80 ? 'border-l-emerald-500' : avgCompliance >= 50 ? 'border-l-amber-500' : 'border-l-rose-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <ShieldCheck className="w-3 h-3" /> Conformité Gov. (politiques)
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{avgCompliance}%</div>
-              <Progress value={avgCompliance} className="h-1 mt-2" />
-            </CardContent>
-          </Card>
-
-          <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Activity className="w-3 h-3" /> Plan d'Action Gov.
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{openGapsCount}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts ouverts</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${criticalGapsCount > 0 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <AlertTriangle className="w-3 h-3" /> Urgences Gov.
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className={`text-2xl font-bold ${criticalGapsCount > 0 ? 'text-rose-600 dark:text-rose-400' : ''}`}>{criticalGapsCount}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts critiques actifs</p>
-            </CardContent>
-          </Card>
-
-          {/* --- NOUVELLE CARTE MESSAGERIE (KRI) --- */}
-          <Card className={`border-l-4 shadow-sm ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <AlertTriangle className="w-3 h-3" /> Fraudes (Msg)
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className={`text-2xl font-bold ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-500'}`}>
-                {msgCurrentData?.fraude || 0} <span className="text-sm font-normal opacity-70">({msgCurrentData?.tauxFraude || 0}%)</span>
+            <CardContent>
+              <div className={`text-2xl font-bold ${projectsAtRisk > 0 ? 'text-rose-600' : ''}`}>{projectsAtRisk}</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Projets risqués sans PAS</p>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenant de BP Fraude</p>
             </CardContent>
           </Card>
 
-          {/* --- NOUVELLE CARTE MESSAGERIE (KRI) --- */}
-          <Card className={`border-l-4 shadow-sm ${msgCurrentData && msgCurrentData.erreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : msgCurrentData && msgCurrentData.erreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <AlertCircle className="w-3 h-3" /> Erreurs d'adressage (Msg)
-              </CardTitle>
+          <Card className={`border-l-4 shadow-sm ${(totalCriticalVulns + totalHighVulns) > 0 ? 'border-l-rose-600' : 'border-l-emerald-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Dette Majeure</CardTitle>
+              <Bug className={`w-4 h-4 ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-500'}`} />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className={`text-2xl font-bold ${msgCurrentData && msgCurrentData.erreur > 25 ? 'text-rose-600 dark:text-rose-400' : msgCurrentData && msgCurrentData.erreur > 10 ? 'text-amber-600 dark:text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                {msgCurrentData?.erreur || 0}
+            <CardContent>
+              <div className={`text-2xl font-bold ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{totalCriticalVulns + totalHighVulns}</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Vulnérabilités Crit/Élev (pentest)</p>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails non justifiés (Bruit)</p>
             </CardContent>
           </Card>
 
-          <Card className={`border-l-4 shadow-sm ${compromiseRate > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <AlertTriangle className="w-3 h-3" /> Compromission (Phishing)
-              </CardTitle>
+          <Card className={`border-l-4 shadow-sm ${criticalGapsCount > 0 ? 'border-l-rose-600 bg-rose-50/50' : 'border-l-slate-200'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className={`text-xs font-medium ${criticalGapsCount > 0 ? 'text-rose-600' : 'text-muted-foreground'} uppercase`}>Urgences</CardTitle>
+              <AlertTriangle className={`w-4 h-4 ${criticalGapsCount > 0 ? 'text-rose-600' : 'text-muted-foreground'}`} />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{compromiseRate}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
+            <CardContent>
+              <div className={`text-2xl font-bold ${criticalGapsCount > 0 ? 'text-rose-600' : ''}`}>{criticalGapsCount}</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Écarts critiques actifs (politiques)</p>
+              </div>
             </CardContent>
           </Card>
 
-          <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <ShieldCheck className="w-3 h-3" /> Signalements (Phishing)
-              </CardTitle>
+          <Card className={`border-l-4 shadow-sm ${campaigns.length > 0 && calculatePercentage(campaigns[0].compromisedCount, campaigns[0].targetCount) > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Compromission</CardTitle>
+              <AlertTriangle className="w-4 h-4 text-rose-500" />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{reportRate}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
+            <CardContent>
+              <div className="text-2xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].compromisedCount, campaigns[0].targetCount) : 0}%</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Dernière campagne</p>
+                <TrendIndicator current={campaigns.length > 0 ? calculatePercentage(campaigns[0].compromisedCount, campaigns[0].targetCount) : null} previous={campaigns.length > 1 ? calculatePercentage(campaigns[1].compromisedCount, campaigns[1].targetCount) : null} inverseColors />
+              </div>
             </CardContent>
           </Card>
 
           <Card className={`border-l-4 shadow-sm ${highRiskProfiles.length > 0 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <UserX className="w-3 h-3" /> Risque &gt; 60
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Risque &gt; 60</CardTitle>
+              <UserX className="w-4 h-4 text-amber-500" />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent>
               <div className="text-2xl font-bold">{highRiskProfiles.length}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Collaborateur(s) à suivre</p>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Collaborateurs à suivre</p>
+              </div>
             </CardContent>
           </Card>
 
+          <Card className={`border-l-4 shadow-sm ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Fraude</CardTitle>
+              <AlertTriangle className={`w-4 h-4 ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} />
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-bold ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-500'}`}>
+                {msgCurrentData?.fraude || 0} <span className="text-sm font-normal opacity-70">({msgCurrentData?.tauxFraude || 0}%)</span>
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Mails provenants de la BP Fraude</p>
+                <TrendIndicator current={msgCurrentData?.fraude} previous={msgPreviousData?.fraude} inverseColors />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={`border-l-4 shadow-sm ${msgCurrentData && msgCurrentData.erreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : msgCurrentData && msgCurrentData.erreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Erreurs Adressage</CardTitle>
+              <AlertCircle className={`w-4 h-4 ${msgCurrentData && msgCurrentData.erreur > 10 ? 'text-rose-500' : 'text-emerald-500'}`} />
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-bold ${msgCurrentData && msgCurrentData.erreur > 25 ? 'text-rose-600 dark:text-rose-400' : msgCurrentData && msgCurrentData.erreur > 10 ? 'text-amber-600 dark:text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                {msgCurrentData?.erreur || 0}
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Mails non justifiés</p>
+                <TrendIndicator current={msgCurrentData?.erreur} previous={msgPreviousData?.erreur} inverseColors />
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </section>
 
@@ -365,131 +340,192 @@ export default function Dashboard() {
         <h2 className="text-lg font-bold flex items-center gap-2 mb-4 border-b pb-2">
           <TrendingUp className="w-5 h-5 text-primary" /> Indicateurs de Performance (KPI)
         </h2>
-        {/* On passe sur xl:grid-cols-5 pour avoir 2 belles lignes de 5 cartes équilibrées (10 cartes total) */}
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-4">
 
           <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <ShieldCheck className="w-3 h-3" /> Couverture PAS
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Couverture PAS</CardTitle>
+              <ShieldCheck className={`w-4 h-4 ${pasCoverage >= 80 ? 'text-emerald-500' : pasCoverage > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent>
               <div className="text-2xl font-bold">{pasCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{validatedPas} validés / {totalProjects}</p>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">{validatedPas} projets sur {totalProjects}</p>
+              </div>
             </CardContent>
           </Card>
 
           <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Target className="w-3 h-3" /> Analyses Risques
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Analyses Risques</CardTitle>
+              <Target className="w-4 h-4 text-primary" />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent>
               <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{appsWithRiskAnalysis} à jour / {totalApps}</p>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
+              </div>
             </CardContent>
           </Card>
 
           <Card className={`border-l-4 shadow-sm ${auditCoverage >= 80 ? 'border-l-blue-500' : auditCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <ShieldAlert className="w-3 h-3" /> Couverture Audit (Pentests)
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Couverture Audit (pentest)</CardTitle>
+              <ShieldAlert className="w-4 h-4 text-blue-500" />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent>
               <div className="text-2xl font-bold">{auditCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{auditedApps} à jour / {totalApps}</p>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">{auditedApps} périmètres sur {totalApps}</p>
+              </div>
             </CardContent>
           </Card>
 
           <Card className="border-l-4 border-l-primary shadow-sm">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <FileText className="w-3 h-3" /> Santé Référentiel
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Santé du Référentiel</CardTitle>
+              <FileText className="w-4 h-4 text-primary" />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{okPoliciesCount} <span className="text-sm font-normal text-muted-foreground">/ {totalPolicies}</span></div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Politiques à jour</p>
+            <CardContent>
+              <div className="text-2xl font-bold">{okPoliciesCount} / {totalPolicies}</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Politiques à jour</p>
+              </div>
             </CardContent>
           </Card>
 
-          {/* --- NOUVELLE CARTE MESSAGERIE (KPI) --- */}
+          <Card className={`border-l-4 shadow-sm ${avgCompliance >= 80 ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Score Conformité (politiques)</CardTitle>
+              <ShieldCheck className={`w-4 h-4 ${avgCompliance >= 80 ? 'text-emerald-500' : 'text-amber-500'}`} />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{avgCompliance}%</div>
+              <div className="flex items-center justify-between mt-1">
+                <Progress value={avgCompliance} className="h-1 w-2/3" />
+                <TrendIndicator current={getLatestValue('gov-conformite')} previous={getPreviousValue('gov-conformite')} />
+              </div>
+            </CardContent>
+          </Card>
+
           <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Inbox className="w-3 h-3" /> Volume Msg
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Plan d'Action</CardTitle>
+              <Activity className="w-4 h-4 text-blue-500" />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold text-foreground">{msgCurrentData?.total || 0}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails reçus ce mois</p>
+            <CardContent>
+              <div className="text-2xl font-bold">{openGapsCount}</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Écarts ouverts (politiques)</p>
+              </div>
             </CardContent>
           </Card>
 
-          {/* --- NOUVELLE CARTE MESSAGERIE (KPI) --- */}
-          <Card className="border-l-4 border-l-emerald-500 shadow-sm">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <ShieldCheck className="w-3 h-3" /> Sig. 1212 (Msg)
-              </CardTitle>
+          <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Phishing</CardTitle>
+              <Target className={`w-4 h-4 ${isGoalReached ? 'text-emerald-500' : 'text-blue-500'}`} />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent>
+              <div className="text-2xl font-bold flex items-baseline gap-1">
+                {campaignsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetCampaignsPerYear}</span>
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <Progress value={campaignProgress} className={`h-1 w-2/3 ${isGoalReached ? '[&>div]:bg-emerald-500' : ''}`} />
+                <TrendIndicator current={campaignsThisYear.length} previous={campaigns.filter(c => new Date(c.sendDate).getFullYear() === currentYear - 1).length} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-2 leading-tight">Campagnes annuelles</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-blue-500 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Signalements</CardTitle>
+              <ShieldCheck className="w-4 h-4 text-blue-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].reportedCount, campaigns[0].targetCount) : 0}%</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Dernière campagne</p>
+                <TrendIndicator current={campaigns.length > 0 ? calculatePercentage(campaigns[0].reportedCount, campaigns[0].targetCount) : null} previous={campaigns.length > 1 ? calculatePercentage(campaigns[1].reportedCount, campaigns[1].targetCount) : null} />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
+              <Mic className={`w-4 h-4 ${isSessionGoalReached ? 'text-emerald-500' : 'text-amber-500'}`} />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold flex items-baseline gap-1">
+                {sessionsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetSessionsPerYear}</span>
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <Progress value={sessionProgress} className={`h-1 w-2/3 ${isSessionGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-amber-500'}`} />
+                <TrendIndicator current={sessionsThisYear.length} previous={modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning" && new Date(m.startDate || m.createdAt || "").getFullYear() === currentYear - 1).length} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-2 leading-tight">Webinaires / Présentiel</p>
+            </CardContent>
+          </Card>
+
+          <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Couverture E-Learning</CardTitle>
+              <Target className={`w-4 h-4 ${elearningGoalReached ? 'text-emerald-500' : 'text-primary'}`} />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold flex items-baseline gap-1">
+                {elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span>
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <Progress value={elearningProgress} className={`h-1 w-2/3 ${elearningGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-primary'}`} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-2 leading-tight">Objectif de réalisation</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-blue-500 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Volume Total (SSI)</CardTitle>
+              <Inbox className="w-4 h-4 text-blue-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-foreground">{msgCurrentData?.total || 0}</div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Mails traités ce mois</p>
+                <TrendIndicator current={msgCurrentData?.total} previous={msgPreviousData?.total} />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-emerald-500 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Remontées 1212</CardTitle>
+              <ShieldCheck className="w-4 h-4 text-emerald-500" />
+            </CardHeader>
+            <CardContent>
               <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
                 {msgCurrentData?.interne || 0} <span className="text-sm font-normal opacity-70">({msgCurrentData?.tauxInterne || 0}%)</span>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Remontées 1212</p>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Mails provenant du 1212</p>
+                <TrendIndicator current={msgCurrentData?.interne} previous={msgPreviousData?.interne} />
+              </div>
             </CardContent>
           </Card>
 
-          {/* --- NOUVELLE CARTE MESSAGERIE (KPI) --- */}
           <Card className="border-l-4 border-l-slate-400 shadow-sm">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Globe className="w-3 h-3" /> Ext. (Msg)
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Externes</CardTitle>
+              <Globe className="w-4 h-4 text-slate-500" />
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent>
               <div className="text-2xl font-bold text-slate-700 dark:text-slate-300">{msgCurrentData?.externe || 0}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Provenant de l'extérieur</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${campaignsThisYear.length >= 4 ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Mail className="w-3 h-3" /> Phishing (An)
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{campaignsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ 4</span></div>
-              <Progress value={campaignProgress} className="h-1 mt-2" />
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${sessionsThisYear.length >= 4 ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Mic className="w-3 h-3" /> Sessions Animées (an)
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{sessionsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ 4</span></div>
-              <Progress value={sessionProgress} className={`h-1 mt-2 [&>div]:bg-amber-500`} />
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${elearningRate >= 95 ? 'border-l-emerald-500' : 'border-l-primary'}`}>
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase flex items-center gap-2">
-                <Monitor className="w-3 h-3" /> E-Learning (an)
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="text-2xl font-bold">{elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span></div>
-              <Progress value={elearningProgress} className={`h-1 mt-2 ${elearningRate >= 95 ? '[&>div]:bg-emerald-500' : '[&>div]:bg-primary'}`} />
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground leading-tight">Provenant de l'extérieur</p>
+                <TrendIndicator current={msgCurrentData?.externe} previous={msgPreviousData?.externe} />
+              </div>
             </CardContent>
           </Card>
 
@@ -510,6 +546,41 @@ export default function Dashboard() {
           <TopAlerts />
         </div>
       </div>
+
+      {/* ========================================================= */}
+      {/* SECTION 4 : LE DÉTAIL DES INDICATEURS BRUTS (KpiCards)    */}
+      {/* ========================================================= */}
+      <section className="pt-4 border-t">
+        <h2 className="section-title mb-1">Détail des indicateurs bruts</h2>
+        <p className="text-xs text-muted-foreground mb-4">Cliquez sur un indicateur pour accéder au drill-down de la base de données</p>
+        <div className="space-y-4">
+          {CATEGORIES.map((cat) => {
+            const catKpis = kpis.filter((k) => k.category === cat);
+            if (catKpis.length === 0) return null;
+            const isExpanded = expandedCategory === cat || expandedCategory === null;
+
+            return (
+              <div key={cat}>
+                <button
+                  onClick={() => setExpandedCategory(expandedCategory === cat ? null : cat)}
+                  className="flex items-center gap-2 mb-3 text-sm font-medium text-foreground hover:text-primary transition-colors"
+                >
+                  <span className="text-xs">{isExpanded && expandedCategory !== null ? "▼" : "▶"}</span>
+                  {CATEGORY_LABELS[cat]}
+                  <span className="text-xs text-muted-foreground">({catKpis.length})</span>
+                </button>
+                {(isExpanded || expandedCategory === null) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                    {catKpis.map((kpi) => (
+                      <KpiCard key={kpi.id} kpi={kpi} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
     </div>
   );
