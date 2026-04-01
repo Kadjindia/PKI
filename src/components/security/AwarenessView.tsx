@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -38,7 +39,8 @@ import {
   ShieldAlert, GraduationCap, Users, Loader2, Trash2, Plus,
   TrendingUp, AlertTriangle, Upload, ShieldCheck, UserX, Activity,
   Mail, MousePointer, Key, Flag, Paperclip, BookOpen, Search, Filter,
-  ArrowUpDown, ArrowDown, ArrowUp, Eye, Target, BarChart3, CalendarDays, Clock, CheckCircle2
+  ArrowUpDown, ArrowDown, ArrowUp, Eye, Target, BarChart3, CalendarDays, Clock, CheckCircle2,
+  Monitor, Video, CheckSquare, Mic, UserMinus
 } from "lucide-react";
 
 // --- FONCTIONS DE SÉCURITÉ ---
@@ -46,6 +48,12 @@ const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
   return isNaN(n) ? 0 : n;
+};
+
+// Sécurité contre la casse de recherche si un nom est vide
+const safeString = (val: any): string => {
+  if (!val) return "";
+  return String(val).toLowerCase();
 };
 
 const calculatePercentage = (part: number, total: number) => {
@@ -70,13 +78,10 @@ const calculateRiskScore = (
               (safeNum(reported) * 10) -
               (safeNum(training) * 5);
 
-  if (isConsecutive) {
-    score += 20;
-  }
+  if (isConsecutive) score += 20;
   return Math.min(100, Math.max(0, score));
 };
 
-// UTILITAIRE POUR LIRE LES DATES EXCEL (Nombres ou Texte)
 const parseExcelDate = (excelDate: any) => {
   if (!excelDate) return undefined;
   if (typeof excelDate === 'number') {
@@ -102,6 +107,8 @@ export default function AwarenessView() {
   const [isAddCampaignOpen, setIsAddCampaignOpen] = useState(false);
   const [isAddModuleOpen, setIsAddModuleOpen] = useState(false);
   const [isLmsImportOpen, setIsLmsImportOpen] = useState(false);
+  const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
+  const [isResetProfilesOpen, setIsResetProfilesOpen] = useState(false);
 
   const [selectedCampaign, setSelectedCampaign] = useState<PhishingCampaign | null>(null);
   const [selectedModule, setSelectedModule] = useState<ElearningModule | null>(null);
@@ -109,6 +116,7 @@ export default function AwarenessView() {
 
   const [campaignToDelete, setCampaignToDelete] = useState<PhishingCampaign | null>(null);
   const [moduleToDelete, setModuleToDelete] = useState<ElearningModule | null>(null);
+  const [participantToRemove, setParticipantToRemove] = useState<string | null>(null);
 
   // FILTRES ET TRI
   const [profileSearch, setProfileSearch] = useState("");
@@ -130,22 +138,60 @@ export default function AwarenessView() {
     fileLoaded: false, selectedModuleId: "new", isRenewal: false
   });
 
+  const [attendanceEmails, setAttendanceEmails] = useState("");
+
   const [updatedProfilesBatch, setUpdatedProfilesBatch] = useState<PhishingProfile[]>([]);
-  const [newModule, setNewModule] = useState({ name: "", targetAudience: "Tous", totalAssigned: 100, startDate: "", deadline: "" });
+  const [newModule, setNewModule] = useState({ name: "", formatType: "E-Learning", targetAudience: "Tous", totalAssigned: 100, startDate: "", deadline: "" });
 
   const { data: campaigns = [], isLoading: isLoadingCampaigns } = useQuery({ queryKey: ['phishing'], queryFn: fetchPhishingCampaigns });
   const { data: profiles = [], isLoading: isLoadingProfiles } = useQuery({ queryKey: ['profiles'], queryFn: fetchPhishingProfiles });
   const { data: modules = [], isLoading: isLoadingModules } = useQuery({ queryKey: ['elearning'], queryFn: fetchElearningModules });
 
-  // MUTATIONS PHISHING
+  const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
+  const sessionModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning");
+
+  const resetProfilesMutation = useMutation({
+    mutationFn: async () => {
+      const currentProfiles = await fetchPhishingProfiles();
+      const resetProfiles = currentProfiles.map(p => ({
+        ...p,
+        totalCampaigns: 0, total_campaigns: 0,
+        openedCount: 0, opened_count: 0,
+        attachmentOpenedCount: 0, attachment_opened_count: 0,
+        clickedCount: 0, clicked_count: 0,
+        compromisedCount: 0, compromised_count: 0,
+        trainingCompletedCount: 0, training_completed_count: 0,
+        reportedCount: 0, reported_count: 0,
+        riskScore: 0,
+        lastCampaignClicked: false,
+        isConsecutive: false, is_consecutive: false
+      }));
+
+      // Supabase a une limite d'upsert, on les coupe en paquets de 500 pour être serein
+      const chunkSize = 500;
+      for (let i = 0; i < resetProfiles.length; i += chunkSize) {
+        const chunk = resetProfiles.slice(i, i + chunkSize);
+        await upsertPhishingProfiles(chunk as any);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      toast.success("Tous les compteurs ont été purgés avec succès !");
+      setIsResetProfilesOpen(false);
+    }
+  });
+
+
+  // --- MUTATIONS PHISHING ---
   const addCampaignMutation = useMutation({
     mutationFn: async () => {
-      await createPhishingCampaign({
-        ...newCampaign,
-        detailed_results: newCampaign.detailedResults
-      } as any);
+      await createPhishingCampaign({ ...newCampaign, detailed_results: newCampaign.detailedResults } as any);
       if (updatedProfilesBatch.length > 0) {
-        await upsertPhishingProfiles(updatedProfilesBatch);
+        const chunkSize = 500;
+        for (let i = 0; i < updatedProfilesBatch.length; i += chunkSize) {
+          const chunk = updatedProfilesBatch.slice(i, i + chunkSize);
+          await upsertPhishingProfiles(chunk);
+        }
       }
     },
     onSuccess: () => {
@@ -161,7 +207,6 @@ export default function AwarenessView() {
   const delCampaignMutation = useMutation({
     mutationFn: async (campaign: PhishingCampaign) => {
       const detailed = campaign.detailedResults || (campaign as any).detailed_results || [];
-
       if (detailed.length > 0) {
         const currentProfiles = await fetchPhishingProfiles();
         const profilesMap = new Map(currentProfiles.map(p => [p.email, p]));
@@ -178,41 +223,26 @@ export default function AwarenessView() {
             const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
             const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
 
-            p.totalCampaigns = Math.max(0, currentTotal - 1);
-            (p as any).total_campaigns = p.totalCampaigns;
-
-            p.openedCount = Math.max(0, currentOpened - (res.opened ? 1 : 0));
-            (p as any).opened_count = p.openedCount;
-
-            p.attachmentOpenedCount = Math.max(0, currentAttachment - (res.attachment ? 1 : 0));
-            (p as any).attachment_opened_count = p.attachmentOpenedCount;
-
-            p.clickedCount = Math.max(0, currentClicked - (res.clicked ? 1 : 0));
-            (p as any).clicked_count = p.clickedCount;
-
-            p.compromisedCount = Math.max(0, currentCompromised - (res.compromised ? 1 : 0));
-            (p as any).compromised_count = p.compromisedCount;
-
-            p.trainingCompletedCount = currentTraining;
-            (p as any).training_completed_count = p.trainingCompletedCount;
-
-            p.reportedCount = Math.max(0, currentReported - (res.reported ? 1 : 0));
-            (p as any).reported_count = p.reportedCount;
+            p.totalCampaigns = Math.max(0, currentTotal - 1); (p as any).total_campaigns = p.totalCampaigns;
+            p.openedCount = Math.max(0, currentOpened - (res.opened ? 1 : 0)); (p as any).opened_count = p.openedCount;
+            p.attachmentOpenedCount = Math.max(0, currentAttachment - (res.attachment ? 1 : 0)); (p as any).attachment_opened_count = p.attachmentOpenedCount;
+            p.clickedCount = Math.max(0, currentClicked - (res.clicked ? 1 : 0)); (p as any).clicked_count = p.clickedCount;
+            p.compromisedCount = Math.max(0, currentCompromised - (res.compromised ? 1 : 0)); (p as any).compromised_count = p.compromisedCount;
+            p.trainingCompletedCount = Math.max(0, currentTraining - (res.training ? 1 : 0)); (p as any).training_completed_count = p.trainingCompletedCount;
+            p.reportedCount = Math.max(0, currentReported - (res.reported ? 1 : 0)); (p as any).reported_count = p.reportedCount;
 
             if (p.clickedCount + p.attachmentOpenedCount <= 1) {
-              p.isConsecutive = false;
-              (p as any).is_consecutive = false;
-              p.lastCampaignClicked = false;
+              p.isConsecutive = false; (p as any).is_consecutive = false; p.lastCampaignClicked = false;
             }
-
             p.riskScore = calculateRiskScore(p.clickedCount, p.attachmentOpenedCount, p.compromisedCount, p.reportedCount, p.trainingCompletedCount, p.isConsecutive || false);
-
             profilesToUpdate.push(p);
           }
         });
-
         if (profilesToUpdate.length > 0) {
-          await upsertPhishingProfiles(profilesToUpdate);
+          const chunkSize = 500;
+          for (let i = 0; i < profilesToUpdate.length; i += chunkSize) {
+            await upsertPhishingProfiles(profilesToUpdate.slice(i, i + chunkSize));
+          }
         }
       }
       await deletePhishingCampaign(campaign.id);
@@ -222,28 +252,28 @@ export default function AwarenessView() {
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
       toast.success("Campagne supprimée et compteurs/scores restaurés !");
       setSelectedCampaign(null);
-      setIsRecidivistsDialogOpen(false);
     }
   });
 
-  // MUTATIONS E-LEARNING
+  // --- MUTATIONS E-LEARNING / SESSIONS ---
   const saveLmsMutation = useMutation({
     mutationFn: async () => {
       const total = safeNum(parsedLmsData.totalAssigned);
       const completed = safeNum(parsedLmsData.completedCount);
+      const safeStartDate = parsedLmsData.startDate || null;
+      const safeDeadline = parsedLmsData.deadline || null;
 
       const payload = {
         name: parsedLmsData.name,
         targetAudience: parsedLmsData.targetAudience,
-        totalAssigned: total,
-        total_assigned: total,
-        completedCount: completed,
-        completed_count: completed,
-        completedBy: parsedLmsData.completedBy,
-        completed_by: parsedLmsData.completedBy,
-        startDate: parsedLmsData.startDate,
-        start_date: parsedLmsData.startDate,
-        deadline: parsedLmsData.deadline,
+        target_audience: parsedLmsData.targetAudience,
+        formatType: "E-Learning",
+        format_type: "E-Learning",
+        totalAssigned: total, total_assigned: total,
+        completedCount: completed, completed_count: completed,
+        completedBy: parsedLmsData.completedBy, completed_by: parsedLmsData.completedBy,
+        startDate: safeStartDate, start_date: safeStartDate,
+        deadline: safeDeadline,
       };
 
       if (parsedLmsData.selectedModuleId !== "new") {
@@ -253,23 +283,23 @@ export default function AwarenessView() {
       }
 
       if (updatedProfilesBatch.length > 0) {
-        await upsertPhishingProfiles(updatedProfilesBatch);
+        const chunkSize = 500;
+        for (let i = 0; i < updatedProfilesBatch.length; i += chunkSize) {
+          await upsertPhishingProfiles(updatedProfilesBatch.slice(i, i + chunkSize));
+        }
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['elearning'] });
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Statistiques de la formation synchronisées avec succès !");
+      toast.success("Statistiques synchronisées avec succès !");
       setIsLmsImportOpen(false);
-      setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], startDate: undefined, deadline: undefined, fileLoaded: false, selectedModuleId: "new", isRenewal: false });
-      setUpdatedProfilesBatch([]);
     }
   });
 
   const delModuleMutation = useMutation({
     mutationFn: async (module: ElearningModule) => {
       const completedEmails = module.completedBy || (module as any).completed_by || [];
-
       if (completedEmails.length > 0) {
         const currentProfiles = await fetchPhishingProfiles();
         const profilesMap = new Map(currentProfiles.map(p => [p.email, p]));
@@ -286,15 +316,15 @@ export default function AwarenessView() {
 
             p.trainingCompletedCount = Math.max(0, currentTraining - 1);
             (p as any).training_completed_count = p.trainingCompletedCount;
-
             p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
-
             profilesToUpdate.push(p);
           }
         });
-
         if (profilesToUpdate.length > 0) {
-          await upsertPhishingProfiles(profilesToUpdate);
+          const chunkSize = 500;
+          for (let i = 0; i < profilesToUpdate.length; i += chunkSize) {
+            await upsertPhishingProfiles(profilesToUpdate.slice(i, i + chunkSize));
+          }
         }
       }
       await deleteElearningModule(module.id);
@@ -302,25 +332,146 @@ export default function AwarenessView() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['elearning'] });
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Module supprimé et compteurs/scores restaurés (Rollback) !");
+      toast.success("Élément supprimé et Risk Scores restaurés (Rollback) !");
       setModuleToDelete(null);
+      setSelectedModule(null);
     }
   });
 
   const addModuleMutation = useMutation({
     mutationFn: async (module: typeof newModule) => {
+      const cleanStartDate = module.startDate ? new Date(module.startDate).toISOString() : null;
+      const cleanDeadline = module.deadline ? new Date(module.deadline).toISOString() : null;
+
       await createElearningModule({
-        ...module,
-        startDate: module.startDate,
-        start_date: module.startDate,
+        name: module.name,
+        targetAudience: module.targetAudience,
+        target_audience: module.targetAudience,
+        formatType: module.formatType,
+        format_type: module.formatType,
+        totalAssigned: module.totalAssigned,
         total_assigned: module.totalAssigned,
-        completed_count: 0
+        completedCount: 0,
+        completed_count: 0,
+        completedBy: [],
+        completed_by: [],
+        startDate: cleanStartDate,
+        start_date: cleanStartDate,
+        deadline: cleanDeadline
       } as any);
     },
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); toast.success("Module ajouté"); setIsAddModuleOpen(false); }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); toast.success("Créé avec succès !"); setIsAddModuleOpen(false); }
   });
 
-  // PARSEUR PROOFPOINT (CSV)
+  const validateAttendanceMutation = useMutation({
+    mutationFn: async ({ moduleId, rawEmails }: { moduleId: string, rawEmails: string }) => {
+      const module = modules.find(m => m.id === moduleId);
+      if (!module) throw new Error("Module introuvable");
+
+      const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/gi;
+      const extractedEmails = rawEmails.match(emailRegex) || [];
+
+      const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
+      const newlyCompletedEmails: string[] = [];
+      const profilesToUpdate: PhishingProfile[] = [];
+      const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
+
+      let completedAdded = 0;
+
+      extractedEmails.forEach(email => {
+        email = email.toLowerCase().trim();
+        if (!existingCompletedEmails.includes(email) && !newlyCompletedEmails.includes(email)) {
+          if (currentProfilesMap.has(email)) {
+            newlyCompletedEmails.push(email);
+            const p = { ...currentProfilesMap.get(email)! };
+
+            const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
+            p.trainingCompletedCount = currentTraining + 1;
+            (p as any).training_completed_count = p.trainingCompletedCount;
+
+            const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
+            const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
+            const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
+            const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
+
+            p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
+
+            profilesToUpdate.push(p);
+            completedAdded++;
+          }
+        }
+      });
+
+      const newCompletedCount = safeNum(module.completedCount) + completedAdded;
+      const newCompletedBy = [...existingCompletedEmails, ...newlyCompletedEmails];
+
+      await updateElearningModule(moduleId, {
+        completedCount: newCompletedCount, completed_count: newCompletedCount,
+        completedBy: newCompletedBy, completed_by: newCompletedBy
+      } as any);
+
+      if (profilesToUpdate.length > 0) {
+        const chunkSize = 500;
+        for (let i = 0; i < profilesToUpdate.length; i += chunkSize) {
+          await upsertPhishingProfiles(profilesToUpdate.slice(i, i + chunkSize));
+        }
+      }
+      return completedAdded;
+    },
+    onSuccess: (added) => {
+      queryClient.invalidateQueries({ queryKey: ['elearning'] });
+      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      toast.success(`${added} présences validées et Risk Scores mis à jour !`);
+      setIsAttendanceModalOpen(false);
+      setAttendanceEmails("");
+      if (selectedModule) {
+         const updatedModule = modules.find(m => m.id === selectedModule.id);
+         if (updatedModule) setSelectedModule(updatedModule);
+      }
+    }
+  });
+
+  const removeParticipantMutation = useMutation({
+    mutationFn: async ({ moduleId, emailToRemove }: { moduleId: string, emailToRemove: string }) => {
+      const module = modules.find(m => m.id === moduleId);
+      if (!module) throw new Error("Module introuvable");
+
+      const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
+      const newCompletedBy = existingCompletedEmails.filter((email: string) => email !== emailToRemove);
+      const newCompletedCount = Math.max(0, safeNum(module.completedCount) - 1);
+
+      await updateElearningModule(moduleId, {
+        completedCount: newCompletedCount, completed_count: newCompletedCount,
+        completedBy: newCompletedBy, completed_by: newCompletedBy
+      } as any);
+
+      const currentProfiles = await fetchPhishingProfiles();
+      const profile = currentProfiles.find(p => p.email.toLowerCase() === emailToRemove.toLowerCase());
+
+      if (profile) {
+        const currentTraining = safeNum(profile.trainingCompletedCount ?? (profile as any).training_completed_count);
+        const currentClicked = safeNum(profile.clickedCount ?? (profile as any).clicked_count);
+        const currentAttachment = safeNum(profile.attachmentOpenedCount ?? (profile as any).attachment_opened_count);
+        const currentCompromised = safeNum(profile.compromisedCount ?? (profile as any).compromised_count);
+        const currentReported = safeNum(profile.reportedCount ?? (profile as any).reported_count);
+
+        profile.trainingCompletedCount = Math.max(0, currentTraining - 1);
+        (profile as any).training_completed_count = profile.trainingCompletedCount;
+
+        profile.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, profile.trainingCompletedCount, profile.isConsecutive || false);
+
+        await upsertPhishingProfiles([profile]);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['elearning'] });
+      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      toast.success("Participant retiré et Risk Score recalculé !");
+      setSelectedModule(null);
+    }
+  });
+
+  // --- PARSEUR PROOFPOINT ---
   const handleProofpointUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -378,19 +529,21 @@ export default function AwarenessView() {
         target++;
         if (hasOpened) opened++;
         if (hasAttachmentOpened) attachmentOpened++;
-        if (hasClicked) {
-          clicked++;
-          failedEmails.push(email);
-        }
+        if (hasClicked) { clicked++; failedEmails.push(email); }
         if (hasCompromised) compromised++;
         if (hasTraining) trainingCompleted++;
         if (hasReported) reported++;
 
         const existing = existingProfilesMap.get(email) || {
-          email, firstName, lastName, department,
+          email, firstName: '', lastName: '', department: '',
           totalCampaigns: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0,
           riskScore: 0, lastCampaignClicked: false, isConsecutive: false
         };
+
+        // PROTECTION ANTI-ÉCRASEMENT DES NOMS : On garde l'existant si le CSV est vide
+        const finalFirstName = existing.firstName || firstName;
+        const finalLastName = existing.lastName || lastName;
+        const finalDepartment = existing.department || department;
 
         const currentOpened = safeNum(existing.openedCount ?? (existing as any).opened_count);
         const currentAttachment = safeNum(existing.attachmentOpenedCount ?? (existing as any).attachment_opened_count);
@@ -416,30 +569,21 @@ export default function AwarenessView() {
         if (isRecidivist) recidivists++;
 
         detailedResults.push({
-          email,
-          opened: hasOpened,
-          attachment: hasAttachmentOpened,
-          clicked: hasClicked,
-          compromised: hasCompromised,
-          training: hasTraining,
-          reported: hasReported,
-          isRecidivist: isRecidivist
+          email, opened: hasOpened, attachment: hasAttachmentOpened, clicked: hasClicked, compromised: hasCompromised,
+          training: hasTraining, reported: hasReported, isRecidivist: isRecidivist
         });
 
         const riskScore = calculateRiskScore(newClickedCount, newAttachmentCount, newCompromisedCount, newReportedCount, newTrainingCount, newConsecutive);
 
         updatedProfiles.push({
-          email, firstName, lastName, department,
+          email,
+          firstName: finalFirstName,
+          lastName: finalLastName,
+          department: finalDepartment,
           totalCampaigns: newTotalCampaigns,
-          openedCount: newOpenedCount,
-          attachmentOpenedCount: newAttachmentCount,
-          clickedCount: newClickedCount,
-          compromisedCount: newCompromisedCount,
-          trainingCompletedCount: newTrainingCount,
-          reportedCount: newReportedCount,
-          riskScore: riskScore,
-          lastCampaignClicked: fellThisTime,
-          isConsecutive: newConsecutive
+          openedCount: newOpenedCount, attachmentOpenedCount: newAttachmentCount, clickedCount: newClickedCount,
+          compromisedCount: newCompromisedCount, trainingCompletedCount: newTrainingCount, reportedCount: newReportedCount,
+          riskScore: riskScore, lastCampaignClicked: fellThisTime, isConsecutive: newConsecutive
         });
       });
 
@@ -448,8 +592,7 @@ export default function AwarenessView() {
         ...prev, targetCount: target, openedCount: opened, attachmentOpenedCount: attachmentOpened,
         clickedCount: clicked, compromisedCount: compromised, trainingCompletedCount: trainingCompleted,
         reportedCount: reported, recidivistsCount: recidivists, failedEmails: failedEmails,
-        detailedResults: detailedResults,
-        fileLoaded: true
+        detailedResults: detailedResults, fileLoaded: true
       }));
 
       toast.success(`Analyse terminée : ${target} collaborateurs traités.`);
@@ -457,7 +600,6 @@ export default function AwarenessView() {
     reader.readAsText(file);
   };
 
-  // --- PARSEUR LMS (EXCEL .xlsx MULTI-FEUILLES) ---
   const handleLmsExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -485,28 +627,22 @@ export default function AwarenessView() {
             const pKey = keys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
             const eKey = keys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
 
-            startDateKey = keys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début');
-            endDateKey = keys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin');
+            startDateKey = keys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début de session 1');
+            endDateKey = keys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin de session 1');
 
             if (mKey && pKey && eKey) {
-              validRows = rows;
-              mailKey = mKey;
-              parcoursKey = pKey;
-              etatKey = eKey;
-              break;
+              validRows = rows; mailKey = mKey; parcoursKey = pKey; etatKey = eKey; break;
             }
           }
         }
 
         if (validRows.length === 0 || !mailKey || !parcoursKey || !etatKey) {
-          toast.error("Colonnes obligatoires (mail, Nom du parcours 1, Etat du parcours 1) introuvables.");
-          return;
+          return toast.error("Colonnes obligatoires introuvables dans l'Excel.");
         }
 
         let moduleName = "";
         let startDateFound: string | undefined = undefined;
         let endDateFound: string | undefined = undefined;
-
         let total = 0, completed = 0, inProgress = 0, notStarted = 0;
         const profilesToUpdate: PhishingProfile[] = [];
         const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
@@ -514,34 +650,26 @@ export default function AwarenessView() {
         const firstRow = validRows[0];
         const tempName = String(firstRow[parcoursKey!] || "").trim();
 
-        // --- LOGIQUE DE RENOUVELLEMENT ---
-        const matchingModules = modules.filter(m => m.name.toLowerCase() === tempName.toLowerCase());
+        const matchingModules = modules.filter(m => m.name.toLowerCase() === tempName.toLowerCase() && (m.formatType === 'E-Learning' || (m as any).format_type === 'E-Learning'));
         let matchedModule: ElearningModule | undefined = undefined;
         let isRenewal = false;
 
-        // On cherche d'abord la date de fin dans l'Excel pour comparer
         validRows.forEach((row) => {
-          if (!endDateFound && endDateKey && row[endDateKey]) {
-            endDateFound = parseExcelDate(row[endDateKey]);
-          }
-          if (!startDateFound && startDateKey && row[startDateKey]) {
-            startDateFound = parseExcelDate(row[startDateKey]);
-          }
+          if (!endDateFound && endDateKey && row[endDateKey]) endDateFound = parseExcelDate(row[endDateKey]);
+          if (!startDateFound && startDateKey && row[startDateKey]) startDateFound = parseExcelDate(row[startDateKey]);
         });
 
         if (matchingModules.length > 0) {
-          // On prend la dernière session créée avec ce nom
           matchingModules.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
           const latestModule = matchingModules[0];
-
           const existingDeadlineIso = latestModule.deadline ? new Date(latestModule.deadline).toISOString().split('T')[0] : null;
           const newDeadlineIso = endDateFound ? new Date(endDateFound).toISOString().split('T')[0] : null;
 
           if (existingDeadlineIso && newDeadlineIso && existingDeadlineIso !== newDeadlineIso) {
             isRenewal = true;
-            matchedModule = undefined; // Force la création
+            matchedModule = undefined;
           } else {
-            matchedModule = latestModule; // Mise à jour de la session existante
+            matchedModule = latestModule;
           }
         }
 
@@ -560,8 +688,7 @@ export default function AwarenessView() {
           let isCompleted = false;
 
           if (etat.includes('terminé') || etat.includes('validé') || etat.includes('complété') || etat === 'achevé') {
-            completed++;
-            isCompleted = true;
+            completed++; isCompleted = true;
           } else if (etat.includes('en cours') || etat.includes('progress') || etat.includes('initié')) {
             inProgress++;
           } else {
@@ -571,8 +698,8 @@ export default function AwarenessView() {
           if (isCompleted && currentProfilesMap.has(email)) {
             if (!existingCompletedEmails.includes(email)) {
               newlyCompletedEmails.push(email);
-
               const p = { ...currentProfilesMap.get(email)! };
+
               const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
               p.trainingCompletedCount = currentTraining + 1;
               (p as any).training_completed_count = p.trainingCompletedCount;
@@ -583,7 +710,6 @@ export default function AwarenessView() {
               const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
 
               p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
-
               profilesToUpdate.push(p);
             }
           }
@@ -593,24 +719,15 @@ export default function AwarenessView() {
 
         setUpdatedProfilesBatch(profilesToUpdate);
         setParsedLmsData({
-          name: matchedModule ? matchedModule.name : excelName,
-          originalExcelName: excelName,
-          targetAudience: "Tous",
-          totalAssigned: total,
-          completedCount: completed,
-          inProgressCount: inProgress,
-          notStartedCount: notStarted,
+          name: matchedModule ? matchedModule.name : excelName, originalExcelName: excelName, targetAudience: "Tous",
+          totalAssigned: total, completedCount: completed, inProgressCount: inProgress, notStartedCount: notStarted,
           completedBy: [...existingCompletedEmails, ...newlyCompletedEmails],
-          startDate: startDateFound,
-          deadline: endDateFound,
-          fileLoaded: true,
-          selectedModuleId: matchedModule ? matchedModule.id : "new",
-          isRenewal: isRenewal
+          startDate: startDateFound, deadline: endDateFound, fileLoaded: true,
+          selectedModuleId: matchedModule ? matchedModule.id : "new", isRenewal: isRenewal
         });
 
         setIsLmsImportOpen(true);
       } catch (error) {
-        console.error("Erreur Excel:", error);
         toast.error("Erreur lors de la lecture du fichier Excel.");
       }
       e.target.value = '';
@@ -620,9 +737,7 @@ export default function AwarenessView() {
 
   const handleSort = (key: string) => {
     let direction: 'asc' | 'desc' = 'asc';
-    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
-      direction = 'desc';
-    }
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
     setSortConfig({ key, direction });
   };
 
@@ -635,10 +750,10 @@ export default function AwarenessView() {
 
   const filteredProfiles = profiles.filter(p => {
     const searchLower = profileSearch.toLowerCase();
-    const matchesSearch =
-      p.firstName.toLowerCase().includes(searchLower) ||
-      p.lastName.toLowerCase().includes(searchLower) ||
-      p.email.toLowerCase().includes(searchLower);
+    // Sécurité de filtre : si nom/prenom est null, on ne crashe pas
+    const matchesSearch = safeString(p.firstName).includes(searchLower) ||
+                          safeString(p.lastName).includes(searchLower) ||
+                          safeString(p.email).includes(searchLower);
 
     const matchesDept = departmentFilter === "all" || p.department === departmentFilter;
 
@@ -657,28 +772,12 @@ export default function AwarenessView() {
     let valA: any, valB: any;
 
     switch (key) {
-      case 'name':
-        valA = `${a.lastName} ${a.firstName}`.toLowerCase();
-        valB = `${b.lastName} ${b.firstName}`.toLowerCase();
-        break;
-      case 'department':
-        valA = a.department || "";
-        valB = b.department || "";
-        break;
-      case 'behavior':
-        valA = safeNum(a.clickedCount ?? (a as any).clicked_count) + safeNum(a.attachmentOpenedCount ?? (a as any).attachment_opened_count) + safeNum(a.compromisedCount ?? (a as any).compromised_count);
-        valB = safeNum(b.clickedCount ?? (b as any).clicked_count) + safeNum(b.attachmentOpenedCount ?? (b as any).attachment_opened_count) + safeNum(b.compromisedCount ?? (b as any).compromised_count);
-        break;
-      case 'recidive':
-        valA = a.isConsecutive ? 1 : 0;
-        valB = b.isConsecutive ? 1 : 0;
-        break;
-      case 'score':
-        valA = safeNum(a.riskScore);
-        valB = safeNum(b.riskScore);
-        break;
-      default:
-        return 0;
+      case 'name': valA = `${safeString(a.lastName)} ${safeString(a.firstName)}`; valB = `${safeString(b.lastName)} ${safeString(b.firstName)}`; break;
+      case 'department': valA = a.department || ""; valB = b.department || ""; break;
+      case 'behavior': valA = safeNum(a.clickedCount ?? (a as any).clicked_count) + safeNum(a.attachmentOpenedCount ?? (a as any).attachment_opened_count) + safeNum(a.compromisedCount ?? (a as any).compromised_count); valB = safeNum(b.clickedCount ?? (b as any).clicked_count) + safeNum(b.attachmentOpenedCount ?? (b as any).attachment_opened_count) + safeNum(b.compromisedCount ?? (b as any).compromised_count); break;
+      case 'recidive': valA = a.isConsecutive ? 1 : 0; valB = b.isConsecutive ? 1 : 0; break;
+      case 'score': valA = safeNum(a.riskScore); valB = safeNum(b.riskScore); break;
+      default: return 0;
     }
 
     if (valA < valB) return direction === 'asc' ? -1 : 1;
@@ -701,13 +800,20 @@ export default function AwarenessView() {
   const avgCompromiseRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.compromisedCount), 0) / totalMailsSent) * 100) : 0;
   const avgReportRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.reportedCount), 0) / totalMailsSent) * 100) : 0;
 
-  // LECTURE SÉCURISÉE DES KPIS E-LEARNING ET OBJECTIF DE 95%
-  const totalElearningAssigned = modules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
-  const totalElearningCompleted = modules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
-
+  const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
+  const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
   const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
   const elearningGoalReached = elearningRate >= 95;
-  const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100)); // Progression par rapport à l'objectif de 95%
+  const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100));
+
+  const sessionsThisYear = sessionModules.filter(m => {
+    const dStr = m.startDate || m.createdAt || "";
+    if (!dStr) return false;
+    return new Date(dStr).getFullYear() === currentYear;
+  });
+  const targetSessionsPerYear = 4;
+  const sessionProgress = Math.min(100, Math.round((sessionsThisYear.length / targetSessionsPerYear) * 100));
+  const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
 
   const sortedCampaigns = [...campaigns].sort((a, b) => new Date(a.sendDate).getTime() - new Date(b.sendDate).getTime());
 
@@ -715,66 +821,80 @@ export default function AwarenessView() {
     <div className="space-y-6">
 
       {/* --- KPIs SECTION --- */}
-      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+
         <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Campagnes en {currentYear}</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Phishing</CardTitle>
             <Target className={`w-4 h-4 ${isGoalReached ? 'text-emerald-500' : 'text-blue-500'}`} />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold flex items-baseline gap-1">
+            <div className="text-xl font-bold flex items-baseline gap-1">
               {campaignsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetCampaignsPerYear}</span>
             </div>
-            <Progress value={campaignProgress} className={`h-1.5 mt-2 ${isGoalReached ? '[&>div]:bg-emerald-500' : ''}`} />
-            <p className="text-[10px] text-muted-foreground mt-2">Objectif annuel</p>
+            <Progress value={campaignProgress} className={`h-1 mt-2 ${isGoalReached ? '[&>div]:bg-emerald-500' : ''}`} />
+            <p className="text-[9px] text-muted-foreground mt-1">Campagnes annuelles</p>
           </CardContent>
         </Card>
 
         <Card className={`border-l-4 shadow-sm ${campaigns.length > 0 && (safeNum(campaigns[0].compromisedCount) / safeNum(campaigns[0].targetCount) * 100) > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Taux de compromission</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Saisies</CardTitle>
             <AlertTriangle className="w-4 h-4 text-rose-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].compromisedCount, campaigns[0].targetCount) : 0}%</div>
-            <p className="text-[10px] text-muted-foreground mt-2">Dernière campagne</p>
+            <div className="text-xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].compromisedCount, campaigns[0].targetCount) : 0}%</div>
+            <p className="text-[9px] text-muted-foreground mt-1">Dernière campagne</p>
           </CardContent>
         </Card>
 
         <Card className="border-l-4 border-l-blue-500 shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Taux de signalement</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Signalements</CardTitle>
             <ShieldCheck className="w-4 h-4 text-blue-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].reportedCount, campaigns[0].targetCount) : 0}%</div>
-            <p className="text-[10px] text-muted-foreground mt-2">Dernière campagne</p>
+            <div className="text-xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].reportedCount, campaigns[0].targetCount) : 0}%</div>
+            <p className="text-[9px] text-muted-foreground mt-1">Dernière campagne</p>
           </CardContent>
         </Card>
 
         <Card className={`border-l-4 shadow-sm ${highRiskProfiles.length > 0 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Profils à risque (&gt; 60)</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Risque &gt; 60</CardTitle>
             <UserX className="w-4 h-4 text-amber-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{highRiskProfiles.length}</div>
-            <p className="text-[10px] text-muted-foreground mt-2">Récidivistes à accompagner</p>
+            <div className="text-xl font-bold">{highRiskProfiles.length}</div>
+            <p className="text-[9px] text-muted-foreground mt-1">Collaborateurs à suivre</p>
           </CardContent>
         </Card>
 
-        {/* NOUVEAU KPI E-LEARNING AVEC OBJECTIF DE 95% */}
+        <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
+            <Mic className={`w-4 h-4 ${isSessionGoalReached ? 'text-emerald-500' : 'text-amber-500'}`} />
+          </CardHeader>
+          <CardContent>
+            <div className="text-xl font-bold flex items-baseline gap-1">
+              {sessionsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetSessionsPerYear}</span>
+            </div>
+            <Progress value={sessionProgress} className={`h-1 mt-2 ${isSessionGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-amber-500'}`} />
+            <p className="text-[9px] text-muted-foreground mt-1">Webinaires / Présentiel</p>
+          </CardContent>
+        </Card>
+
         <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Couverture E-Learning</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Couverture E-Learning</CardTitle>
             <Target className={`w-4 h-4 ${elearningGoalReached ? 'text-emerald-500' : 'text-primary'}`} />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold flex items-baseline gap-1">
+            <div className="text-xl font-bold flex items-baseline gap-1">
               {elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span>
             </div>
-            <Progress value={elearningProgress} className={`h-1.5 mt-2 ${elearningGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-primary'}`} />
-            <p className="text-[10px] text-muted-foreground mt-2">Objectif de réalisation</p>
+            <Progress value={elearningProgress} className={`h-1 mt-2 ${elearningGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-primary'}`} />
+            <p className="text-[9px] text-muted-foreground mt-1">Objectif de réalisation</p>
           </CardContent>
         </Card>
       </div>
@@ -786,42 +906,41 @@ export default function AwarenessView() {
             <TabsList className="bg-transparent space-x-4">
               <TabsTrigger value="phishing" className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none pb-3">Campagnes</TabsTrigger>
               <TabsTrigger value="profilage" className="data-[state=active]:border-b-2 data-[state=active]:border-amber-500 rounded-none pb-3">Profilage des Risques</TabsTrigger>
-              <TabsTrigger value="elearning" className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none pb-3">E-Learning</TabsTrigger>
+              <TabsTrigger value="elearning" className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none pb-3">Sessions & E-Learning</TabsTrigger>
             </TabsList>
 
             {activeTab === "profilage" ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div className="mb-2 cursor-not-allowed">
-                      <Button size="sm" variant="secondary" disabled className="pointer-events-none">
-                        Générer un rapport
-                      </Button>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>À venir</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <div className="flex gap-2 mb-2">
+                <Button variant="outline" size="sm" onClick={() => setIsResetProfilesOpen(true)} className="text-destructive border-destructive/20 hover:bg-destructive/10">
+                  <Trash2 className="w-4 h-4 mr-2" /> Remettre à zéro
+                </Button>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="cursor-not-allowed">
+                        <Button size="sm" variant="secondary" disabled className="pointer-events-none">
+                          Générer un rapport
+                        </Button>
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>À venir</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
             ) : activeTab === "elearning" ? (
               <div className="flex gap-2 mb-2">
                 <div className="relative">
-                  <Input
-                    type="file"
-                    id="lms-upload"
-                    className="hidden"
-                    accept=".xlsx, .xls, .csv"
-                    onChange={handleLmsExcelUpload}
-                  />
+                  <Input type="file" id="lms-upload-top" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleLmsExcelUpload} />
                   <Button variant="outline" size="sm" asChild>
-                    <label htmlFor="lms-upload" className="cursor-pointer">
+                    <label htmlFor="lms-upload-top" className="cursor-pointer">
                       <Upload className="w-4 h-4 mr-2" /> Import (Excel)
                     </label>
                   </Button>
                 </div>
                 <Button size="sm" onClick={() => setIsAddModuleOpen(true)}>
-                  <Plus className="w-4 h-4 mr-2" /> Nouveau Module
+                  <Plus className="w-4 h-4 mr-2" /> Nouvelle Session
                 </Button>
               </div>
             ) : (
@@ -1058,12 +1177,14 @@ export default function AwarenessView() {
                     </TableHeader>
                     <TableBody>
                       {sortedAndFilteredProfiles.map((p) => {
-                        const tCamp = safeNum(p.totalCampaigns) || safeNum((p as any).total_campaigns);
-                        const oCount = safeNum(p.openedCount) || safeNum((p as any).opened_count);
-                        const aCount = safeNum(p.attachmentOpenedCount) || safeNum((p as any).attachment_opened_count);
-                        const cCount = safeNum(p.clickedCount) || safeNum((p as any).clicked_count);
-                        const sCount = safeNum(p.compromisedCount) || safeNum((p as any).compromised_count);
-                        const tRead = safeNum(p.trainingCompletedCount) || safeNum((p as any).training_completed_count);
+                        const tCamp = safeNum(p.totalCampaigns ?? (p as any).total_campaigns);
+                        const oCount = safeNum(p.openedCount ?? (p as any).opened_count);
+                        const aCount = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
+                        const cCount = safeNum(p.clickedCount ?? (p as any).clicked_count);
+                        const sCount = safeNum(p.compromisedCount ?? (p as any).compromised_count);
+                        const tRead = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
+
+                        const hasHistory = tCamp > 0 || oCount > 0 || aCount > 0 || cCount > 0 || sCount > 0 || tRead > 0;
 
                         return (
                           <TableRow key={p.email}>
@@ -1073,14 +1194,18 @@ export default function AwarenessView() {
                             </TableCell>
                             <TableCell className="text-sm">{p.department || "-"}</TableCell>
                             <TableCell>
-                              <div className="flex flex-wrap gap-2 items-center text-xs">
-                                <Badge variant="outline" className="bg-muted/50 border-transparent">Cibles: {tCamp}</Badge>
-                                {oCount > 0 && <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200">Ouverts: {oCount}</Badge>}
-                                {aCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">PJ: {aCount}</Badge>}
-                                {cCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">Clics: {cCount}</Badge>}
-                                {sCount > 0 && <Badge variant="outline" className="bg-rose-500/10 text-rose-600 border-rose-200 font-bold">Saisies: {sCount}</Badge>}
-                                {tRead > 0 && <Badge variant="outline" className="bg-indigo-500/10 text-indigo-600 border-indigo-200">Formations lues: {tRead}</Badge>}
-                              </div>
+                              {hasHistory ? (
+                                <div className="flex flex-wrap gap-2 items-center text-xs">
+                                  {tCamp > 0 && <Badge variant="outline" className="bg-muted/50 border-transparent">Cibles: {tCamp}</Badge>}
+                                  {oCount > 0 && <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200">Ouverts: {oCount}</Badge>}
+                                  {aCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">PJ: {aCount}</Badge>}
+                                  {cCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">Clics: {cCount}</Badge>}
+                                  {sCount > 0 && <Badge variant="outline" className="bg-rose-500/10 text-rose-600 border-rose-200 font-bold">Saisies: {sCount}</Badge>}
+                                  {tRead > 0 && <Badge variant="outline" className="bg-indigo-500/10 text-indigo-600 border-indigo-200">Formations lues: {tRead}</Badge>}
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground text-xs italic">Aucun historique</span>
+                              )}
                             </TableCell>
                             <TableCell>
                               {p.isConsecutive ? <Badge variant="outline" className="bg-rose-500 text-white border-transparent">Oui (Alerte)</Badge> : <span className="text-muted-foreground text-sm">Non</span>}
@@ -1106,71 +1231,141 @@ export default function AwarenessView() {
           </TabsContent>
 
           <TabsContent value="elearning" className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
-              <Card className="border-dashed border-2 flex flex-col items-center justify-center p-6 hover:bg-muted/50 cursor-pointer transition-colors min-h-[200px]" onClick={() => setIsAddModuleOpen(true)}>
-                <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4"><Plus className="w-6 h-6 text-primary" /></div>
-                <p className="font-semibold text-primary">Nouveau module</p>
-                <p className="text-xs text-muted-foreground text-center mt-1">Créer une coquille vide de formation</p>
-              </Card>
+            <Input type="file" id="lms-upload" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleLmsExcelUpload} />
 
-              {modules.map((m) => {
-                const completed = safeNum(m.completedCount) || safeNum((m as any).completed_count);
-                const total = safeNum(m.totalAssigned) || safeNum((m as any).total_assigned);
-                const completionRate = calculatePercentage(completed, total);
+            {/* SELECTION 1 : E-LEARNING (LMS) */}
+            <div>
+              <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Monitor className="w-5 h-5 text-primary" /> Parcours E-Learning </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
-                return (
-                  <Card key={m.id} className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedModule(m)}>
-                    <CardHeader className="pb-2">
-                      <div className="flex justify-between items-start">
-                        <Badge variant="secondary" className="mb-2">{m.targetAudience}</Badge>
-                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
-                          <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
+                <Card className="border-dashed border-2 hover:bg-muted/50 transition-colors min-h-[200px] relative overflow-hidden">
+                  <label htmlFor="lms-upload" className="flex flex-col items-center justify-center absolute inset-0 w-full h-full cursor-pointer p-6">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4"><Upload className="w-6 h-6 text-primary" /></div>
+                    <p className="font-semibold text-primary">Nouveau parcours</p>
+                    <p className="text-xs text-muted-foreground text-center mt-1">Cliquer pour importer un fichier Excel</p>
+                  </label>
+                </Card>
+
+                {elearningModules.map((m) => {
+                  const completed = safeNum(m.completedCount) || safeNum((m as any).completed_count);
+                  const total = safeNum(m.totalAssigned) || safeNum((m as any).total_assigned);
+                  const completionRate = calculatePercentage(completed, total);
+
+                  return (
+                    <Card key={m.id} className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedModule(m)}>
+                      <CardHeader className="pb-2">
+                        <div className="flex justify-between items-start">
+                          <div className="flex flex-col gap-2">
+                            <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
+                          </div>
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
+                            <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
+                          </Button>
+                        </div>
+                        <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
+                      </CardHeader>
+                      <CardContent className="flex-1 space-y-4">
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Progression</span>
+                            <span className="font-bold">{completionRate}%</span>
+                          </div>
+                          <Progress value={completionRate} className="h-2" />
+                        </div>
+                        <div className="flex items-center justify-between text-xs py-2 border-t border-border">
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Users className="w-3 h-3" />
+                            <span>{completed} / {total} validés</span>
+                          </div>
+                          {(m.startDate || m.deadline) && (
+                            <div className="flex items-center gap-1 text-amber-600 font-medium">
+                              <CalendarDays className="w-3 h-3" />
+                              <span>Échéance: {m.deadline ? new Date(m.deadline).toLocaleDateString() : '--'}</span>
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                      <div className="p-4 bg-muted/30 border-t flex gap-2">
+                        <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); }}>
+                          <Eye className="w-3 h-3 mr-2" /> Détails
+                        </Button>
+                        <Button variant="outline" size="sm" className="w-full text-xs text-primary border-primary/20 hover:bg-primary/5" onClick={(e) => { e.stopPropagation(); toast.success("Relance envoyée aux retardataires"); }}>
+                          <Mail className="w-3 h-3 mr-2" /> Relancer
                         </Button>
                       </div>
-                      <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="flex-1 space-y-4">
-                      <div className="space-y-2">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">Progression</span>
-                          <span className="font-bold">{completionRate}%</span>
-                        </div>
-                        <Progress value={completionRate} className="h-2" />
-                      </div>
-                      <div className="flex items-center justify-between text-xs py-2 border-t border-border">
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <Users className="w-3 h-3" />
-                          <span>{completed} / {total} validés</span>
-                        </div>
-                        {(m.startDate || m.deadline) && (
-                          <div className="flex flex-col text-[10px] text-muted-foreground text-right">
-                            {m.startDate && <span>Du {new Date(m.startDate).toLocaleDateString()}</span>}
-                            {m.deadline && <span className="text-amber-600">Au {new Date(m.deadline).toLocaleDateString()}</span>}
-                          </div>
-                        )}
-                      </div>
-                    </CardContent>
-                    <div className="p-4 bg-muted/30 border-t flex gap-2">
-                      <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); }}>
-                        <Eye className="w-3 h-3 mr-2" /> Détails
-                      </Button>
-                      <Button variant="outline" size="sm" className="w-full text-xs text-primary border-primary/20 hover:bg-primary/5" onClick={(e) => { e.stopPropagation(); toast.success("Relance envoyée aux retardataires"); }}>
-                        <Mail className="w-3 h-3 mr-2" /> Relancer
-                      </Button>
-                    </div>
-                  </Card>
-                );
-              })}
+                    </Card>
+                  );
+                })}
+              </div>
             </div>
 
-            {modules.length === 0 && (
-              <div className="text-center py-20 bg-muted/10 rounded-xl border-2 border-dashed mt-6">
-                <GraduationCap className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-20" />
-                <p className="text-muted-foreground font-medium">Aucun module de formation actif.</p>
-                <p className="text-xs text-muted-foreground mt-1">Commencez par importer un fichier LMS.</p>
+            {/* SELECTION 2 : SESSIONS DE SENSIBILISATION */}
+            <div className="mt-12">
+              <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Mic className="w-5 h-5 text-amber-500" /> Sessions de Sensibilisation</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+                <Card className="border-dashed border-2 border-amber-500/30 bg-amber-500/5 flex flex-col items-center justify-center p-6 hover:bg-amber-500/10 cursor-pointer transition-colors min-h-[200px]" onClick={() => { setIsAddModuleOpen(true); setNewModule({...newModule, formatType: "Webinaire"}); }}>
+                  <div className="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center mb-4"><Plus className="w-6 h-6 text-amber-600" /></div>
+                  <p className="font-semibold text-amber-700">Nouvelle session</p>
+                  <p className="text-xs text-amber-700/70 text-center mt-1">Déclarer un Webinaire ou du Présentiel</p>
+                </Card>
+
+                {sessionModules.map((m) => {
+                  const completed = safeNum(m.completedCount) || safeNum((m as any).completed_count);
+                  const total = safeNum(m.totalAssigned) || safeNum((m as any).total_assigned);
+                  const completionRate = calculatePercentage(completed, total);
+
+                  const formatType = m.formatType || (m as any).format_type || "Webinaire";
+                  let icon = <Video className="w-3 h-3 mr-1" />;
+                  if (formatType === "Présentiel") icon = <Users className="w-3 h-3 mr-1" />;
+
+                  return (
+                    <Card key={m.id} className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow cursor-pointer" onClick={() => setSelectedModule(m)}>
+                      <CardHeader className="pb-2">
+                        <div className="flex justify-between items-start">
+                          <div className="flex flex-col gap-2">
+                            <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 w-fit">{icon} {formatType}</Badge>
+                            <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
+                          </div>
+                          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
+                            <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
+                          </Button>
+                        </div>
+                        <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
+                      </CardHeader>
+                      <CardContent className="flex-1 space-y-4">
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Présence</span>
+                            <span className="font-bold">{completionRate}%</span>
+                          </div>
+                          <Progress value={completionRate} className="h-2 [&>div]:bg-amber-500" />
+                        </div>
+                        <div className="flex items-center justify-between text-xs py-2 border-t border-border">
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Users className="w-3 h-3" />
+                            <span>{completed} / {total} présents</span>
+                          </div>
+                          {m.startDate && (
+                            <div className="flex items-center gap-1 text-amber-600 font-medium">
+                              <CalendarDays className="w-3 h-3" />
+                              <span>Le {new Date(m.startDate).toLocaleDateString()}</span>
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                      <div className="p-4 bg-muted/30 border-t flex gap-2">
+                        <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); setIsAttendanceModalOpen(true); }}>
+                          <CheckSquare className="w-3 h-3 mr-2" /> Présences
+                        </Button>
+                      </div>
+                    </Card>
+                  );
+                })}
               </div>
-            )}
+            </div>
+
           </TabsContent>
         </Tabs>
       </Card>
@@ -1179,9 +1374,7 @@ export default function AwarenessView() {
 
       {/* PANNEAU PHISHING */}
       <Sheet open={!!selectedCampaign} onOpenChange={(open) => {
-        if(!open) {
-          setSelectedCampaign(null);
-        }
+        if(!open) setSelectedCampaign(null);
       }}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
@@ -1262,12 +1455,12 @@ export default function AwarenessView() {
         </SheetContent>
       </Sheet>
 
-      {/* PANNEAU E-LEARNING */}
-      <Sheet open={!!selectedModule} onOpenChange={(open) => !open && setSelectedModule(null)}>
+      {/* PANNEAU SESSION/E-LEARNING */}
+      <Sheet open={!!selectedModule && !isAttendanceModalOpen} onOpenChange={(open) => !open && setSelectedModule(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
-            <SheetTitle className="text-xl">{selectedModule?.name}</SheetTitle>
-            <SheetDescription>Détails d'avancement de la formation</SheetDescription>
+            <SheetTitle className="text-xl pr-4">{selectedModule?.name}</SheetTitle>
+            <SheetDescription>Détails d'avancement de la session</SheetDescription>
           </SheetHeader>
 
           {selectedModule && (() => {
@@ -1275,6 +1468,8 @@ export default function AwarenessView() {
             const total = safeNum(selectedModule.totalAssigned) || safeNum((selectedModule as any).total_assigned);
             const inProgress = Math.max(0, total - completed);
             const completionRate = calculatePercentage(completed, total);
+            const formatType = selectedModule.formatType || (selectedModule as any).format_type || "E-Learning";
+            const completedEmails = selectedModule.completedBy || (selectedModule as any).completed_by || [];
 
             return (
               <div className="space-y-6">
@@ -1305,24 +1500,60 @@ export default function AwarenessView() {
                 </div>
 
                 <div className="space-y-4 pt-4 border-t">
-                  <h4 className="text-sm font-semibold flex items-center gap-2"><TrendingUp className="w-4 h-4 text-primary" /> Entonnoir E-Learning</h4>
+                  <h4 className="text-sm font-semibold flex items-center gap-2"><TrendingUp className="w-4 h-4 text-primary" /> Participation</h4>
                   <div className="space-y-3">
                     <div className="flex items-center justify-between p-3 rounded-md border bg-card">
-                      <span className="text-sm font-medium flex items-center gap-2 text-muted-foreground"><Users className="w-4 h-4"/> Inscrits</span>
+                      <span className="text-sm font-medium flex items-center gap-2 text-muted-foreground"><Users className="w-4 h-4"/> Inscrits / Conviés</span>
                       <span className="font-bold">{total}</span>
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-md bg-amber-50 border border-amber-100 ml-4">
-                      <span className="text-sm font-medium flex items-center gap-2 text-amber-700"><Clock className="w-4 h-4"/> En cours / À faire</span>
+                      <span className="text-sm font-medium flex items-center gap-2 text-amber-700"><Clock className="w-4 h-4"/> Absents / Non réalisés</span>
                       <span className="font-bold text-amber-700">{inProgress}</span>
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-md bg-emerald-50 border border-emerald-100 ml-8">
-                      <span className="text-sm font-medium flex items-center gap-2 text-emerald-700"><CheckCircle2 className="w-4 h-4"/> Terminés</span>
+                      <span className="text-sm font-medium flex items-center gap-2 text-emerald-700"><CheckCircle2 className="w-4 h-4"/> Présents / Terminés</span>
                       <span className="font-bold text-emerald-700">{completed}</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-8 pt-6 border-t">
+                {/* LISTE DES PARTICIPANTS VALIDÉS AVEC SUPPRESSION IN-APP */}
+                {completedEmails.length > 0 && (
+                  <div className="pt-6 border-t space-y-3">
+                     <h4 className="text-sm font-semibold flex items-center gap-2 text-emerald-600"><CheckSquare className="w-4 h-4" /> Liste des validés</h4>
+                     <div className="max-h-48 overflow-y-auto border rounded-md divide-y text-xs">
+                        {completedEmails.map((email: string) => {
+                           const profile = profiles.find(p => p.email.toLowerCase() === email.toLowerCase());
+                           const displayName = profile ? `${profile.firstName} ${profile.lastName}` : email;
+
+                           return (
+                             <div key={email} className="flex justify-between items-center p-2 hover:bg-muted/50 group">
+                               <div className="flex flex-col">
+                                  <span className="font-medium">{displayName}</span>
+                                  {profile && <span className="text-[10px] text-muted-foreground">{email}</span>}
+                               </div>
+                               <Button
+                                 variant="ghost"
+                                 size="sm"
+                                 className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                 title="Retirer la validation"
+                                 onClick={() => setParticipantToRemove(email)}
+                               >
+                                 <UserMinus className="w-3 h-3" />
+                               </Button>
+                             </div>
+                           );
+                        })}
+                     </div>
+                  </div>
+                )}
+
+                <div className="mt-8 pt-6 border-t flex flex-col gap-2">
+                  {formatType !== "E-Learning" && (
+                    <Button variant="default" className="w-full" onClick={() => setIsAttendanceModalOpen(true)}>
+                      <CheckSquare className="w-4 h-4 mr-2" /> Déclarer des présences
+                    </Button>
+                  )}
                   <Button variant="outline" className="w-full text-primary border-primary/20 hover:bg-primary/5" onClick={() => toast.success("Relance envoyée aux retardataires")}>
                     <Mail className="w-4 h-4 mr-2" /> Relancer les {inProgress} retardataires
                   </Button>
@@ -1334,6 +1565,39 @@ export default function AwarenessView() {
       </Sheet>
 
       {/* --- MODALES DE CRÉATION ET D'IMPORT --- */}
+
+      {/* MODALE DE SAISIE MANUELLE DES PRÉSENCES */}
+      <Dialog open={isAttendanceModalOpen} onOpenChange={(open) => {
+        setIsAttendanceModalOpen(open);
+        if (!open) { setAttendanceEmails(""); setSelectedModule(null); }
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Valider les présences</DialogTitle>
+            <DialogDescription>Copiez-collez la liste des emails des collaborateurs présents (séparés par des virgules ou retours à la ligne).</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <Textarea
+              placeholder="jean.dupont@entreprise.com&#10;marie.curie@entreprise.com"
+              className="min-h-[150px] font-mono text-xs"
+              value={attendanceEmails}
+              onChange={(e) => setAttendanceEmails(e.target.value)}
+            />
+            <div className="text-xs text-muted-foreground bg-primary/5 p-2 rounded">
+              L'algorithme va extraire automatiquement les adresses email valides de votre texte et créditer le bonus sur leur score de risque.
+            </div>
+            <Button
+              className="w-full"
+              disabled={!attendanceEmails || validateAttendanceMutation.isPending}
+              onClick={() => {
+                if (selectedModule) validateAttendanceMutation.mutate({ moduleId: selectedModule.id, rawEmails: attendanceEmails });
+              }}
+            >
+              {validateAttendanceMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Valider les présences et mettre à jour"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isRecidivistsDialogOpen} onOpenChange={setIsRecidivistsDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
@@ -1483,7 +1747,7 @@ export default function AwarenessView() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="new" className="font-bold text-primary">+ Créer une nouvelle carte</SelectItem>
-                      {modules.map(m => (
+                      {elearningModules.map(m => (
                         <SelectItem key={m.id} value={m.id}>Mettre à jour : {m.name}</SelectItem>
                       ))}
                     </SelectContent>
@@ -1536,14 +1800,41 @@ export default function AwarenessView() {
 
       <Dialog open={isAddModuleOpen} onOpenChange={(open) => {
         setIsAddModuleOpen(open);
-        if(!open) setNewModule({ name: "", targetAudience: "Tous", totalAssigned: 100, startDate: "", deadline: "" });
+        if(!open) setNewModule({ name: "", formatType: "E-Learning", targetAudience: "Tous", totalAssigned: 100, startDate: "", deadline: "" });
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Créer une formation (Manuellement)</DialogTitle>
-            <DialogDescription>Crée une coquille vide en attendant l'import de l'Excel LMS.</DialogDescription>
+            <DialogTitle>Déclarer une nouvelle session</DialogTitle>
+            <DialogDescription>Crée une session pour y inscrire vos collaborateurs (Webinaire, Présentiel, etc.).</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-2">
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <Label>Format</Label>
+                <Select value={newModule.formatType} onValueChange={(val) => setNewModule({...newModule, formatType: val})}>
+                  <SelectTrigger><SelectValue placeholder="Format" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="E-Learning">🖥️ E-Learning (LMS)</SelectItem>
+                    <SelectItem value="Webinaire">🎥 Webinaire (En ligne)</SelectItem>
+                    <SelectItem value="Présentiel">👥 Session Présentielle</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Cible (Domaine)</Label>
+                <Select value={newModule.targetAudience} onValueChange={(val) => setNewModule({...newModule, targetAudience: val})}>
+                  <SelectTrigger><SelectValue placeholder="Sélectionner" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Tous">Tous collaborateurs</SelectItem>
+                    {uniqueDepartments.map(dept => (
+                      <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
             <div className="space-y-1">
               <Label>Nom de la formation</Label>
               <Input
@@ -1553,48 +1844,22 @@ export default function AwarenessView() {
               />
             </div>
 
-            <div className="space-y-1">
-              <Label>Cible (Domaine)</Label>
-              <Select value={newModule.targetAudience} onValueChange={(val) => setNewModule({...newModule, targetAudience: val})}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Sélectionner une cible" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Tous">Tous les collaborateurs</SelectItem>
-                  {uniqueDepartments.map(dept => (
-                    <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-2 gap-4 border-t pt-4">
+              <div className="space-y-1">
+                <Label>Date {newModule.formatType === "E-Learning" ? "de début" : "de session"}</Label>
+                <Input type="date" value={newModule.startDate} onChange={(e) => setNewModule({...newModule, startDate: e.target.value})} />
+              </div>
+              {newModule.formatType === "E-Learning" && (
+                <div className="space-y-1">
+                  <Label>Date d'échéance</Label>
+                  <Input type="date" value={newModule.deadline} onChange={(e) => setNewModule({...newModule, deadline: e.target.value})} />
+                </div>
+              )}
             </div>
 
             <div className="space-y-1">
-              <Label>Nombre de cibles prévues</Label>
-              <Input
-                type="number"
-                min="1"
-                value={newModule.totalAssigned}
-                onChange={(e) => setNewModule({...newModule, totalAssigned: parseInt(e.target.value) || 0})}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1">
-                <Label>Date de début</Label>
-                <Input
-                  type="date"
-                  value={newModule.startDate}
-                  onChange={(e) => setNewModule({...newModule, startDate: e.target.value})}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>Date d'échéance</Label>
-                <Input
-                  type="date"
-                  value={newModule.deadline}
-                  onChange={(e) => setNewModule({...newModule, deadline: e.target.value})}
-                />
-              </div>
+              <Label>Nombre de participants attendus</Label>
+              <Input type="number" min="1" value={newModule.totalAssigned} onChange={(e) => setNewModule({...newModule, totalAssigned: parseInt(e.target.value) || 0})} />
             </div>
 
             <Button
@@ -1603,13 +1868,36 @@ export default function AwarenessView() {
               onClick={() => addModuleMutation.mutate(newModule as any)}
             >
               {addModuleMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Plus className="w-4 h-4 mr-2" />}
-              Créer la coquille vide
+              Créer la session
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* --- MODALES DE SUPPRESSION --- */}
+      <AlertDialog open={isResetProfilesOpen} onOpenChange={setIsResetProfilesOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5" />
+              Purger les compteurs ?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Cette action va remettre <strong>à zéro</strong> tous les compteurs (Cibles, clics, etc.) et les Risk Scores de tous les collaborateurs.
+              Utile pour nettoyer les données résiduelles d'anciennes campagnes supprimées.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive hover:bg-destructive/90"
+              onClick={() => resetProfilesMutation.mutate()}
+            >
+              {resetProfilesMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Oui, tout remettre à zéro"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={!!campaignToDelete} onOpenChange={(open) => !open && setCampaignToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1645,11 +1933,11 @@ export default function AwarenessView() {
           <AlertDialogHeader>
             <AlertDialogTitle className="text-destructive flex items-center gap-2">
               <AlertTriangle className="w-5 h-5" />
-              Supprimer le module E-Learning ?
+              Supprimer le module / la session ?
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="mt-2 text-sm text-muted-foreground">
-                Êtes-vous sûr de vouloir supprimer le module <strong>{moduleToDelete?.name}</strong> ? Son suivi d'avancement sera perdu, <strong>et les scores de risques des collaborateurs associés seront recalculés (Rollback)</strong>.
+                Êtes-vous sûr de vouloir supprimer la session <strong>{moduleToDelete?.name}</strong> ? Son suivi sera perdu, <strong>et les scores de risques des collaborateurs associés seront recalculés (Rollback)</strong>.
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -1661,7 +1949,36 @@ export default function AwarenessView() {
                 if (moduleToDelete) delModuleMutation.mutate(moduleToDelete);
               }}
             >
-              Oui, supprimer le module
+              Oui, supprimer la session
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!participantToRemove} onOpenChange={(open) => !open && setParticipantToRemove(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5" />
+              Retirer ce participant ?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="mt-2 text-sm text-muted-foreground">
+                Êtes-vous sûr de vouloir annuler la validation de <strong>{participantToRemove}</strong> pour cette session ? Son bonus de formation sera retiré et son Risk Score sera recalculé.
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive hover:bg-destructive/90"
+              onClick={() => {
+                if (participantToRemove && selectedModule) {
+                  removeParticipantMutation.mutate({ moduleId: selectedModule.id, emailToRemove: participantToRemove });
+                }
+              }}
+            >
+              {removeParticipantMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Oui, retirer"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
