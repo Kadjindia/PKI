@@ -39,6 +39,7 @@ export interface ElearningModule {
   id: string;
   name: string;
   targetAudience?: string;
+  formatType?: string;
   totalAssigned: number;
   completedCount: number;
   completedBy?: string[];
@@ -83,19 +84,47 @@ export async function deletePhishingCampaign(id: string): Promise<void> {
 }
 
 // --- API PROFILS ---
-export async function fetchPhishingProfiles(): Promise<PhishingProfile[]> {
-  const { data, error } = await (supabase as any).from('phishing_profiles').select('*').order('risk_score', { ascending: false });
-  if (error) throw error;
-  return data.map((row: any) => ({
-    email: row.email, firstName: row.first_name, lastName: row.last_name, department: row.department,
-    totalCampaigns: row.total_campaigns, openedCount: row.opened_count || 0,
-    attachmentOpenedCount: row.attachment_opened_count || 0,
-    clickedCount: row.clicked_count, compromisedCount: row.compromised_count,
-    trainingCompletedCount: row.training_completed_count || 0,
-    reportedCount: row.reported_count, riskScore: row.risk_score,
-    lastCampaignClicked: row.last_campaign_clicked, isConsecutive: row.is_consecutive
+export const fetchPhishingProfiles = async (): Promise<PhishingProfile[]> => {
+  let allData: any[] = [];
+  let hasMore = true;
+  let from = 0;
+  let step = 1000;
+
+  // Boucle pour contourner la limite des 1000 résultats de Supabase
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from('phishing_profiles')
+      .select('*')
+      .range(from, from + step - 1);
+
+    if (error) throw error;
+
+    if (data && data.length > 0) {
+      allData = [...allData, ...data];
+      if (data.length < step) hasMore = false; // On est arrivé à la fin
+      else from += step; // On passe aux 1000 suivants
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allData.map(item => ({
+    email: item.email,
+    firstName: item.first_name || '',
+    lastName: item.last_name || '',
+    department: item.department || '',
+    totalCampaigns: item.total_campaigns || 0,
+    openedCount: item.opened_count || 0,
+    attachmentOpenedCount: item.attachment_opened_count || 0,
+    clickedCount: item.clicked_count || 0,
+    compromisedCount: item.compromised_count || 0,
+    trainingCompletedCount: item.training_completed_count || 0,
+    reportedCount: item.reported_count || 0,
+    riskScore: item.risk_score || 0,
+    lastCampaignClicked: item.last_campaign_clicked || false,
+    isConsecutive: item.is_consecutive || false
   }));
-}
+};
 
 export async function upsertPhishingProfiles(profiles: PhishingProfile[]): Promise<void> {
   const payload = profiles.map(p => ({
@@ -127,10 +156,11 @@ export const fetchElearningModules = async (): Promise<ElearningModule[]> => {
     id: item.id,
     name: item.name,
     targetAudience: item.target_audience,
+    formatType: item.format_type || 'E-Learning', // <-- NOUVEAU
     totalAssigned: item.total_assigned,
     completedCount: item.completed_count,
     completedBy: item.completed_by || [],
-    startDate: item.start_date, // <-- NOUVEAU
+    startDate: item.start_date,
     deadline: item.deadline,
     createdAt: item.created_at
   }));
@@ -140,29 +170,27 @@ export const createElearningModule = async (module: Omit<ElearningModule, 'id' |
   const dbPayload = {
     name: module.name,
     target_audience: module.targetAudience || 'Tous',
+    format_type: module.formatType || 'E-Learning', // <-- NOUVEAU
     total_assigned: module.totalAssigned || 0,
     completed_count: module.completedCount || 0,
     completed_by: module.completedBy || [],
-    start_date: module.startDate, // <-- NOUVEAU
+    start_date: module.startDate,
     deadline: module.deadline
   };
   const { data, error } = await supabase.from('elearning_modules').insert([dbPayload]).select().single();
   if (error) throw error;
-  return {
-    id: data.id, name: data.name, targetAudience: data.target_audience,
-    totalAssigned: data.total_assigned, completedCount: data.completed_count,
-    completedBy: data.completed_by, startDate: data.start_date, deadline: data.deadline
-  };
+  return { ...module, id: data.id };
 };
 
 export const updateElearningModule = async (id: string, updates: Partial<ElearningModule>): Promise<void> => {
   const dbPayload: any = {};
   if (updates.name !== undefined) dbPayload.name = updates.name;
   if (updates.targetAudience !== undefined) dbPayload.target_audience = updates.targetAudience;
+  if (updates.formatType !== undefined) dbPayload.format_type = updates.formatType; // <-- NOUVEAU
   if (updates.totalAssigned !== undefined) dbPayload.total_assigned = updates.totalAssigned;
   if (updates.completedCount !== undefined) dbPayload.completed_count = updates.completedCount;
   if (updates.completedBy !== undefined) dbPayload.completed_by = updates.completedBy;
-  if (updates.startDate !== undefined) dbPayload.start_date = updates.startDate; // <-- NOUVEAU
+  if (updates.startDate !== undefined) dbPayload.start_date = updates.startDate;
   if (updates.deadline !== undefined) dbPayload.deadline = updates.deadline;
 
   const { error } = await supabase.from('elearning_modules').update(dbPayload).eq('id', id);
