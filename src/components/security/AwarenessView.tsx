@@ -127,7 +127,7 @@ export default function AwarenessView() {
   const [parsedLmsData, setParsedLmsData] = useState({
     name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [] as string[],
     startDate: undefined as string | undefined, deadline: undefined as string | undefined,
-    fileLoaded: false, selectedModuleId: "new"
+    fileLoaded: false, selectedModuleId: "new", isRenewal: false
   });
 
   const [updatedProfilesBatch, setUpdatedProfilesBatch] = useState<PhishingProfile[]>([]);
@@ -261,7 +261,7 @@ export default function AwarenessView() {
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
       toast.success("Statistiques de la formation synchronisées avec succès !");
       setIsLmsImportOpen(false);
-      setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], startDate: undefined, deadline: undefined, fileLoaded: false, selectedModuleId: "new" });
+      setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], startDate: undefined, deadline: undefined, fileLoaded: false, selectedModuleId: "new", isRenewal: false });
       setUpdatedProfilesBatch([]);
     }
   });
@@ -485,9 +485,8 @@ export default function AwarenessView() {
             const pKey = keys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
             const eKey = keys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
 
-            // Nouvelles clés pour les dates
-            startDateKey = keys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début de session 1');
-            endDateKey = keys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin de session 1');
+            startDateKey = keys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début');
+            endDateKey = keys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin');
 
             if (mKey && pKey && eKey) {
               validRows = rows;
@@ -514,7 +513,38 @@ export default function AwarenessView() {
 
         const firstRow = validRows[0];
         const tempName = String(firstRow[parcoursKey!] || "").trim();
-        const matchedModule = modules.find(m => m.name.toLowerCase() === tempName.toLowerCase());
+
+        // --- LOGIQUE DE RENOUVELLEMENT ---
+        const matchingModules = modules.filter(m => m.name.toLowerCase() === tempName.toLowerCase());
+        let matchedModule: ElearningModule | undefined = undefined;
+        let isRenewal = false;
+
+        // On cherche d'abord la date de fin dans l'Excel pour comparer
+        validRows.forEach((row) => {
+          if (!endDateFound && endDateKey && row[endDateKey]) {
+            endDateFound = parseExcelDate(row[endDateKey]);
+          }
+          if (!startDateFound && startDateKey && row[startDateKey]) {
+            startDateFound = parseExcelDate(row[startDateKey]);
+          }
+        });
+
+        if (matchingModules.length > 0) {
+          // On prend la dernière session créée avec ce nom
+          matchingModules.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+          const latestModule = matchingModules[0];
+
+          const existingDeadlineIso = latestModule.deadline ? new Date(latestModule.deadline).toISOString().split('T')[0] : null;
+          const newDeadlineIso = endDateFound ? new Date(endDateFound).toISOString().split('T')[0] : null;
+
+          if (existingDeadlineIso && newDeadlineIso && existingDeadlineIso !== newDeadlineIso) {
+            isRenewal = true;
+            matchedModule = undefined; // Force la création
+          } else {
+            matchedModule = latestModule; // Mise à jour de la session existante
+          }
+        }
+
         const existingCompletedEmails = matchedModule?.completedBy || (matchedModule as any)?.completed_by || [];
         const newlyCompletedEmails: string[] = [];
 
@@ -523,16 +553,7 @@ export default function AwarenessView() {
           const etat = String(row[etatKey!] || "").trim().toLowerCase();
           const parcours = String(row[parcoursKey!] || "").trim();
 
-          // Récupération des dates (on prend la première date valide qu'on croise pour tout le module)
-          if (!startDateFound && startDateKey && row[startDateKey]) {
-            startDateFound = parseExcelDate(row[startDateKey]);
-          }
-          if (!endDateFound && endDateKey && row[endDateKey]) {
-            endDateFound = parseExcelDate(row[endDateKey]);
-          }
-
           if (!email || email === "undefined" || email === "") return;
-
           if (parcours && !moduleName) moduleName = parcours;
 
           total++;
@@ -583,7 +604,8 @@ export default function AwarenessView() {
           startDate: startDateFound,
           deadline: endDateFound,
           fileLoaded: true,
-          selectedModuleId: matchedModule ? matchedModule.id : "new"
+          selectedModuleId: matchedModule ? matchedModule.id : "new",
+          isRenewal: isRenewal
         });
 
         setIsLmsImportOpen(true);
@@ -679,8 +701,13 @@ export default function AwarenessView() {
   const avgCompromiseRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.compromisedCount), 0) / totalMailsSent) * 100) : 0;
   const avgReportRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.reportedCount), 0) / totalMailsSent) * 100) : 0;
 
+  // LECTURE SÉCURISÉE DES KPIS E-LEARNING ET OBJECTIF DE 95%
   const totalElearningAssigned = modules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
   const totalElearningCompleted = modules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
+
+  const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
+  const elearningGoalReached = elearningRate >= 95;
+  const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100)); // Progression par rapport à l'objectif de 95%
 
   const sortedCampaigns = [...campaigns].sort((a, b) => new Date(a.sendDate).getTime() - new Date(b.sendDate).getTime());
 
@@ -736,14 +763,18 @@ export default function AwarenessView() {
           </CardContent>
         </Card>
 
-        <Card className="border-l-4 border-l-primary shadow-sm">
+        {/* NOUVEAU KPI E-LEARNING AVEC OBJECTIF DE 95% */}
+        <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Couverture E-Learning</CardTitle>
-            <GraduationCap className="w-4 h-4 text-primary" />
+            <Target className={`w-4 h-4 ${elearningGoalReached ? 'text-emerald-500' : 'text-primary'}`} />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0}%</div>
-            <p className="text-[10px] text-muted-foreground mt-2">Collaborateurs formés</p>
+            <div className="text-2xl font-bold flex items-baseline gap-1">
+              {elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span>
+            </div>
+            <Progress value={elearningProgress} className={`h-1.5 mt-2 ${elearningGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-primary'}`} />
+            <p className="text-[10px] text-muted-foreground mt-2">Objectif de réalisation</p>
           </CardContent>
         </Card>
       </div>
@@ -785,7 +816,7 @@ export default function AwarenessView() {
                   />
                   <Button variant="outline" size="sm" asChild>
                     <label htmlFor="lms-upload" className="cursor-pointer">
-                      <Upload className="w-4 h-4 mr-2" /> Import LMS (Excel)
+                      <Upload className="w-4 h-4 mr-2" /> Import (Excel)
                     </label>
                   </Button>
                 </div>
@@ -1097,7 +1128,7 @@ export default function AwarenessView() {
                           <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
                         </Button>
                       </div>
-                      <CardTitle className="text-lg">{m.name}</CardTitle>
+                      <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
                     </CardHeader>
                     <CardContent className="flex-1 space-y-4">
                       <div className="space-y-2">
@@ -1112,14 +1143,12 @@ export default function AwarenessView() {
                           <Users className="w-3 h-3" />
                           <span>{completed} / {total} validés</span>
                         </div>
-                        <div className="flex items-center gap-1 text-amber-600 font-medium">
-                          <CalendarDays className="w-3 h-3" />
-                          <span>
-                            {m.startDate ? new Date(m.startDate).toLocaleDateString() : '--'}
-                            {' au '}
-                            {m.deadline ? new Date(m.deadline).toLocaleDateString() : '--'}
-                          </span>
-                        </div>
+                        {(m.startDate || m.deadline) && (
+                          <div className="flex flex-col text-[10px] text-muted-foreground text-right">
+                            {m.startDate && <span>Du {new Date(m.startDate).toLocaleDateString()}</span>}
+                            {m.deadline && <span className="text-amber-600">Au {new Date(m.deadline).toLocaleDateString()}</span>}
+                          </div>
+                        )}
                       </div>
                     </CardContent>
                     <div className="p-4 bg-muted/30 border-t flex gap-2">
@@ -1250,16 +1279,16 @@ export default function AwarenessView() {
             return (
               <div className="space-y-6">
 
-                {selectedModule.startDate && selectedModule.deadline && (
+                {(selectedModule.startDate || selectedModule.deadline) && (
                   <div className="bg-muted/30 p-3 rounded-lg flex items-center justify-center gap-4 text-sm font-medium border border-border/50">
                     <div className="flex flex-col items-center">
                       <span className="text-xs text-muted-foreground">Début</span>
-                      <span>{new Date(selectedModule.startDate).toLocaleDateString()}</span>
+                      <span>{selectedModule.startDate ? new Date(selectedModule.startDate).toLocaleDateString() : '--'}</span>
                     </div>
                     <div className="h-4 w-px bg-border"></div>
                     <div className="flex flex-col items-center">
                       <span className="text-xs text-muted-foreground">Fin</span>
-                      <span className="text-amber-600">{new Date(selectedModule.deadline).toLocaleDateString()}</span>
+                      <span className="text-amber-600">{selectedModule.deadline ? new Date(selectedModule.deadline).toLocaleDateString() : '--'}</span>
                     </div>
                   </div>
                 )}
@@ -1419,7 +1448,7 @@ export default function AwarenessView() {
 
       <Dialog open={isLmsImportOpen} onOpenChange={(open) => {
         setIsLmsImportOpen(open);
-        if(!open) setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], startDate: undefined, deadline: undefined, fileLoaded: false, selectedModuleId: "new" });
+        if(!open) setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], startDate: undefined, deadline: undefined, fileLoaded: false, selectedModuleId: "new", isRenewal: false });
       }}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -1429,6 +1458,13 @@ export default function AwarenessView() {
           <div className="space-y-4">
             {parsedLmsData.fileLoaded && (
               <div className="bg-primary/5 p-4 rounded-lg border border-primary/20 space-y-4">
+
+                {parsedLmsData.isRenewal && (
+                  <div className="bg-blue-500/10 border border-blue-500/20 p-3 rounded-md text-sm text-blue-700 dark:text-blue-400 mb-4 flex items-start gap-2">
+                    <Clock className="w-5 h-5 shrink-0 mt-0.5" />
+                    <p><strong>Renouvellement détecté :</strong> Les dates de cette session diffèrent de la précédente. Un nouveau module va être créé automatiquement pour conserver l'historique.</p>
+                  </div>
+                )}
 
                 <div className="space-y-1">
                   <Label>Action à réaliser</Label>
