@@ -42,6 +42,7 @@ export interface ElearningModule {
   totalAssigned: number;
   completedCount: number;
   completedBy?: string[];
+  startDate?: string;
   deadline?: string;
   createdAt?: string;
 }
@@ -128,7 +129,8 @@ export const fetchElearningModules = async (): Promise<ElearningModule[]> => {
     targetAudience: item.target_audience,
     totalAssigned: item.total_assigned,
     completedCount: item.completed_count,
-    completedBy: item.completed_by || [], // <-- LECTURE
+    completedBy: item.completed_by || [],
+    startDate: item.start_date, // <-- NOUVEAU
     deadline: item.deadline,
     createdAt: item.created_at
   }));
@@ -140,14 +142,16 @@ export const createElearningModule = async (module: Omit<ElearningModule, 'id' |
     target_audience: module.targetAudience || 'Tous',
     total_assigned: module.totalAssigned || 0,
     completed_count: module.completedCount || 0,
-    completed_by: module.completedBy || [], // <-- ECRITURE
+    completed_by: module.completedBy || [],
+    start_date: module.startDate, // <-- NOUVEAU
     deadline: module.deadline
   };
   const { data, error } = await supabase.from('elearning_modules').insert([dbPayload]).select().single();
   if (error) throw error;
   return {
     id: data.id, name: data.name, targetAudience: data.target_audience,
-    totalAssigned: data.total_assigned, completedCount: data.completed_count, completedBy: data.completed_by, deadline: data.deadline
+    totalAssigned: data.total_assigned, completedCount: data.completed_count,
+    completedBy: data.completed_by, startDate: data.start_date, deadline: data.deadline
   };
 };
 
@@ -157,7 +161,8 @@ export const updateElearningModule = async (id: string, updates: Partial<Elearni
   if (updates.targetAudience !== undefined) dbPayload.target_audience = updates.targetAudience;
   if (updates.totalAssigned !== undefined) dbPayload.total_assigned = updates.totalAssigned;
   if (updates.completedCount !== undefined) dbPayload.completed_count = updates.completedCount;
-  if (updates.completedBy !== undefined) dbPayload.completed_by = updates.completedBy; // <-- ECRITURE
+  if (updates.completedBy !== undefined) dbPayload.completed_by = updates.completedBy;
+  if (updates.startDate !== undefined) dbPayload.start_date = updates.startDate; // <-- NOUVEAU
   if (updates.deadline !== undefined) dbPayload.deadline = updates.deadline;
 
   const { error } = await supabase.from('elearning_modules').update(dbPayload).eq('id', id);
