@@ -285,7 +285,7 @@ export default function MessagerieView() {
         <Card className={`border-l-4 shadow-sm ${currentMonthData && currentMonthData.tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
-              <span className="flex items-center gap-2"><AlertTriangle className={`w-4 h-4 ${currentMonthData && currentMonthData.tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} /> Menaces (Fraude)</span>
+              <span className="flex items-center gap-2"><AlertTriangle className={`w-4 h-4 ${currentMonthData && currentMonthData.tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} /> Fraude</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0">
@@ -293,7 +293,7 @@ export default function MessagerieView() {
               {currentMonthData?.fraude || 0} <span className="text-sm font-normal opacity-70">({currentMonthData?.tauxFraude || 0}%)</span>
             </div>
             <div className="flex items-center justify-between mt-1">
-              <p className="text-[10px] text-muted-foreground">Mails qualifiés malveillants</p>
+              <p className="text-[10px] text-muted-foreground">Mails provenants de la BP Fraude</p>
               {currentMonthData && previousMonthData && getTrend(currentMonthData.fraude, previousMonthData.fraude)}
             </div>
           </CardContent>
@@ -302,7 +302,7 @@ export default function MessagerieView() {
         <Card className="border-l-4 border-l-emerald-500 shadow-sm">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
-              <span className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-emerald-500" /> Signalements 1212</span>
+              <span className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-emerald-500" /> Remontées 1212</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0">
@@ -319,7 +319,7 @@ export default function MessagerieView() {
         <Card className="border-l-4 border-l-slate-400 shadow-sm">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
-              <span className="flex items-center gap-2"><Globe className="w-4 h-4 text-slate-500" /> Sollicitations Ext.</span>
+              <span className="flex items-center gap-2"><Globe className="w-4 h-4 text-slate-500" /> Externes</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0">
@@ -375,8 +375,8 @@ export default function MessagerieView() {
                   />
                   <Legend wrapperStyle={{ paddingTop: "20px", fontSize: "12px" }} />
 
-                  <Bar dataKey="interne" name="Signalements 1212" stackId="a" fill="#10b981" radius={[0, 0, 4, 4]} />
-                  <Bar dataKey="fraude" name="Menaces (Fraude)" stackId="a" fill="#f59e0b" />
+                  <Bar dataKey="interne" name="Remontées 1212" stackId="a" fill="#10b981" radius={[0, 0, 4, 4]} />
+                  <Bar dataKey="fraude" name="Fraude" stackId="a" fill="#f59e0b" />
                   <Bar dataKey="externe" name="Externe" stackId="a" fill="#64748b" radius={[4, 4, 0, 0]} />
 
                   <Line type="monotone" dataKey="total" name="Volume Total" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
@@ -400,8 +400,8 @@ export default function MessagerieView() {
               <TableRow className="bg-muted/30 hover:bg-muted/30">
                 <TableHead>Période</TableHead>
                 <TableHead>Volume Total</TableHead>
-                <TableHead>Fraude</TableHead>
-                <TableHead>Signalements 1212</TableHead>
+                <TableHead>BP Fraude (De)</TableHead>
+                <TableHead>Remontées 1212</TableHead>
                 <TableHead>Externe</TableHead>
                 <TableHead className="text-right">Erreurs (Bruit)</TableHead>
               </TableRow>
@@ -547,7 +547,7 @@ export default function MessagerieView() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label className="text-emerald-600 dark:text-emerald-400">Signalements 1212</Label>
+                    <Label className="text-emerald-600 dark:text-emerald-400">Remontées 1212</Label>
                     <Input type="number" min="0" required value={newStats.interne1212} onChange={(e) => setNewStats({...newStats, interne1212: parseInt(e.target.value) || 0})} />
                   </div>
                   <div className="space-y-2">
