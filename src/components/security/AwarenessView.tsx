@@ -839,7 +839,7 @@ export default function AwarenessView() {
 
         <Card className={`border-l-4 shadow-sm ${campaigns.length > 0 && (safeNum(campaigns[0].compromisedCount) / safeNum(campaigns[0].targetCount) * 100) > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Saisies</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Compromission</CardTitle>
             <AlertTriangle className="w-4 h-4 text-rose-500" />
           </CardHeader>
           <CardContent>
