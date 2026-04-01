@@ -38,10 +38,12 @@ export interface PhishingProfile {
 export interface ElearningModule {
   id: string;
   name: string;
-  targetAudience: string;
+  targetAudience?: string;
   totalAssigned: number;
   completedCount: number;
-  deadline: string | null;
+  completedBy?: string[];
+  deadline?: string;
+  createdAt?: string;
 }
 
 // --- API CAMPAGNES ---
@@ -116,32 +118,53 @@ export async function upsertPhishingProfiles(profiles: PhishingProfile[]): Promi
   if (error) throw error;
 }
 
-// --- API E-LEARNING ---
-export async function fetchElearningModules(): Promise<ElearningModule[]> {
-  const { data, error } = await (supabase as any).from('elearning_modules').select('*').order('created_at', { ascending: false });
+// API E-LEARNING
+export const fetchElearningModules = async (): Promise<ElearningModule[]> => {
+  const { data, error } = await supabase.from('elearning_modules').select('*').order('created_at', { ascending: false });
   if (error) throw error;
-  return data.map((row: any) => ({
-    id: row.id, name: row.name, targetAudience: row.target_audience,
-    totalAssigned: row.total_assigned, completedCount: row.completed_count, deadline: row.deadline
+  return data.map(item => ({
+    id: item.id,
+    name: item.name,
+    targetAudience: item.target_audience,
+    totalAssigned: item.total_assigned,
+    completedCount: item.completed_count,
+    completedBy: item.completed_by || [], // <-- LECTURE
+    deadline: item.deadline,
+    createdAt: item.created_at
   }));
-}
+};
 
-export async function createElearningModule(module: Omit<ElearningModule, 'id' | 'completedCount'>): Promise<void> {
-  const { error } = await (supabase as any).from('elearning_modules').insert({
-    name: module.name, target_audience: module.targetAudience,
-    total_assigned: module.totalAssigned, deadline: module.deadline
-  });
+export const createElearningModule = async (module: Omit<ElearningModule, 'id' | 'createdAt'>): Promise<ElearningModule> => {
+  const dbPayload = {
+    name: module.name,
+    target_audience: module.targetAudience || 'Tous',
+    total_assigned: module.totalAssigned || 0,
+    completed_count: module.completedCount || 0,
+    completed_by: module.completedBy || [], // <-- ECRITURE
+    deadline: module.deadline
+  };
+  const { data, error } = await supabase.from('elearning_modules').insert([dbPayload]).select().single();
   if (error) throw error;
-}
+  return {
+    id: data.id, name: data.name, targetAudience: data.target_audience,
+    totalAssigned: data.total_assigned, completedCount: data.completed_count, completedBy: data.completed_by, deadline: data.deadline
+  };
+};
 
-export async function updateElearningModule(id: string, updates: Partial<ElearningModule>): Promise<void> {
-  const payload: any = {};
-  if (updates.completedCount !== undefined) payload.completed_count = updates.completedCount;
-  const { error } = await (supabase as any).from('elearning_modules').update(payload).eq('id', id);
-  if (error) throw error;
-}
+export const updateElearningModule = async (id: string, updates: Partial<ElearningModule>): Promise<void> => {
+  const dbPayload: any = {};
+  if (updates.name !== undefined) dbPayload.name = updates.name;
+  if (updates.targetAudience !== undefined) dbPayload.target_audience = updates.targetAudience;
+  if (updates.totalAssigned !== undefined) dbPayload.total_assigned = updates.totalAssigned;
+  if (updates.completedCount !== undefined) dbPayload.completed_count = updates.completedCount;
+  if (updates.completedBy !== undefined) dbPayload.completed_by = updates.completedBy; // <-- ECRITURE
+  if (updates.deadline !== undefined) dbPayload.deadline = updates.deadline;
 
-export async function deleteElearningModule(id: string): Promise<void> {
-  const { error } = await (supabase as any).from('elearning_modules').delete().eq('id', id);
+  const { error } = await supabase.from('elearning_modules').update(dbPayload).eq('id', id);
   if (error) throw error;
-}
+};
+
+export const deleteElearningModule = async (id: string): Promise<void> => {
+  const { error } = await supabase.from('elearning_modules').delete().eq('id', id);
+  if (error) throw error;
+};
