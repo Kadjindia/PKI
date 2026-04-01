@@ -1,13 +1,14 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen, ShieldAlert, Users } from "lucide-react";
+import { LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen, ShieldAlert, Users, Mail } from "lucide-react"; // <-- Ajout de Mail
 
 const NAV_ITEMS = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
   { path: "/saisie", label: "Saisie des données", icon: PenLine },
   { path: "/gouvernance", label: "Revue des Politiques", icon: BookOpen },
   { path: "/security-ops", label: "PAS & Audits", icon: ShieldAlert },
-  { path: "/sensibilisation", label: "Sensibilisation", icon: Users }, // <-- LE NOUVEAU MENU EST ICI
+  { path: "/sensibilisation", label: "Sensibilisation", icon: Users },
+  { path: "/messagerie", label: "Messagerie SSI", icon: Mail }, // <-- LE NOUVEAU MENU EST ICI
   { path: "/alertes", label: "Alertes", icon: Bell },
   { path: "/connecteurs", label: "Connecteurs", icon: Plug },
 ];
