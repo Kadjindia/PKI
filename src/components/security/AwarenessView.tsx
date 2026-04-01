@@ -41,7 +41,7 @@ import {
   ArrowUpDown, ArrowDown, ArrowUp, Eye, Target, BarChart3, CalendarDays, Clock, CheckCircle2
 } from "lucide-react";
 
-// --- FONCTIONS DE SÉCURITÉ ANTI-NaN ---
+// --- FONCTIONS DE SÉCURITÉ ---
 const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
@@ -54,6 +54,43 @@ const calculatePercentage = (part: number, total: number) => {
   if (t === 0) return 0;
   const result = Math.round((p / t) * 100);
   return isNaN(result) ? 0 : result;
+};
+
+const calculateRiskScore = (
+  clicked: number,
+  attachment: number,
+  compromised: number,
+  reported: number,
+  training: number,
+  isConsecutive: boolean
+) => {
+  let score = (safeNum(clicked) * 20) +
+              (safeNum(attachment) * 20) +
+              (safeNum(compromised) * 40) -
+              (safeNum(reported) * 10) -
+              (safeNum(training) * 5);
+
+  if (isConsecutive) {
+    score += 20;
+  }
+  return Math.min(100, Math.max(0, score));
+};
+
+// UTILITAIRE POUR LIRE LES DATES EXCEL (Nombres ou Texte)
+const parseExcelDate = (excelDate: any) => {
+  if (!excelDate) return undefined;
+  if (typeof excelDate === 'number') {
+    return new Date(Math.round((excelDate - 25569) * 86400 * 1000)).toISOString();
+  }
+  if (typeof excelDate === 'string') {
+    if (excelDate.includes('/')) {
+      const parts = excelDate.split('/');
+      if (parts.length === 3) return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).toISOString();
+    }
+    const d = new Date(excelDate);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  return undefined;
 };
 
 export default function AwarenessView() {
@@ -88,13 +125,13 @@ export default function AwarenessView() {
   });
 
   const [parsedLmsData, setParsedLmsData] = useState({
-    name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0,
-    completedBy: [] as string[], // On stocke les mails qui ont fini
+    name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [] as string[],
+    startDate: undefined as string | undefined, deadline: undefined as string | undefined,
     fileLoaded: false, selectedModuleId: "new"
   });
 
   const [updatedProfilesBatch, setUpdatedProfilesBatch] = useState<PhishingProfile[]>([]);
-  const [newModule, setNewModule] = useState({ name: "", targetAudience: "Tous", totalAssigned: 100, deadline: "" });
+  const [newModule, setNewModule] = useState({ name: "", targetAudience: "Tous", totalAssigned: 100, startDate: "", deadline: "" });
 
   const { data: campaigns = [], isLoading: isLoadingCampaigns } = useQuery({ queryKey: ['phishing'], queryFn: fetchPhishingCampaigns });
   const { data: profiles = [], isLoading: isLoadingProfiles } = useQuery({ queryKey: ['profiles'], queryFn: fetchPhishingProfiles });
@@ -103,7 +140,10 @@ export default function AwarenessView() {
   // MUTATIONS PHISHING
   const addCampaignMutation = useMutation({
     mutationFn: async () => {
-      await createPhishingCampaign(newCampaign as any);
+      await createPhishingCampaign({
+        ...newCampaign,
+        detailed_results: newCampaign.detailedResults
+      } as any);
       if (updatedProfilesBatch.length > 0) {
         await upsertPhishingProfiles(updatedProfilesBatch);
       }
@@ -115,38 +155,58 @@ export default function AwarenessView() {
       setIsAddCampaignOpen(false);
       setNewCampaign({ name: "", sendDate: new Date().toISOString().split('T')[0], difficulty: "moyen", targetCount: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, recidivistsCount: 0, failedEmails: [], detailedResults: [], fileLoaded: false });
       setUpdatedProfilesBatch([]);
-    },
-    onError: (error: any) => {
-      console.error("Erreur d'insertion Supabase:", error);
-      toast.error("Erreur technique: " + (error.message || "Vérifiez la base de données."));
     }
   });
 
   const delCampaignMutation = useMutation({
     mutationFn: async (campaign: PhishingCampaign) => {
-      if (campaign.detailedResults && campaign.detailedResults.length > 0) {
+      const detailed = campaign.detailedResults || (campaign as any).detailed_results || [];
+
+      if (detailed.length > 0) {
         const currentProfiles = await fetchPhishingProfiles();
         const profilesMap = new Map(currentProfiles.map(p => [p.email, p]));
         const profilesToUpdate: PhishingProfile[] = [];
 
-        campaign.detailedResults.forEach(res => {
+        detailed.forEach((res: any) => {
           const p = profilesMap.get(res.email);
           if (p) {
-            p.totalCampaigns = Math.max(0, p.totalCampaigns - 1);
-            p.openedCount = Math.max(0, p.openedCount - (res.opened ? 1 : 0));
-            p.attachmentOpenedCount = Math.max(0, p.attachmentOpenedCount - (res.attachment ? 1 : 0));
-            p.clickedCount = Math.max(0, p.clickedCount - (res.clicked ? 1 : 0));
-            p.compromisedCount = Math.max(0, p.compromisedCount - (res.compromised ? 1 : 0));
-            p.trainingCompletedCount = Math.max(0, p.trainingCompletedCount - (res.training ? 1 : 0));
-            p.reportedCount = Math.max(0, p.reportedCount - (res.reported ? 1 : 0));
+            const currentTotal = safeNum(p.totalCampaigns ?? (p as any).total_campaigns);
+            const currentOpened = safeNum(p.openedCount ?? (p as any).opened_count);
+            const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
+            const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
+            const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
+            const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
+            const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
 
-            let riskScore = (p.clickedCount * 20) + (p.attachmentOpenedCount * 20) + (p.compromisedCount * 40) - (p.reportedCount * 10) - (p.trainingCompletedCount * 5);
-            p.riskScore = Math.min(100, Math.max(0, riskScore));
+            p.totalCampaigns = Math.max(0, currentTotal - 1);
+            (p as any).total_campaigns = p.totalCampaigns;
 
-            if (p.clickedCount === 0 && p.attachmentOpenedCount === 0) {
+            p.openedCount = Math.max(0, currentOpened - (res.opened ? 1 : 0));
+            (p as any).opened_count = p.openedCount;
+
+            p.attachmentOpenedCount = Math.max(0, currentAttachment - (res.attachment ? 1 : 0));
+            (p as any).attachment_opened_count = p.attachmentOpenedCount;
+
+            p.clickedCount = Math.max(0, currentClicked - (res.clicked ? 1 : 0));
+            (p as any).clicked_count = p.clickedCount;
+
+            p.compromisedCount = Math.max(0, currentCompromised - (res.compromised ? 1 : 0));
+            (p as any).compromised_count = p.compromisedCount;
+
+            p.trainingCompletedCount = currentTraining;
+            (p as any).training_completed_count = p.trainingCompletedCount;
+
+            p.reportedCount = Math.max(0, currentReported - (res.reported ? 1 : 0));
+            (p as any).reported_count = p.reportedCount;
+
+            if (p.clickedCount + p.attachmentOpenedCount <= 1) {
               p.isConsecutive = false;
+              (p as any).is_consecutive = false;
               p.lastCampaignClicked = false;
             }
+
+            p.riskScore = calculateRiskScore(p.clickedCount, p.attachmentOpenedCount, p.compromisedCount, p.reportedCount, p.trainingCompletedCount, p.isConsecutive || false);
+
             profilesToUpdate.push(p);
           }
         });
@@ -160,7 +220,7 @@ export default function AwarenessView() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['phishing'] });
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Campagne supprimée et profils mis à jour !");
+      toast.success("Campagne supprimée et compteurs/scores restaurés !");
       setSelectedCampaign(null);
       setIsRecidivistsDialogOpen(false);
     }
@@ -179,17 +239,17 @@ export default function AwarenessView() {
         total_assigned: total,
         completedCount: completed,
         completed_count: completed,
-        completedBy: parsedLmsData.completedBy, // <-- SAUVEGARDE DE LA LISTE DES MAILS
+        completedBy: parsedLmsData.completedBy,
         completed_by: parsedLmsData.completedBy,
+        startDate: parsedLmsData.startDate,
+        start_date: parsedLmsData.startDate,
+        deadline: parsedLmsData.deadline,
       };
 
       if (parsedLmsData.selectedModuleId !== "new") {
         await updateElearningModule(parsedLmsData.selectedModuleId, payload as any);
       } else {
-        await createElearningModule({
-          ...payload,
-          deadline: new Date(new Date().setMonth(new Date().getMonth() + 1)).toISOString()
-        } as any);
+        await createElearningModule(payload as any);
       }
 
       if (updatedProfilesBatch.length > 0) {
@@ -201,33 +261,33 @@ export default function AwarenessView() {
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
       toast.success("Statistiques de la formation synchronisées avec succès !");
       setIsLmsImportOpen(false);
-      setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], fileLoaded: false, selectedModuleId: "new" });
+      setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], startDate: undefined, deadline: undefined, fileLoaded: false, selectedModuleId: "new" });
       setUpdatedProfilesBatch([]);
-    },
-    onError: (error: any) => {
-      console.error("Erreur de sauvegarde LMS Supabase:", error);
-      toast.error(`Erreur de sauvegarde: Vérifiez la base de données. (${error.message})`);
     }
   });
 
-  // LA MAGIE DU ROLLBACK E-LEARNING
   const delModuleMutation = useMutation({
     mutationFn: async (module: ElearningModule) => {
-      // 1. On retrouve tous les profils qui avaient eu le bonus pour ce module
-      if (module.completedBy && module.completedBy.length > 0) {
+      const completedEmails = module.completedBy || (module as any).completed_by || [];
+
+      if (completedEmails.length > 0) {
         const currentProfiles = await fetchPhishingProfiles();
         const profilesMap = new Map(currentProfiles.map(p => [p.email, p]));
         const profilesToUpdate: PhishingProfile[] = [];
 
-        module.completedBy.forEach(email => {
+        completedEmails.forEach((email: string) => {
           const p = profilesMap.get(email);
           if (p) {
-            // On leur enlève leur formation lue
-            p.trainingCompletedCount = Math.max(0, safeNum(p.trainingCompletedCount) - 1);
+            const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
+            const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
+            const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
+            const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
+            const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
 
-            // On recalcule leur score
-            let riskScore = (safeNum(p.clickedCount) * 20) + (safeNum(p.attachmentOpenedCount) * 20) + (safeNum(p.compromisedCount) * 40) - (safeNum(p.reportedCount) * 10) - (safeNum(p.trainingCompletedCount) * 5);
-            p.riskScore = Math.min(100, Math.max(0, riskScore));
+            p.trainingCompletedCount = Math.max(0, currentTraining - 1);
+            (p as any).training_completed_count = p.trainingCompletedCount;
+
+            p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
 
             profilesToUpdate.push(p);
           }
@@ -237,14 +297,12 @@ export default function AwarenessView() {
           await upsertPhishingProfiles(profilesToUpdate);
         }
       }
-
-      // 2. On supprime le module
       await deleteElearningModule(module.id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['elearning'] });
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Module supprimé et Risk Scores restaurés (Rollback) !");
+      toast.success("Module supprimé et compteurs/scores restaurés (Rollback) !");
       setModuleToDelete(null);
     }
   });
@@ -253,6 +311,8 @@ export default function AwarenessView() {
     mutationFn: async (module: typeof newModule) => {
       await createElearningModule({
         ...module,
+        startDate: module.startDate,
+        start_date: module.startDate,
         total_assigned: module.totalAssigned,
         completed_count: 0
       } as any);
@@ -332,17 +392,27 @@ export default function AwarenessView() {
           riskScore: 0, lastCampaignClicked: false, isConsecutive: false
         };
 
-        const newOpenedCount = existing.openedCount + (hasOpened ? 1 : 0);
-        const newAttachmentCount = (existing.attachmentOpenedCount || 0) + (hasAttachmentOpened ? 1 : 0);
-        const newClickedCount = existing.clickedCount + (hasClicked ? 1 : 0);
-        const newCompromisedCount = existing.compromisedCount + (hasCompromised ? 1 : 0);
-        const newTrainingCount = (existing.trainingCompletedCount || 0) + (hasTraining ? 1 : 0);
-        const newReportedCount = existing.reportedCount + (hasReported ? 1 : 0);
-        const newTotalCampaigns = existing.totalCampaigns + 1;
+        const currentOpened = safeNum(existing.openedCount ?? (existing as any).opened_count);
+        const currentAttachment = safeNum(existing.attachmentOpenedCount ?? (existing as any).attachment_opened_count);
+        const currentClicked = safeNum(existing.clickedCount ?? (existing as any).clicked_count);
+        const currentCompromised = safeNum(existing.compromisedCount ?? (existing as any).compromised_count);
+        const currentTraining = safeNum(existing.trainingCompletedCount ?? (existing as any).training_completed_count);
+        const currentReported = safeNum(existing.reportedCount ?? (existing as any).reported_count);
+        const currentTotalCamp = safeNum(existing.totalCampaigns ?? (existing as any).total_campaigns);
+
+        const newOpenedCount = currentOpened + (hasOpened ? 1 : 0);
+        const newAttachmentCount = currentAttachment + (hasAttachmentOpened ? 1 : 0);
+        const newClickedCount = currentClicked + (hasClicked ? 1 : 0);
+        const newCompromisedCount = currentCompromised + (hasCompromised ? 1 : 0);
+        const newTrainingCount = currentTraining + (hasTraining ? 1 : 0);
+        const newReportedCount = currentReported + (hasReported ? 1 : 0);
+        const newTotalCampaigns = currentTotalCamp + 1;
 
         const fellThisTime = hasClicked || hasAttachmentOpened;
-        const fellInPast = existing.clickedCount > 0 || (existing.attachmentOpenedCount && existing.attachmentOpenedCount > 0);
+        const fellInPast = currentClicked > 0 || currentAttachment > 0;
+
         const isRecidivist = fellThisTime && fellInPast;
+        const newConsecutive = existing.isConsecutive || isRecidivist;
         if (isRecidivist) recidivists++;
 
         detailedResults.push({
@@ -356,9 +426,7 @@ export default function AwarenessView() {
           isRecidivist: isRecidivist
         });
 
-        let riskScore = (newClickedCount * 20) + (newAttachmentCount * 20) + (newCompromisedCount * 40) - (newReportedCount * 10) - (newTrainingCount * 5);
-        if (existing.lastCampaignClicked && fellThisTime) riskScore += 20;
-        riskScore = Math.min(100, Math.max(0, riskScore));
+        const riskScore = calculateRiskScore(newClickedCount, newAttachmentCount, newCompromisedCount, newReportedCount, newTrainingCount, newConsecutive);
 
         updatedProfiles.push({
           email, firstName, lastName, department,
@@ -371,7 +439,7 @@ export default function AwarenessView() {
           reportedCount: newReportedCount,
           riskScore: riskScore,
           lastCampaignClicked: fellThisTime,
-          isConsecutive: (existing.lastCampaignClicked && fellThisTime)
+          isConsecutive: newConsecutive
         });
       });
 
@@ -389,7 +457,7 @@ export default function AwarenessView() {
     reader.readAsText(file);
   };
 
-  // --- PARSEUR LMS (EXCEL .xlsx MULTI-FEUILLES AVEC CHECK NOUVEAUTÉ) ---
+  // --- PARSEUR LMS (EXCEL .xlsx MULTI-FEUILLES) ---
   const handleLmsExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -404,6 +472,8 @@ export default function AwarenessView() {
         let mailKey: string | undefined;
         let parcoursKey: string | undefined;
         let etatKey: string | undefined;
+        let startDateKey: string | undefined;
+        let endDateKey: string | undefined;
 
         for (const sheetName of workbook.SheetNames) {
           const worksheet = workbook.Sheets[sheetName];
@@ -414,6 +484,10 @@ export default function AwarenessView() {
             const mKey = keys.find(k => k.trim().toLowerCase() === 'mail');
             const pKey = keys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
             const eKey = keys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
+
+            // Nouvelles clés pour les dates
+            startDateKey = keys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début de session 1');
+            endDateKey = keys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin de session 1');
 
             if (mKey && pKey && eKey) {
               validRows = rows;
@@ -431,21 +505,31 @@ export default function AwarenessView() {
         }
 
         let moduleName = "";
+        let startDateFound: string | undefined = undefined;
+        let endDateFound: string | undefined = undefined;
+
         let total = 0, completed = 0, inProgress = 0, notStarted = 0;
         const profilesToUpdate: PhishingProfile[] = [];
         const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
 
-        // PREPARATION : On cherche si on met à jour un module (pour ne pas donner les points en double)
         const firstRow = validRows[0];
         const tempName = String(firstRow[parcoursKey!] || "").trim();
         const matchedModule = modules.find(m => m.name.toLowerCase() === tempName.toLowerCase());
-        const existingCompletedEmails = matchedModule?.completedBy || [];
+        const existingCompletedEmails = matchedModule?.completedBy || (matchedModule as any)?.completed_by || [];
         const newlyCompletedEmails: string[] = [];
 
         validRows.forEach((row) => {
           const email = String(row[mailKey!] || "").trim().toLowerCase();
           const etat = String(row[etatKey!] || "").trim().toLowerCase();
           const parcours = String(row[parcoursKey!] || "").trim();
+
+          // Récupération des dates (on prend la première date valide qu'on croise pour tout le module)
+          if (!startDateFound && startDateKey && row[startDateKey]) {
+            startDateFound = parseExcelDate(row[startDateKey]);
+          }
+          if (!endDateFound && endDateKey && row[endDateKey]) {
+            endDateFound = parseExcelDate(row[endDateKey]);
+          }
 
           if (!email || email === "undefined" || email === "") return;
 
@@ -454,7 +538,6 @@ export default function AwarenessView() {
           total++;
           let isCompleted = false;
 
-          // Détection du statut
           if (etat.includes('terminé') || etat.includes('validé') || etat.includes('complété') || etat === 'achevé') {
             completed++;
             isCompleted = true;
@@ -464,15 +547,22 @@ export default function AwarenessView() {
             notStarted++;
           }
 
-          // INTELLIGENCE : On ne donne les -5 points qu'aux NOUVEAUX validés
           if (isCompleted && currentProfilesMap.has(email)) {
             if (!existingCompletedEmails.includes(email)) {
               newlyCompletedEmails.push(email);
 
               const p = { ...currentProfilesMap.get(email)! };
-              p.trainingCompletedCount = safeNum(p.trainingCompletedCount) + 1;
-              let newScore = (safeNum(p.clickedCount) * 20) + (safeNum(p.attachmentOpenedCount) * 20) + (safeNum(p.compromisedCount) * 40) - (safeNum(p.reportedCount) * 10) - (safeNum(p.trainingCompletedCount) * 5);
-              p.riskScore = Math.min(100, Math.max(0, newScore));
+              const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
+              p.trainingCompletedCount = currentTraining + 1;
+              (p as any).training_completed_count = p.trainingCompletedCount;
+
+              const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
+              const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
+              const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
+              const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
+
+              p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
+
               profilesToUpdate.push(p);
             }
           }
@@ -489,7 +579,9 @@ export default function AwarenessView() {
           completedCount: completed,
           inProgressCount: inProgress,
           notStartedCount: notStarted,
-          completedBy: [...existingCompletedEmails, ...newlyCompletedEmails], // Liste combinée (anciens + nouveaux)
+          completedBy: [...existingCompletedEmails, ...newlyCompletedEmails],
+          startDate: startDateFound,
+          deadline: endDateFound,
           fileLoaded: true,
           selectedModuleId: matchedModule ? matchedModule.id : "new"
         });
@@ -552,8 +644,8 @@ export default function AwarenessView() {
         valB = b.department || "";
         break;
       case 'behavior':
-        valA = safeNum(a.clickedCount) + safeNum(a.attachmentOpenedCount) + safeNum(a.compromisedCount);
-        valB = safeNum(b.clickedCount) + safeNum(b.attachmentOpenedCount) + safeNum(b.compromisedCount);
+        valA = safeNum(a.clickedCount ?? (a as any).clicked_count) + safeNum(a.attachmentOpenedCount ?? (a as any).attachment_opened_count) + safeNum(a.compromisedCount ?? (a as any).compromised_count);
+        valB = safeNum(b.clickedCount ?? (b as any).clicked_count) + safeNum(b.attachmentOpenedCount ?? (b as any).attachment_opened_count) + safeNum(b.compromisedCount ?? (b as any).compromised_count);
         break;
       case 'recidive':
         valA = a.isConsecutive ? 1 : 0;
@@ -587,7 +679,6 @@ export default function AwarenessView() {
   const avgCompromiseRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.compromisedCount), 0) / totalMailsSent) * 100) : 0;
   const avgReportRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.reportedCount), 0) / totalMailsSent) * 100) : 0;
 
-  // LECTURE SÉCURISÉE DES KPIS E-LEARNING
   const totalElearningAssigned = modules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
   const totalElearningCompleted = modules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
 
@@ -935,37 +1026,46 @@ export default function AwarenessView() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortedAndFilteredProfiles.map((p) => (
-                        <TableRow key={p.email}>
-                          <TableCell>
-                            <div className="font-medium">{p.firstName} {p.lastName}</div>
-                            <div className="text-xs text-muted-foreground">{p.email}</div>
-                          </TableCell>
-                          <TableCell className="text-sm">{p.department || "-"}</TableCell>
-                          <TableCell>
-                            <div className="flex flex-wrap gap-2 items-center text-xs">
-                              <Badge variant="outline" className="bg-muted/50 border-transparent">Cibles: {p.totalCampaigns}</Badge>
-                              {safeNum(p.openedCount) > 0 && <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200">Ouverts: {safeNum(p.openedCount)}</Badge>}
-                              {safeNum(p.attachmentOpenedCount) > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">PJ: {safeNum(p.attachmentOpenedCount)}</Badge>}
-                              {safeNum(p.clickedCount) > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">Clics: {safeNum(p.clickedCount)}</Badge>}
-                              {safeNum(p.compromisedCount) > 0 && <Badge variant="outline" className="bg-rose-500/10 text-rose-600 border-rose-200 font-bold">Saisies: {safeNum(p.compromisedCount)}</Badge>}
-                              {safeNum(p.trainingCompletedCount) > 0 && <Badge variant="outline" className="bg-indigo-500/10 text-indigo-600 border-indigo-200">Formations lues: {safeNum(p.trainingCompletedCount)}</Badge>}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            {p.isConsecutive ? <Badge variant="outline" className="bg-rose-500 text-white border-transparent">Oui (Alerte)</Badge> : <span className="text-muted-foreground text-sm">Non</span>}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className={`inline-flex items-center justify-center w-10 h-10 rounded-full font-bold ${
-                              safeNum(p.riskScore) >= 60 ? 'bg-rose-100 text-rose-700 border-2 border-rose-500 dark:bg-rose-900/30 dark:text-rose-400' :
-                              safeNum(p.riskScore) >= 30 ? 'bg-amber-100 text-amber-700 border-2 border-amber-500 dark:bg-amber-900/30 dark:text-amber-400' :
-                              'bg-emerald-100 text-emerald-700 border-2 border-emerald-500 dark:bg-emerald-900/30 dark:text-emerald-400'
-                            }`}>
-                              {safeNum(p.riskScore)}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {sortedAndFilteredProfiles.map((p) => {
+                        const tCamp = safeNum(p.totalCampaigns) || safeNum((p as any).total_campaigns);
+                        const oCount = safeNum(p.openedCount) || safeNum((p as any).opened_count);
+                        const aCount = safeNum(p.attachmentOpenedCount) || safeNum((p as any).attachment_opened_count);
+                        const cCount = safeNum(p.clickedCount) || safeNum((p as any).clicked_count);
+                        const sCount = safeNum(p.compromisedCount) || safeNum((p as any).compromised_count);
+                        const tRead = safeNum(p.trainingCompletedCount) || safeNum((p as any).training_completed_count);
+
+                        return (
+                          <TableRow key={p.email}>
+                            <TableCell>
+                              <div className="font-medium">{p.firstName} {p.lastName}</div>
+                              <div className="text-xs text-muted-foreground">{p.email}</div>
+                            </TableCell>
+                            <TableCell className="text-sm">{p.department || "-"}</TableCell>
+                            <TableCell>
+                              <div className="flex flex-wrap gap-2 items-center text-xs">
+                                <Badge variant="outline" className="bg-muted/50 border-transparent">Cibles: {tCamp}</Badge>
+                                {oCount > 0 && <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200">Ouverts: {oCount}</Badge>}
+                                {aCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">PJ: {aCount}</Badge>}
+                                {cCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">Clics: {cCount}</Badge>}
+                                {sCount > 0 && <Badge variant="outline" className="bg-rose-500/10 text-rose-600 border-rose-200 font-bold">Saisies: {sCount}</Badge>}
+                                {tRead > 0 && <Badge variant="outline" className="bg-indigo-500/10 text-indigo-600 border-indigo-200">Formations lues: {tRead}</Badge>}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              {p.isConsecutive ? <Badge variant="outline" className="bg-rose-500 text-white border-transparent">Oui (Alerte)</Badge> : <span className="text-muted-foreground text-sm">Non</span>}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className={`inline-flex items-center justify-center w-10 h-10 rounded-full font-bold ${
+                                safeNum(p.riskScore) >= 60 ? 'bg-rose-100 text-rose-700 border-2 border-rose-500 dark:bg-rose-900/30 dark:text-rose-400' :
+                                safeNum(p.riskScore) >= 30 ? 'bg-amber-100 text-amber-700 border-2 border-amber-500 dark:bg-amber-900/30 dark:text-amber-400' :
+                                'bg-emerald-100 text-emerald-700 border-2 border-emerald-500 dark:bg-emerald-900/30 dark:text-emerald-400'
+                              }`}>
+                                {safeNum(p.riskScore)}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -1012,12 +1112,14 @@ export default function AwarenessView() {
                           <Users className="w-3 h-3" />
                           <span>{completed} / {total} validés</span>
                         </div>
-                        {m.deadline && (
-                          <div className="flex items-center gap-1 text-amber-600 font-medium">
-                            <CalendarDays className="w-3 h-3" />
-                            <span>Échéance: {new Date(m.deadline).toLocaleDateString()}</span>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1 text-amber-600 font-medium">
+                          <CalendarDays className="w-3 h-3" />
+                          <span>
+                            {m.startDate ? new Date(m.startDate).toLocaleDateString() : '--'}
+                            {' au '}
+                            {m.deadline ? new Date(m.deadline).toLocaleDateString() : '--'}
+                          </span>
+                        </div>
                       </div>
                     </CardContent>
                     <div className="p-4 bg-muted/30 border-t flex gap-2">
@@ -1147,6 +1249,21 @@ export default function AwarenessView() {
 
             return (
               <div className="space-y-6">
+
+                {selectedModule.startDate && selectedModule.deadline && (
+                  <div className="bg-muted/30 p-3 rounded-lg flex items-center justify-center gap-4 text-sm font-medium border border-border/50">
+                    <div className="flex flex-col items-center">
+                      <span className="text-xs text-muted-foreground">Début</span>
+                      <span>{new Date(selectedModule.startDate).toLocaleDateString()}</span>
+                    </div>
+                    <div className="h-4 w-px bg-border"></div>
+                    <div className="flex flex-col items-center">
+                      <span className="text-xs text-muted-foreground">Fin</span>
+                      <span className="text-amber-600">{new Date(selectedModule.deadline).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-4">
                   <div className="p-4 border rounded-lg bg-card text-center space-y-1 shadow-sm">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Cibles</p>
@@ -1211,41 +1328,49 @@ export default function AwarenessView() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {selectedCampaign?.detailedResults?.filter(r => r.isRecidivist).map(r => {
-                  const profile = profiles.find(p => p.email === r.email);
-                  return (
-                    <TableRow key={r.email}>
-                      <TableCell>
-                        <div className="font-medium">{profile ? `${profile.firstName} ${profile.lastName}` : "Utilisateur Inconnu"}</div>
-                        <div className="text-xs text-muted-foreground">{r.email}</div>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {profile?.department || "Non assigné"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {profile ? (
-                          <Badge variant="outline" className={`font-bold ${
-                            safeNum(profile.riskScore) >= 60 ? 'bg-rose-100 text-rose-700 border-rose-200' :
-                            safeNum(profile.riskScore) >= 30 ? 'bg-amber-100 text-amber-700 border-amber-200' :
-                            'bg-emerald-100 text-emerald-700 border-emerald-200'
-                          }`}>
-                            {safeNum(profile.riskScore)} pts
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground">-</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                {(() => {
+                  const detailedResults = selectedCampaign?.detailedResults || (selectedCampaign as any)?.detailed_results || [];
+                  return detailedResults.filter((r: any) => r.isRecidivist).map((r: any) => {
+                    const profile = profiles.find(p => p.email === r.email);
+                    return (
+                      <TableRow key={r.email}>
+                        <TableCell>
+                          <div className="font-medium">{profile ? `${profile.firstName} ${profile.lastName}` : "Utilisateur Inconnu"}</div>
+                          <div className="text-xs text-muted-foreground">{r.email}</div>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {profile?.department || "Non assigné"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {profile ? (
+                            <Badge variant="outline" className={`font-bold ${
+                              safeNum(profile.riskScore) >= 60 ? 'bg-rose-100 text-rose-700 border-rose-200' :
+                              safeNum(profile.riskScore) >= 30 ? 'bg-amber-100 text-amber-700 border-amber-200' :
+                              'bg-emerald-100 text-emerald-700 border-emerald-200'
+                            }`}>
+                              {safeNum(profile.riskScore)} pts
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  });
+                })()}
               </TableBody>
             </Table>
 
-            {(!selectedCampaign?.detailedResults || selectedCampaign.detailedResults.filter(r => r.isRecidivist).length === 0) && (
-              <div className="p-8 text-center text-muted-foreground italic text-sm">
-                Aucun détail disponible. Veuillez réimporter le fichier CSV de cette campagne pour afficher cette liste.
-              </div>
-            )}
+            {(() => {
+              const detailedResults = selectedCampaign?.detailedResults || (selectedCampaign as any)?.detailed_results || [];
+              if (detailedResults.filter((r: any) => r.isRecidivist).length === 0) {
+                return (
+                  <div className="p-8 text-center text-muted-foreground italic text-sm">
+                    Aucun détail disponible. Veuillez réimporter le fichier CSV de cette campagne pour afficher cette liste.
+                  </div>
+                );
+              }
+            })()}
           </div>
         </DialogContent>
       </Dialog>
@@ -1294,7 +1419,7 @@ export default function AwarenessView() {
 
       <Dialog open={isLmsImportOpen} onOpenChange={(open) => {
         setIsLmsImportOpen(open);
-        if(!open) setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, fileLoaded: false, selectedModuleId: "new" });
+        if(!open) setParsedLmsData({ name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [], startDate: undefined, deadline: undefined, fileLoaded: false, selectedModuleId: "new" });
       }}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -1341,6 +1466,16 @@ export default function AwarenessView() {
 
                 <div className="space-y-2 mt-4 pt-4 border-t border-primary/10">
                   <h4 className="text-sm font-semibold mb-2">Bilan calculé d'après Excel :</h4>
+
+                  {(parsedLmsData.startDate || parsedLmsData.deadline) && (
+                    <div className="flex justify-between text-sm mb-2 text-primary">
+                      <span className="text-muted-foreground">Période:</span>
+                      <span className="font-medium">
+                        {parsedLmsData.startDate ? new Date(parsedLmsData.startDate).toLocaleDateString() : '--'} au {parsedLmsData.deadline ? new Date(parsedLmsData.deadline).toLocaleDateString() : '--'}
+                      </span>
+                    </div>
+                  )}
+
                   <div className="flex justify-between text-sm"><span className="text-muted-foreground">Inscrits détectés:</span> <span className="font-bold">{safeNum(parsedLmsData.totalAssigned)}</span></div>
                   <div className="flex justify-between text-sm"><span className="text-amber-600">En cours / À faire:</span> <span className="font-medium text-amber-600">{safeNum(parsedLmsData.inProgressCount) + safeNum(parsedLmsData.notStartedCount)}</span></div>
                   <div className="flex justify-between text-sm"><span className="text-emerald-600">Validés:</span> <span className="font-bold text-emerald-600">{safeNum(parsedLmsData.completedCount)}</span></div>
@@ -1365,7 +1500,7 @@ export default function AwarenessView() {
 
       <Dialog open={isAddModuleOpen} onOpenChange={(open) => {
         setIsAddModuleOpen(open);
-        if(!open) setNewModule({ name: "", targetAudience: "Tous", totalAssigned: 100, deadline: "" });
+        if(!open) setNewModule({ name: "", targetAudience: "Tous", totalAssigned: 100, startDate: "", deadline: "" });
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1397,14 +1532,23 @@ export default function AwarenessView() {
               </Select>
             </div>
 
+            <div className="space-y-1">
+              <Label>Nombre de cibles prévues</Label>
+              <Input
+                type="number"
+                min="1"
+                value={newModule.totalAssigned}
+                onChange={(e) => setNewModule({...newModule, totalAssigned: parseInt(e.target.value) || 0})}
+              />
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label>Nombre de cibles prévues</Label>
+                <Label>Date de début</Label>
                 <Input
-                  type="number"
-                  min="1"
-                  value={newModule.totalAssigned}
-                  onChange={(e) => setNewModule({...newModule, totalAssigned: parseInt(e.target.value) || 0})}
+                  type="date"
+                  value={newModule.startDate}
+                  onChange={(e) => setNewModule({...newModule, startDate: e.target.value})}
                 />
               </div>
               <div className="space-y-1">
@@ -1452,7 +1596,6 @@ export default function AwarenessView() {
               className="bg-destructive hover:bg-destructive/90"
               onClick={() => {
                 if (campaignToDelete) delCampaignMutation.mutate(campaignToDelete);
-                setCampaignToDelete(null);
               }}
             >
               Oui, supprimer la campagne
@@ -1479,7 +1622,7 @@ export default function AwarenessView() {
             <AlertDialogAction
               className="bg-destructive hover:bg-destructive/90"
               onClick={() => {
-                if (moduleToDelete) delModuleMutation.mutate(moduleToDelete); // Passe bien l'objet complet pour le rollback
+                if (moduleToDelete) delModuleMutation.mutate(moduleToDelete);
               }}
             >
               Oui, supprimer le module
