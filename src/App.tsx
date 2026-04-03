@@ -32,7 +32,7 @@ const App = () => (
             <Route path="/gouvernance" element={<Governance />} />
             <Route path="/security-ops" element={<SecurityOps />} />
             <Route path="/sensibilisation" element={<Awareness />} />
-            <Route path="/messagerie" element={<Messagerie />} /> {/* <-- NOUVELLE ROUTE */}
+            <Route path="/messagerie" element={<Messagerie />} />
             <Route path="/parametres" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

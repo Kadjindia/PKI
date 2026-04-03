@@ -1,10 +1,9 @@
 import { useKpi } from "@/context/KpiContext";
-import { KpiCategory, CATEGORY_LABELS } from "@/types/kpi";
-import KpiCard from "./KpiCard";
+import { KpiCategory } from "@/types/kpi";
 import KpiChartTabs from "./KpiChartTabs";
 import PeriodFilterBar from "./PeriodFilterBar";
 import ExecutiveSummary from "./ExecutiveSummary";
-import TopAlerts from "./TopAlerts";
+import TopAlerts from "./TopAlerts"; // La fameuse cloche de notification
 import { Activity, ChevronLeft, ChevronRight, Calendar, ShieldAlert, TrendingUp, TrendingDown, Minus, Rocket, Target, ShieldCheck, Bug, FileText, AlertTriangle, UserX, Mic, Monitor, Inbox, Globe, AlertCircle } from "lucide-react";
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -15,8 +14,6 @@ import { fetchPolicies, fetchGaps } from "@/lib/supabase-governance";
 import { fetchPhishingCampaigns, fetchPhishingProfiles, fetchElearningModules } from "@/lib/supabase-awareness";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
-const CATEGORIES: KpiCategory[] = ["gouvernance", "sensibilisation", "risques", "continuite"];
 
 // --- FONCTIONS UTILITAIRES ---
 const safeNum = (val: any): number => {
@@ -76,20 +73,20 @@ const CustomProgress = ({ value, max = 100, label, colorClass = "bg-primary" }: 
       </div>
       <div className="flex justify-between items-center text-[10px] font-medium text-muted-foreground mt-1.5">
         <span>{label}</span>
+        <span className={`font-bold text-[11px] ${colorClass.replace('bg-', 'text-')}`}>{percentage}% complété</span>
       </div>
     </div>
   );
 };
 
 export default function Dashboard() {
-  const { kpis, entries } = useKpi();
-  const [expandedCategory, setExpandedCategory] = useState<KpiCategory | null>(null);
+  const { entries } = useKpi();
 
   const availablePeriods = useMemo(() => {
     return [...new Set(entries.map((e) => e.period))].sort();
   }, [entries]);
 
-  const [selectedPeriodIdx, setSelectedPeriodIdx] = useState(() => availablePeriods.length - 1);
+  const [selectedPeriodIdx, setSelectedPeriodIdx] = useState(() => Math.max(0, availablePeriods.length - 1));
   const currentPeriod = availablePeriods[selectedPeriodIdx] || "";
 
   const formatPeriod = (p: string) => {
@@ -161,8 +158,9 @@ export default function Dashboard() {
   const reportRate = latestCampaign ? calculatePercentage(latestCampaign.reportedCount, latestCampaign.targetCount) : 0;
   const prevReportRate = prevCampaign ? calculatePercentage(prevCampaign.reportedCount, prevCampaign.targetCount) : null;
 
-  const phishingChartData = sortedCampaigns.slice(-6).map(c => ({
+  const phishingChartData = sortedCampaigns.slice(0, 6).reverse().map(c => ({
     name: new Date(c.sendDate).toLocaleDateString('fr-FR', { month: 'short' }),
+    clics: calculatePercentage(c.clickedCount, c.targetCount),
     saisies: calculatePercentage(c.compromisedCount, c.targetCount),
     signalements: calculatePercentage(c.reportedCount, c.targetCount)
   }));
@@ -212,7 +210,7 @@ export default function Dashboard() {
   return (
     <div className="space-y-8 pb-12 animate-in fade-in duration-500">
 
-      {/* ======================= HEADER ======================= */}
+      {/* ======================= HEADER ET CLOCHE ======================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
@@ -237,18 +235,29 @@ export default function Dashboard() {
             </button>
           </div>
           <PeriodFilterBar />
+          {/* LA CLOCHE DE NOTIFICATION EST ICI */}
+          <TopAlerts />
         </div>
       </div>
 
       {/* ========================================================= */}
-      {/* SECTION 1 : INDICATEURS DE MAÎTRISE DES RISQUES (KRI)     */}
+      {/* 1. TOP NIVEAU : L'INDICE DE POSTURE (Executive Summary)   */}
       {/* ========================================================= */}
       <section>
-        <h2 className="text-lg font-bold flex items-center gap-2 mb-4 border-b pb-2">
-          <ShieldAlert className="w-5 h-5 text-rose-500" /> Indicateurs de Maîtrise des Risques (KRI)
-        </h2>
+        <ExecutiveSummary />
+      </section>
 
-        {/* LIGNE 1 : Grille propre de 8 cartes */}
+      {/* ========================================================= */}
+      {/* 2. ZONE CHAUDE : LES ALERTES ET RISQUES (KRI)             */}
+      {/* ========================================================= */}
+      <section className="pt-6 border-t border-border/50">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 text-rose-500" /> Indicateurs de Maîtrise des Risques (KRI)
+          </h2>
+        </div>
+
+        {/* Ligne : 8 cartes de risques */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -294,9 +303,37 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
+          <Card className={`border-l-4 shadow-sm ${compromiseRate > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Compromission</CardTitle>
+              <AlertTriangle className="w-4 h-4 text-rose-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="text-2xl font-bold">{compromiseRate}%</div>
+                <TrendIndicator current={compromiseRate} previous={prevCompromiseRate} inverseColors />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne phishing</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-blue-500 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Signalements</CardTitle>
+              <ShieldCheck className="w-4 h-4 text-blue-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="text-2xl font-bold">{reportRate}%</div>
+                <TrendIndicator current={reportRate} previous={prevReportRate} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne phishing</p>
+            </CardContent>
+          </Card>
+
           <Card className={`border-l-4 shadow-sm ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Fraude</CardTitle>
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Fraude Entrante</CardTitle>
               <AlertTriangle className={`w-4 h-4 ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} />
             </CardHeader>
             <CardContent>
@@ -306,7 +343,7 @@ export default function Dashboard() {
                 </div>
                 <TrendIndicator current={msgCurrentData?.fraude} previous={msgPreviousData?.fraude} inverseColors />
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenants de la BP Fraude</p>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails classés comme fraude (ce mois)</p>
             </CardContent>
           </Card>
 
@@ -322,45 +359,17 @@ export default function Dashboard() {
                 </div>
                 <TrendIndicator current={msgCurrentData?.erreur} previous={msgPreviousData?.erreur} inverseColors />
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails non justifiés</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${compromiseRate > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Compromission</CardTitle>
-              <AlertTriangle className="w-4 h-4 text-rose-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold">{compromiseRate}%</div>
-                <TrendIndicator current={compromiseRate} previous={prevCompromiseRate} inverseColors />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
-            </CardContent>
-          </Card>
-
-          <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Signalements</CardTitle>
-              <ShieldCheck className="w-4 h-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold">{reportRate}%</div>
-                <TrendIndicator current={reportRate} previous={prevReportRate} />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Bruit / Mails non justifiés (ce mois)</p>
             </CardContent>
           </Card>
         </div>
 
-        {/* LIGNE 2 : Mini-Graphiques de tendance */}
+        {/* Ligne : Graphiques d'évolution des risques */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <Card className="lg:col-span-2 shadow-sm flex flex-col">
             <CardHeader className="pb-0">
               <CardTitle className="text-xs font-semibold text-foreground uppercase flex items-center justify-between">
-                <span>Bruit et Fraudes (Msg)</span>
+                <span>Bruit et Fraudes (Messagerie)</span>
                 <span className="text-[10px] text-muted-foreground font-normal">6 derniers mois</span>
               </CardTitle>
             </CardHeader>
@@ -382,7 +391,7 @@ export default function Dashboard() {
           <Card className="shadow-sm flex flex-col border-l-4 border-l-amber-500">
             <CardHeader className="pb-0">
               <CardTitle className="text-xs font-semibold text-foreground uppercase flex items-center justify-between">
-                <span>Saisies Phishing</span>
+                <span>Taux de Clics (Phishing)</span>
               </CardTitle>
             </CardHeader>
             <CardContent className="flex-1 pt-4 pb-2">
@@ -392,7 +401,7 @@ export default function Dashboard() {
                     <XAxis dataKey="name" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} dy={10} />
                     <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} domain={[0, 100]} />
                     <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} formatter={(val) => `${val}%`} />
-                    <Bar dataKey="saisies" name="Compromission" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="clics" name="Taux de Clics" fill="#f59e0b" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -402,15 +411,92 @@ export default function Dashboard() {
       </section>
 
       {/* ========================================================= */}
-      {/* SECTION 2 : INDICATEURS DE PERFORMANCE (KPI)              */}
+      {/* 3. PERFORMANCE ET CONFORMITÉ (KPI)                        */}
       {/* ========================================================= */}
-      <section>
-        <h2 className="text-lg font-bold flex items-center gap-2 mb-4 border-b pb-2">
-          <TrendingUp className="w-5 h-5 text-primary" /> Indicateurs de Performance (KPI)
+      <section className="pt-6 border-t border-border/50">
+        <h2 className="text-lg font-bold flex items-center gap-2 mb-4">
+          <TrendingUp className="w-5 h-5 text-primary" /> Performance et Conformité (KPI)
         </h2>
 
-        {/* LIGNE 1 : Grille propre de 12 cartes */}
+        {/* Ligne : 12 cartes de performances (Travail de fond) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture PAS</CardTitle>
+              <ShieldCheck className={`w-4 h-4 ${pasCoverage >= 80 ? 'text-emerald-500' : pasCoverage > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{pasCoverage}%</div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{validatedPas} projets sur {totalProjects}</p>
+            </CardContent>
+          </Card>
+
+          <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Analyses Risques</CardTitle>
+              <Target className="w-4 h-4 text-primary" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
+            </CardContent>
+          </Card>
+
+          <Card className={`border-l-4 shadow-sm ${auditCoverage >= 80 ? 'border-l-blue-500' : auditCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture Audit</CardTitle>
+              <ShieldAlert className="w-4 h-4 text-blue-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{auditCoverage}%</div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{auditedApps} périmètres sur {totalApps}</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-blue-500 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Volume Total Msg</CardTitle>
+              <Inbox className="w-4 h-4 text-blue-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="text-2xl font-bold text-foreground">{msgCurrentData?.total || 0}</div>
+                <TrendIndicator current={msgCurrentData?.total} previous={msgPreviousData?.total} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails reçus ce mois</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-emerald-500 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Remontées 1212</CardTitle>
+              <ShieldCheck className="w-4 h-4 text-emerald-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+                  {msgCurrentData?.interne || 0} <span className="text-sm font-normal opacity-70">({msgCurrentData?.tauxInterne || 0}%)</span>
+                </div>
+                <TrendIndicator current={msgCurrentData?.interne} previous={msgPreviousData?.interne} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenant du 1212</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-slate-400 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Externes</CardTitle>
+              <Globe className="w-4 h-4 text-slate-500" />
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="text-2xl font-bold text-slate-700 dark:text-slate-300">{msgCurrentData?.externe || 0}</div>
+                <TrendIndicator current={msgCurrentData?.externe} previous={msgPreviousData?.externe} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Provenant de l'extérieur</p>
+            </CardContent>
+          </Card>
+
           <Card className="border-l-4 border-l-primary shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Santé du Référentiel</CardTitle>
@@ -446,7 +532,7 @@ export default function Dashboard() {
 
           <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Campagnes de faux Phishing</CardTitle>
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Campagnes Phishing</CardTitle>
               <Target className={`w-4 h-4 ${isGoalReached ? 'text-emerald-500' : 'text-blue-500'}`} />
             </CardHeader>
             <CardContent>
@@ -459,7 +545,7 @@ export default function Dashboard() {
 
           <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Sessions Animées (an)</CardTitle>
+              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
               <Mic className={`w-4 h-4 ${isSessionGoalReached ? 'text-emerald-500' : 'text-amber-500'}`} />
             </CardHeader>
             <CardContent>
@@ -480,83 +566,6 @@ export default function Dashboard() {
                 {elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span>
               </div>
               <CustomProgress value={elearningRate} max={95} label="Taux de complétion (Année en cours)" colorClass={elearningGoalReached ? "bg-emerald-500" : "bg-primary"} />
-            </CardContent>
-          </Card>
-
-          <Card className="border-l-4 border-l-emerald-500 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Remontées 1212</CardTitle>
-              <ShieldCheck className="w-4 h-4 text-emerald-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                  {msgCurrentData?.interne || 0} <span className="text-sm font-normal opacity-70">({msgCurrentData?.tauxInterne || 0}%)</span>
-                </div>
-                <TrendIndicator current={msgCurrentData?.interne} previous={msgPreviousData?.interne} />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenant du 1212</p>
-            </CardContent>
-          </Card>
-
-          <Card className="border-l-4 border-l-slate-400 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Externes</CardTitle>
-              <Globe className="w-4 h-4 text-slate-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-slate-700 dark:text-slate-300">{msgCurrentData?.externe || 0}</div>
-                <TrendIndicator current={msgCurrentData?.externe} previous={msgPreviousData?.externe} />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Provenant de l'extérieur</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture PAS</CardTitle>
-              <ShieldCheck className={`w-4 h-4 ${pasCoverage >= 80 ? 'text-emerald-500' : pasCoverage > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{pasCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{validatedPas} projets sur {totalProjects}</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture Analyses Risques</CardTitle>
-              <Target className="w-4 h-4 text-primary" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
-            </CardContent>
-          </Card>
-
-          <Card className={`border-l-4 shadow-sm ${auditCoverage >= 80 ? 'border-l-blue-500' : auditCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture Audit</CardTitle>
-              <ShieldAlert className="w-4 h-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{auditCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{auditedApps} périmètres sur {totalApps}</p>
-            </CardContent>
-          </Card>
-
-          <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Volume Total Msg</CardTitle>
-              <Inbox className="w-4 h-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-foreground">{msgCurrentData?.total || 0}</div>
-                <TrendIndicator current={msgCurrentData?.total} previous={msgPreviousData?.total} />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails reçus ce mois</p>
             </CardContent>
           </Card>
         </div>
@@ -586,18 +595,10 @@ export default function Dashboard() {
       </section>
 
       {/* ========================================================= */}
-      {/* SECTION 3 : VUES DÉTAILLÉES (Graphiques & Alertes)        */}
+      {/* 4. LE RESTE DES INDICATEURS (GRAPHIQUE CENTRAL)           */}
       {/* ========================================================= */}
-
-      <ExecutiveSummary />
-
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 pt-4 border-t">
-        <div className="xl:col-span-2">
-          <KpiChartTabs />
-        </div>
-        <div>
-          <TopAlerts />
-        </div>
+      <div className="pt-6 border-t border-border/50">
+        <KpiChartTabs />
       </div>
 
     </div>
