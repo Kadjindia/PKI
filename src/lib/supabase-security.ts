@@ -8,6 +8,8 @@ export interface Project {
   riskLevel: 'faible' | 'moyen' | 'fort';
   goLiveDate: string;
   pasStatus: 'draft' | 'review' | 'validated';
+  requestDate?: string; // <-- AJOUT
+  createdAt?: string; // <-- AJOUT
 }
 
 export interface Application {
@@ -17,8 +19,8 @@ export interface Application {
   criticality: 'mineure' | 'majeure' | 'critique';
   lastAuditDate: string | null;
   auditFrequencyMonths: number;
-  lastRiskAnalysisDate: string | null; // NOUVEAU
-  riskAnalysisFrequencyMonths: number; // NOUVEAU
+  lastRiskAnalysisDate: string | null;
+  riskAnalysisFrequencyMonths: number;
 }
 
 export interface Vulnerability {
@@ -40,14 +42,15 @@ export async function fetchProjects(): Promise<Project[]> {
   if (error) throw error;
   return data.map(row => ({
     id: row.id, name: row.name, manager: row.manager,
-    riskLevel: row.risk_level as any, goLiveDate: row.go_live_date, pasStatus: row.pas_status as any
+    riskLevel: row.risk_level as any, goLiveDate: row.go_live_date, pasStatus: row.pas_status as any,
+    requestDate: row.request_date, createdAt: row.created_at // <-- AJOUT
   }));
 }
 
 export async function createProject(project: Omit<Project, 'id'>): Promise<void> {
   const { error } = await supabase.from('projects').insert({
     name: project.name, manager: project.manager, risk_level: project.riskLevel,
-    go_live_date: project.goLiveDate, pas_status: project.pasStatus
+    go_live_date: project.goLiveDate, pas_status: project.pasStatus, request_date: project.requestDate // <-- AJOUT
   });
   if (error) throw error;
 }
@@ -59,6 +62,7 @@ export async function updateProject(id: string, updates: Partial<Project>): Prom
   if (updates.riskLevel) payload.risk_level = updates.riskLevel;
   if (updates.goLiveDate) payload.go_live_date = updates.goLiveDate;
   if (updates.pasStatus) payload.pas_status = updates.pasStatus;
+  if (updates.requestDate !== undefined) payload.request_date = updates.requestDate; // <-- AJOUT
 
   const { error } = await supabase.from('projects').update(payload).eq('id', id);
   if (error) throw error;
