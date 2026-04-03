@@ -547,41 +547,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ========================================================= */}
-      {/* SECTION 4 : LE DÉTAIL DES INDICATEURS BRUTS (KpiCards)    */}
-      {/* ========================================================= */}
-      <section className="pt-4 border-t">
-        <h2 className="section-title mb-1">Détail des indicateurs bruts</h2>
-        <p className="text-xs text-muted-foreground mb-4">Cliquez sur un indicateur pour accéder au drill-down de la base de données</p>
-        <div className="space-y-4">
-          {CATEGORIES.map((cat) => {
-            const catKpis = kpis.filter((k) => k.category === cat);
-            if (catKpis.length === 0) return null;
-            const isExpanded = expandedCategory === cat || expandedCategory === null;
-
-            return (
-              <div key={cat}>
-                <button
-                  onClick={() => setExpandedCategory(expandedCategory === cat ? null : cat)}
-                  className="flex items-center gap-2 mb-3 text-sm font-medium text-foreground hover:text-primary transition-colors"
-                >
-                  <span className="text-xs">{isExpanded && expandedCategory !== null ? "▼" : "▶"}</span>
-                  {CATEGORY_LABELS[cat]}
-                  <span className="text-xs text-muted-foreground">({catKpis.length})</span>
-                </button>
-                {(isExpanded || expandedCategory === null) && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {catKpis.map((kpi) => (
-                      <KpiCard key={kpi.id} kpi={kpi} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
     </div>
   );
 }
