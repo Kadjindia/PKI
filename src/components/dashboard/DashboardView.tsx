@@ -1,11 +1,10 @@
 import { useKpi } from "@/context/KpiContext";
-import { KpiCategory } from "@/types/kpi";
 import KpiChartTabs from "./KpiChartTabs";
 import PeriodFilterBar from "./PeriodFilterBar";
 import ExecutiveSummary from "./ExecutiveSummary";
-import TopAlerts from "./TopAlerts"; // La fameuse cloche de notification
+import TopAlerts from "./TopAlerts";
 import { Activity, ChevronLeft, ChevronRight, Calendar, ShieldAlert, TrendingUp, TrendingDown, Minus, Rocket, Target, ShieldCheck, Bug, FileText, AlertTriangle, UserX, Mic, Monitor, Inbox, Globe, AlertCircle } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip } from "recharts";
 
@@ -44,19 +43,11 @@ const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualSta
 const TrendIndicator = ({ current, previous, inverseColors = false }: { current?: number | null, previous?: number | null, inverseColors?: boolean }) => {
   if (previous === undefined || previous === null || current === undefined || current === null) return null;
   const diff = current - previous;
-
-  if (diff === 0) return (
-    <div className="flex items-center gap-1 text-[10px] text-muted-foreground font-medium">
-      <Minus className="w-3 h-3" /> Stable
-    </div>
-  );
-
+  if (diff === 0) return <div className="flex items-center gap-1 text-[10px] text-muted-foreground font-medium"><Minus className="w-3 h-3" /> Stable</div>;
   const percent = previous !== 0 ? Math.round((Math.abs(diff) / previous) * 100) : 100;
   const isGood = inverseColors ? diff < 0 : diff > 0;
-  const textColor = isGood ? 'text-emerald-500' : 'text-rose-500';
-
   return (
-    <div className={`flex items-center gap-1 text-[10px] font-bold ${textColor}`}>
+    <div className={`flex items-center gap-1 text-[10px] font-bold ${isGood ? 'text-emerald-500' : 'text-rose-500'}`}>
       {diff > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
       <span>{diff > 0 ? '+' : '-'}{percent}%</span>
     </div>
@@ -80,23 +71,17 @@ const CustomProgress = ({ value, max = 100, label, colorClass = "bg-primary" }: 
 };
 
 export default function Dashboard() {
-  const { entries } = useKpi();
+  const { entries, availablePeriods, selectedPeriod, setSelectedPeriod, getFilteredValue } = useKpi();
 
-  const availablePeriods = useMemo(() => {
-    return [...new Set(entries.map((e) => e.period))].sort();
-  }, [entries]);
-
-  const [selectedPeriodIdx, setSelectedPeriodIdx] = useState(() => Math.max(0, availablePeriods.length - 1));
-  const currentPeriod = availablePeriods[selectedPeriodIdx] || "";
+  const currentIdx = availablePeriods.indexOf(selectedPeriod);
+  const canPrev = currentIdx > 0;
+  const canNext = currentIdx < availablePeriods.length - 1;
 
   const formatPeriod = (p: string) => {
     if (!p) return "—";
     const d = new Date(p + "-01");
     return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
   };
-
-  const canPrev = selectedPeriodIdx > 0;
-  const canNext = selectedPeriodIdx < availablePeriods.length - 1;
 
   // FETCH DES DONNÉES
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
@@ -144,10 +129,10 @@ export default function Dashboard() {
 
   // 3. SENSIBILISATION
   const highRiskProfiles = profiles.filter(p => safeNum(p.riskScore) >= 60);
-  const currentYear = new Date().getFullYear();
+  const selectedYear = selectedPeriod ? parseInt(selectedPeriod.split("-")[0]) : new Date().getFullYear();
 
   const sortedCampaigns = [...campaigns].sort((a, b) => new Date(b.sendDate).getTime() - new Date(a.sendDate).getTime());
-  const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === currentYear);
+  const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === selectedYear);
   const targetCampaignsPerYear = 4;
   const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
 
@@ -173,33 +158,33 @@ export default function Dashboard() {
   const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
   const elearningGoalReached = elearningRate >= 95;
 
-  const sessionsThisYear = sessionModules.filter(m => new Date(m.startDate || m.createdAt || "").getFullYear() === currentYear);
+  const sessionsThisYear = sessionModules.filter(m => new Date(m.startDate || m.createdAt || "").getFullYear() === selectedYear);
   const targetSessionsPerYear = 4;
   const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
 
-  // 4. MESSAGERIE SSI
+  // 4. MESSAGERIE SSI (Utilise getFilteredValue)
+  const msgTotal = getFilteredValue('msg-total') || 0;
+  const msgFraude = getFilteredValue('msg-fraude') || 0;
+  const msgErreur = getFilteredValue('msg-erreur') || 0;
+  const msg1212 = getFilteredValue('msg-1212') || 0;
+  const msgExterne = getFilteredValue('msg-externe') || 0;
+
+  const tauxFraude = msgTotal > 0 ? Math.round((msgFraude / msgTotal) * 100) : 0;
+  const tauxInterne = msgTotal > 0 ? Math.round((msg1212 / msgTotal) * 100) : 0;
+
   const msgEntries = entries.filter(e => e.kpiId.startsWith('msg-'));
   const msgAvailablePeriods = useMemo(() => [...new Set(msgEntries.map((e) => e.period))].sort(), [msgEntries]);
-
   const monthlyMsgData = useMemo(() => {
     return msgAvailablePeriods.map(period => {
       const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === period)?.value);
-      const total = getVal('msg-total');
       return {
         period: new Date(period + "-01").toLocaleDateString('fr-FR', { month: 'short' }),
-        total: total,
+        total: getVal('msg-total'),
         fraude: getVal('msg-fraude'),
         erreur: getVal('msg-erreur'),
-        interne: getVal('msg-1212'),
-        externe: getVal('msg-externe'),
-        tauxFraude: calculatePercentage(getVal('msg-fraude'), total),
-        tauxInterne: calculatePercentage(getVal('msg-1212'), total)
       };
     });
   }, [msgAvailablePeriods, msgEntries]);
-
-  const msgCurrentData = monthlyMsgData.length > 0 ? monthlyMsgData[monthlyMsgData.length - 1] : null;
-  const msgPreviousData = monthlyMsgData.length > 1 ? monthlyMsgData[monthlyMsgData.length - 2] : null;
 
   const coverageData = [
     { name: "Projets (PAS)", value: pasCoverage, fill: "#10b981" },
@@ -223,33 +208,26 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1 glass-panel px-2 py-1 hidden lg:flex">
-            <button onClick={() => canPrev && setSelectedPeriodIdx((i) => i - 1)} disabled={!canPrev} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
+            <button onClick={() => setSelectedPeriod(availablePeriods[currentIdx - 1])} disabled={!canPrev} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
               <ChevronLeft className="w-4 h-4 text-muted-foreground" />
             </button>
             <div className="flex items-center gap-1.5 px-2 min-w-[160px] justify-center">
               <Calendar className="w-3.5 h-3.5 text-primary" />
-              <span className="text-sm font-medium text-foreground capitalize">{formatPeriod(currentPeriod)}</span>
+              <span className="text-sm font-medium text-foreground capitalize">{formatPeriod(selectedPeriod)}</span>
             </div>
-            <button onClick={() => canNext && setSelectedPeriodIdx((i) => i + 1)} disabled={!canNext} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
+            <button onClick={() => setSelectedPeriod(availablePeriods[currentIdx + 1])} disabled={!canNext} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
               <ChevronRight className="w-4 h-4 text-muted-foreground" />
             </button>
           </div>
           <PeriodFilterBar />
-          {/* LA CLOCHE DE NOTIFICATION EST ICI */}
           <TopAlerts />
         </div>
       </div>
 
-      {/* ========================================================= */}
-      {/* 1. TOP NIVEAU : L'INDICE DE POSTURE (Executive Summary)   */}
-      {/* ========================================================= */}
       <section>
         <ExecutiveSummary />
       </section>
 
-      {/* ========================================================= */}
-      {/* 2. ZONE CHAUDE : LES ALERTES ET RISQUES (KRI)             */}
-      {/* ========================================================= */}
       <section className="pt-6 border-t border-border/50">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold flex items-center gap-2">
@@ -257,7 +235,6 @@ export default function Dashboard() {
           </h2>
         </div>
 
-        {/* Ligne : 8 cartes de risques */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -313,7 +290,7 @@ export default function Dashboard() {
                 <div className="text-2xl font-bold">{compromiseRate}%</div>
                 <TrendIndicator current={compromiseRate} previous={prevCompromiseRate} inverseColors />
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne phishing</p>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
             </CardContent>
           </Card>
 
@@ -327,44 +304,41 @@ export default function Dashboard() {
                 <div className="text-2xl font-bold">{reportRate}%</div>
                 <TrendIndicator current={reportRate} previous={prevReportRate} />
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne phishing</p>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
             </CardContent>
           </Card>
 
-          <Card className={`border-l-4 shadow-sm ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
+          <Card className={`border-l-4 shadow-sm ${tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Fraude Entrante</CardTitle>
-              <AlertTriangle className={`w-4 h-4 ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} />
+              <AlertTriangle className={`w-4 h-4 ${tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} />
             </CardHeader>
             <CardContent>
               <div className="flex items-center justify-between">
-                <div className={`text-2xl font-bold ${msgCurrentData && msgCurrentData.tauxFraude > 20 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-500'}`}>
-                  {msgCurrentData?.fraude || 0} <span className="text-sm font-normal opacity-70">({msgCurrentData?.tauxFraude || 0}%)</span>
+                <div className={`text-2xl font-bold ${tauxFraude > 20 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-500'}`}>
+                  {msgFraude} <span className="text-sm font-normal opacity-70">({tauxFraude}%)</span>
                 </div>
-                <TrendIndicator current={msgCurrentData?.fraude} previous={msgPreviousData?.fraude} inverseColors />
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails classés comme fraude (ce mois)</p>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenants de la BP Fraude</p>
             </CardContent>
           </Card>
 
-          <Card className={`border-l-4 shadow-sm ${msgCurrentData && msgCurrentData.erreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : msgCurrentData && msgCurrentData.erreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
+          <Card className={`border-l-4 shadow-sm ${msgErreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : msgErreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Erreurs Adressage</CardTitle>
-              <AlertCircle className={`w-4 h-4 ${msgCurrentData && msgCurrentData.erreur > 10 ? 'text-rose-500' : 'text-emerald-500'}`} />
+              <AlertCircle className={`w-4 h-4 ${msgErreur > 10 ? 'text-rose-500' : 'text-emerald-500'}`} />
             </CardHeader>
             <CardContent>
               <div className="flex items-center justify-between">
-                <div className={`text-2xl font-bold ${msgCurrentData && msgCurrentData.erreur > 25 ? 'text-rose-600 dark:text-rose-400' : msgCurrentData && msgCurrentData.erreur > 10 ? 'text-amber-600 dark:text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                  {msgCurrentData?.erreur || 0}
+                <div className={`text-2xl font-bold ${msgErreur > 25 ? 'text-rose-600 dark:text-rose-400' : msgErreur > 10 ? 'text-amber-600 dark:text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                  {msgErreur}
                 </div>
-                <TrendIndicator current={msgCurrentData?.erreur} previous={msgPreviousData?.erreur} inverseColors />
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Bruit / Mails non justifiés (ce mois)</p>
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails non justifiés</p>
             </CardContent>
           </Card>
         </div>
 
-        {/* Ligne : Graphiques d'évolution des risques */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <Card className="lg:col-span-2 shadow-sm flex flex-col">
             <CardHeader className="pb-0">
@@ -418,7 +392,6 @@ export default function Dashboard() {
           <TrendingUp className="w-5 h-5 text-primary" /> Performance et Conformité (KPI)
         </h2>
 
-        {/* Ligne : 12 cartes de performances (Travail de fond) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -460,8 +433,7 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-foreground">{msgCurrentData?.total || 0}</div>
-                <TrendIndicator current={msgCurrentData?.total} previous={msgPreviousData?.total} />
+                <div className="text-2xl font-bold text-foreground">{msgTotal}</div>
               </div>
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails reçus ce mois</p>
             </CardContent>
@@ -475,9 +447,8 @@ export default function Dashboard() {
             <CardContent>
               <div className="flex items-center justify-between">
                 <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                  {msgCurrentData?.interne || 0} <span className="text-sm font-normal opacity-70">({msgCurrentData?.tauxInterne || 0}%)</span>
+                  {msg1212} <span className="text-sm font-normal opacity-70">({tauxInterne}%)</span>
                 </div>
-                <TrendIndicator current={msgCurrentData?.interne} previous={msgPreviousData?.interne} />
               </div>
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenant du 1212</p>
             </CardContent>
@@ -490,8 +461,7 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-slate-700 dark:text-slate-300">{msgCurrentData?.externe || 0}</div>
-                <TrendIndicator current={msgCurrentData?.externe} previous={msgPreviousData?.externe} />
+                <div className="text-2xl font-bold text-slate-700 dark:text-slate-300">{msgExterne}</div>
               </div>
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Provenant de l'extérieur</p>
             </CardContent>
