@@ -29,7 +29,7 @@ import { ShieldAlert, ShieldCheck, Rocket, Bug, Plus, AlertTriangle, Loader2, Tr
 // 1. UTILITAIRES DE DESIGN ET DE CALCUL (CORRIGÉS POUR LE DARK MODE)
 // ============================================================================
 
-const formatFrDate = (dateStr: string | null) => {
+const formatFrDate = (dateStr: string | null | undefined) => {
   if (!dateStr) return "Non définie";
   return new Date(dateStr).toLocaleDateString("fr-FR");
 };
@@ -87,7 +87,6 @@ const getRiskBadge = (risk: string) => {
   }
 };
 
-// Design des cartes Vulnérabilités dans le panneau latéral (Fini le gros bloc blanc)
 const getVulnColor = (sev: string, isResolved: boolean) => {
   if (isResolved) return 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/30 dark:bg-emerald-900/10 opacity-70';
   switch(sev) {
@@ -125,7 +124,6 @@ const getAuditTypeInfo = (type: string) => {
 export default function SecurityOpsView() {
   const queryClient = useQueryClient();
 
-  // --- ÉTATS ---
   const [activeTab, setActiveTab] = useState("projects");
   const [searchQuery, setSearchQuery] = useState("");
   const [showResolvedHistory, setShowResolvedHistory] = useState(false);
@@ -140,7 +138,7 @@ export default function SecurityOpsView() {
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
   const [appToEdit, setAppToEdit] = useState<Application | null>(null);
 
-  const [newProject, setNewProject] = useState({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen" });
+  const [newProject, setNewProject] = useState({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen", requestDate: new Date().toISOString().split('T')[0] });
   const [newApp, setNewApp] = useState({ name: "", auditType: "pentest", criticality: "majeure", lastAuditDate: "", lastRiskAnalysisDate: "" });
   const [newVuln, setNewVuln] = useState({ title: "", cve: "", description: "", severity: "moyen" });
 
@@ -151,15 +149,13 @@ export default function SecurityOpsView() {
   const [appToDelete, setAppToDelete] = useState<Application | null>(null);
   const [vulnToClose, setVulnToClose] = useState<string | null>(null);
 
-  // --- REQUÊTES ---
   const { data: projects = [], isLoading: isLoadingProjects } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
   const { data: apps = [], isLoading: isLoadingApps } = useQuery({ queryKey: ['applications'], queryFn: fetchApplications });
   const { data: vulns = [], isLoading: isLoadingVulns } = useQuery({ queryKey: ['vulnerabilities'], queryFn: fetchVulnerabilities });
 
-  // --- MUTATIONS ---
   const addProjectMutation = useMutation({
     mutationFn: createProject,
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['projects'] }); toast.success("Projet ajouté"); setIsAddProjectOpen(false); setNewProject({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen" }); }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['projects'] }); toast.success("Projet ajouté"); setIsAddProjectOpen(false); setNewProject({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen", requestDate: new Date().toISOString().split('T')[0] }); }
   });
   const updateProjectMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string, updates: Partial<Project> }) => updateProject(id, updates),
@@ -192,7 +188,6 @@ export default function SecurityOpsView() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] }); toast.success("Vulnérabilité clôturée !"); setVulnToClose(null); }
   });
 
-  // --- CALCULS GLOBAUX ---
   const totalProjects = projects.length;
   const validatedPas = projects.filter(p => p.pasStatus === "validated").length;
   const pasCoverage = totalProjects > 0 ? Math.round((validatedPas / totalProjects) * 100) : 0;
@@ -209,7 +204,6 @@ export default function SecurityOpsView() {
   const totalCriticalVulns = activeVulns.filter(v => v.severity === "critique").length;
   const totalHighVulns = activeVulns.filter(v => v.severity === "eleve").length;
 
-  // FILTRES DE RECHERCHE
   const filteredProjects = projects.filter(p =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     (p.manager && p.manager.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -219,7 +213,6 @@ export default function SecurityOpsView() {
     a.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // --- HANDLERS ---
   const handleCreateProject = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newProject.name) return;
@@ -251,7 +244,6 @@ export default function SecurityOpsView() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
 
-      {/* --- ZONE A : CARTES DE SYNTHÈSE (5 Colonnes) --- */}
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
         <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -309,7 +301,6 @@ export default function SecurityOpsView() {
         </Card>
       </div>
 
-      {/* --- ZONE B : ONGLETS ET RECHERCHE --- */}
       <Card className="shadow-sm">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <div className="px-6 pt-4 border-b border-border flex justify-between items-end">
@@ -338,7 +329,6 @@ export default function SecurityOpsView() {
             </div>
           </div>
 
-          {/* ONGLET 1 : PROJETS */}
           <TabsContent value="projects" className="m-0">
             {filteredProjects.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">Aucun projet trouvé.</div>
@@ -349,6 +339,7 @@ export default function SecurityOpsView() {
                     <TableHead>Projet</TableHead>
                     <TableHead>Chef de Projet</TableHead>
                     <TableHead>Niveau de Risque</TableHead>
+                    <TableHead>Date Demande</TableHead>
                     <TableHead>Date Go-Live</TableHead>
                     <TableHead className="text-right">Statut PAS</TableHead>
                   </TableRow>
@@ -359,6 +350,9 @@ export default function SecurityOpsView() {
                       <TableCell className="font-medium">{project.name}</TableCell>
                       <TableCell className="text-muted-foreground text-sm">{project.manager || "-"}</TableCell>
                       <TableCell>{getRiskBadge(project.riskLevel)}</TableCell>
+                      <TableCell className="text-sm font-medium text-muted-foreground">
+                        {formatFrDate(project.requestDate || project.createdAt)}
+                      </TableCell>
                       <TableCell className="text-sm font-medium flex items-center gap-1.5 mt-2">
                         <Rocket className="w-3.5 h-3.5 text-muted-foreground" />
                         {formatFrDate(project.goLiveDate)}
@@ -371,7 +365,6 @@ export default function SecurityOpsView() {
             )}
           </TabsContent>
 
-          {/* ONGLET 2 : AUDITS ET RISQUES */}
           <TabsContent value="audits" className="m-0">
              {filteredApps.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">Aucun périmètre trouvé.</div>
@@ -389,13 +382,10 @@ export default function SecurityOpsView() {
                 <TableBody>
                   {filteredApps.map((app) => {
                     const appInfo = getAuditTypeInfo(app.auditType);
-
                     const riskStatus = getDeadlineStatus(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
                     const riskNextDateStr = calculateNextDeadlineStr(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
-
                     const auditStatus = getDeadlineStatus(app.lastAuditDate, app.auditFrequencyMonths);
                     const auditNextDateStr = calculateNextDeadlineStr(app.lastAuditDate, app.auditFrequencyMonths);
-
                     const appVulns = activeVulns.filter(v => v.appId === app.id);
                     const vCrit = appVulns.filter(v => v.severity === 'critique').length;
                     const vHigh = appVulns.filter(v => v.severity === 'eleve').length;
@@ -404,24 +394,20 @@ export default function SecurityOpsView() {
 
                     return (
                       <TableRow key={app.id} className="cursor-pointer hover:bg-muted/50" onClick={() => { setSelectedApp(app); setShowResolvedHistory(false); }}>
-
                         <TableCell>
                           <div className="font-medium text-foreground">{app.name}</div>
                           <Badge variant="outline" className="text-muted-foreground bg-muted/50 dark:bg-muted/20 w-max text-[10px] py-0 mt-1">
                             Criticité : {app.criticality}
                           </Badge>
                         </TableCell>
-
                         <TableCell className="text-sm text-muted-foreground">
                           <div className="flex items-center">
                             {appInfo.icon} {appInfo.label}
                           </div>
                         </TableCell>
-
                         <TableCell className="text-sm">
                           {getDeadlineBadge(riskStatus, riskNextDateStr, true)}
                         </TableCell>
-
                         <TableCell>
                           <div className="flex flex-wrap items-center gap-1.5">
                             {vCrit > 0 && <Badge variant="outline" className="bg-rose-500 text-white border-transparent dark:bg-rose-500/20 dark:text-rose-400 dark:border-rose-500/30">{vCrit} Crit.</Badge>}
@@ -431,11 +417,9 @@ export default function SecurityOpsView() {
                             {appVulns.length === 0 && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✅ Zéro dette</span>}
                           </div>
                         </TableCell>
-
                         <TableCell className="text-right text-sm">
                           {getDeadlineBadge(auditStatus, auditNextDateStr, false)}
                         </TableCell>
-
                       </TableRow>
                     )
                   })}
@@ -446,11 +430,6 @@ export default function SecurityOpsView() {
         </Tabs>
       </Card>
 
-      {/* ============================================================================ */}
-      {/* 7. PANNEAUX LATÉRAUX (DÉTAILS) */}
-      {/* ============================================================================ */}
-
-      {/* --- PANNEAU PROJET --- */}
       <Sheet open={!!selectedProject} onOpenChange={(open) => !open && setSelectedProject(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
@@ -481,6 +460,7 @@ export default function SecurityOpsView() {
               <div className="p-4 border border-border rounded-lg bg-card space-y-2">
                 <p className="text-sm font-semibold flex items-center gap-2"><Rocket className="w-4 h-4 text-primary"/> Objectif Go-Live</p>
                 <p className="text-lg font-bold">{formatFrDate(selectedProject.goLiveDate)}</p>
+                <p className="text-xs text-muted-foreground pt-2 border-t border-border mt-2">Demande de PAS le : {formatFrDate(selectedProject.requestDate || selectedProject.createdAt)}</p>
               </div>
 
               <div className="space-y-3 pt-4 border-t border-border">
@@ -508,7 +488,6 @@ export default function SecurityOpsView() {
         </SheetContent>
       </Sheet>
 
-      {/* --- PANNEAU AUDITS ET RISQUES --- */}
       <Sheet open={!!selectedApp} onOpenChange={(open) => !open && setSelectedApp(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
@@ -529,7 +508,6 @@ export default function SecurityOpsView() {
           {selectedApp && (
             <div className="space-y-6">
 
-              {/* Bloc Analyse de Risques */}
               <div className="space-y-3">
                 <h4 className="text-sm font-semibold flex items-center gap-2">
                   <Target className="w-4 h-4 text-primary" /> Analyse de Risques (EBIOS/PIA)
@@ -541,13 +519,14 @@ export default function SecurityOpsView() {
                   </div>
                   <div className="p-3 border border-border rounded-md text-center bg-primary/5">
                     <p className="text-[10px] text-primary uppercase mb-1">Prochaine Analyse</p>
-                    <p className="font-medium text-sm flex items-center justify-center">
+                    {/* CHANGEMENT ICI : <p> devient <div> pour éviter l'erreur DOM Nesting */}
+                    <div className="font-medium text-sm flex items-center justify-center">
                       {getDeadlineBadge(
                         getDeadlineStatus(selectedApp.lastRiskAnalysisDate, selectedApp.riskAnalysisFrequencyMonths),
                         calculateNextDeadlineStr(selectedApp.lastRiskAnalysisDate, selectedApp.riskAnalysisFrequencyMonths),
                         true
                       )}
-                    </p>
+                    </div>
                   </div>
                 </div>
                 <Button variant="outline" size="sm" className="w-full bg-primary/5 hover:bg-primary/10 border-primary/20 text-primary" onClick={() => setAppToMarkRiskAnalyzed(selectedApp)}>
@@ -555,7 +534,6 @@ export default function SecurityOpsView() {
                 </Button>
               </div>
 
-              {/* Bloc Audit */}
               <div className="space-y-3 pt-4 border-t border-border">
                 <h4 className="text-sm font-semibold flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 text-blue-500" /> Audit Technique
@@ -567,13 +545,14 @@ export default function SecurityOpsView() {
                   </div>
                   <div className="p-3 border border-border rounded-md text-center bg-blue-50/50 dark:bg-blue-900/10">
                     <p className="text-[10px] text-blue-600 uppercase mb-1">Prochain Audit</p>
-                    <p className="font-medium text-sm flex items-center justify-center">
+                    {/* CHANGEMENT ICI : <p> devient <div> pour éviter l'erreur DOM Nesting */}
+                    <div className="font-medium text-sm flex items-center justify-center">
                       {getDeadlineBadge(
                         getDeadlineStatus(selectedApp.lastAuditDate, selectedApp.auditFrequencyMonths),
                         calculateNextDeadlineStr(selectedApp.lastAuditDate, selectedApp.auditFrequencyMonths),
                         false
                       )}
-                    </p>
+                    </div>
                   </div>
                 </div>
                 <Button variant="outline" size="sm" className="w-full bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 dark:border-blue-800 dark:text-blue-400" onClick={() => setAppToMarkAudited(selectedApp)}>
@@ -581,7 +560,6 @@ export default function SecurityOpsView() {
                 </Button>
               </div>
 
-              {/* LISTE DES VULNÉRABILITÉS */}
               <div className="space-y-4 pt-4 border-t border-border">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-semibold flex items-center gap-2">
@@ -614,9 +592,7 @@ export default function SecurityOpsView() {
                     </p>
                   ) : (
                     vulns.filter(v => v.appId === selectedApp.id && v.status === (showResolvedHistory ? 'resolu' : 'ouvert')).map(vuln => {
-
                       const isOverdue = !showResolvedHistory && checkSlaOverdue(vuln.createdAt, vuln.severity);
-
                       return (
                         <div key={vuln.id} className={`p-4 border rounded-lg ${getVulnColor(vuln.severity, showResolvedHistory)}`}>
                           <div className="flex justify-between items-start mb-2">
@@ -657,11 +633,6 @@ export default function SecurityOpsView() {
         </SheetContent>
       </Sheet>
 
-      {/* ============================================================================ */}
-      {/* 8. MODALES DE FORMULAIRES (Création & Édition) */}
-      {/* ============================================================================ */}
-
-      {/* Modale de création - PROJET */}
       <Dialog open={isAddProjectOpen} onOpenChange={setIsAddProjectOpen}>
         <DialogContent>
           <DialogHeader>
@@ -676,22 +647,26 @@ export default function SecurityOpsView() {
               <Label>Chef de Projet</Label>
               <Input placeholder="Ex: Jean Dupont" value={newProject.manager} onChange={(e) => setNewProject({...newProject, manager: e.target.value})} />
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Date de demande</Label>
+                <Input required type="date" value={newProject.requestDate} onChange={(e) => setNewProject({...newProject, requestDate: e.target.value})} />
+              </div>
+              <div className="space-y-2">
+                <Label>Date de mise en prod prévue</Label>
+                <Input required type="date" value={newProject.goLiveDate} onChange={(e) => setNewProject({...newProject, goLiveDate: e.target.value})} />
+              </div>
+            </div>
             <div className="space-y-2">
               <Label>Niveau de Risque Métier</Label>
               <Select value={newProject.riskLevel} onValueChange={(v) => setNewProject({...newProject, riskLevel: v})}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="faible">Faible</SelectItem>
                   <SelectItem value="moyen">Moyen</SelectItem>
                   <SelectItem value="fort">Fort</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Date prévue de mise en prod</Label>
-              <Input required type="date" value={newProject.goLiveDate} onChange={(e) => setNewProject({...newProject, goLiveDate: e.target.value})} />
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setIsAddProjectOpen(false)}>Annuler</Button>
@@ -701,7 +676,6 @@ export default function SecurityOpsView() {
         </DialogContent>
       </Dialog>
 
-      {/* Modale d'édition - PROJET */}
       <Dialog open={!!projectToEdit} onOpenChange={(open) => !open && setProjectToEdit(null)}>
         <DialogContent>
           <DialogHeader>
@@ -721,22 +695,26 @@ export default function SecurityOpsView() {
                 <Label>Chef de Projet</Label>
                 <Input placeholder="Ex: Jean Dupont" value={projectToEdit.manager || ""} onChange={(e) => setProjectToEdit({...projectToEdit, manager: e.target.value})} />
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Date de demande</Label>
+                  <Input required type="date" value={projectToEdit.requestDate || ''} onChange={(e) => setProjectToEdit({...projectToEdit, requestDate: e.target.value})} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Date de mise en prod</Label>
+                  <Input required type="date" value={projectToEdit.goLiveDate} onChange={(e) => setProjectToEdit({...projectToEdit, goLiveDate: e.target.value})} />
+                </div>
+              </div>
               <div className="space-y-2">
                 <Label>Niveau de Risque Métier</Label>
                 <Select value={projectToEdit.riskLevel} onValueChange={(v: any) => setProjectToEdit({...projectToEdit, riskLevel: v})}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="faible">Faible</SelectItem>
                     <SelectItem value="moyen">Moyen</SelectItem>
                     <SelectItem value="fort">Fort</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Date de mise en prod</Label>
-                <Input required type="date" value={projectToEdit.goLiveDate} onChange={(e) => setProjectToEdit({...projectToEdit, goLiveDate: e.target.value})} />
               </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setProjectToEdit(null)}>Annuler</Button>
@@ -747,7 +725,6 @@ export default function SecurityOpsView() {
         </DialogContent>
       </Dialog>
 
-      {/* Modale de création - APPLICATION */}
       <Dialog open={isAddAppOpen} onOpenChange={setIsAddAppOpen}>
         <DialogContent>
           <DialogHeader>
@@ -762,9 +739,7 @@ export default function SecurityOpsView() {
               <div className="space-y-2">
                 <Label>Type d'audit prévu</Label>
                 <Select value={newApp.auditType} onValueChange={(v) => setNewApp({...newApp, auditType: v})}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="pentest">Test d'Intrusion (Pentest)</SelectItem>
                     <SelectItem value="architecture">Audit d'Architecture</SelectItem>
@@ -776,9 +751,7 @@ export default function SecurityOpsView() {
               <div className="space-y-2">
                 <Label>Criticité Métier</Label>
                 <Select value={newApp.criticality} onValueChange={(v) => setNewApp({...newApp, criticality: v})}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="mineure">Mineure</SelectItem>
                     <SelectItem value="majeure">Majeure</SelectItem>
@@ -803,7 +776,6 @@ export default function SecurityOpsView() {
         </DialogContent>
       </Dialog>
 
-      {/* Modale d'édition - APPLICATION */}
       <Dialog open={!!appToEdit} onOpenChange={(open) => !open && setAppToEdit(null)}>
         <DialogContent>
           <DialogHeader>
@@ -823,9 +795,7 @@ export default function SecurityOpsView() {
                 <div className="space-y-2">
                   <Label>Type d'Audit</Label>
                   <Select value={appToEdit.auditType} onValueChange={(v: any) => setAppToEdit({...appToEdit, auditType: v})}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="pentest">Test d'Intrusion</SelectItem>
                       <SelectItem value="architecture">Audit d'Architecture</SelectItem>
@@ -837,9 +807,7 @@ export default function SecurityOpsView() {
                 <div className="space-y-2">
                   <Label>Criticité Métier</Label>
                   <Select value={appToEdit.criticality} onValueChange={(v: any) => setAppToEdit({...appToEdit, criticality: v})}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="mineure">Mineure</SelectItem>
                       <SelectItem value="majeure">Majeure</SelectItem>
@@ -867,7 +835,6 @@ export default function SecurityOpsView() {
         </DialogContent>
       </Dialog>
 
-      {/* Modale de création - VULNÉRABILITÉ */}
       <Dialog open={isAddVulnOpen} onOpenChange={setIsAddVulnOpen}>
         <DialogContent>
           <DialogHeader>
@@ -889,9 +856,7 @@ export default function SecurityOpsView() {
             <div className="space-y-2">
               <Label>Sévérité</Label>
               <Select value={newVuln.severity} onValueChange={(v) => setNewVuln({...newVuln, severity: v})}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="faible">Faible</SelectItem>
                   <SelectItem value="moyen">Moyen</SelectItem>
@@ -908,10 +873,6 @@ export default function SecurityOpsView() {
         </DialogContent>
       </Dialog>
 
-      {/* ============================================================================ */}
-      {/* 9. POP-UPS DE CONFIRMATION (ACTIONS IRRÉVERSIBLES) */}
-      {/* ============================================================================ */}
-
       <AlertDialog open={!!projectStatusToUpdate} onOpenChange={(open) => !open && setProjectStatusToUpdate(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -927,9 +888,7 @@ export default function SecurityOpsView() {
               updateProjectMutation.mutate({ id: projectStatusToUpdate.id, updates: { pasStatus: projectStatusToUpdate.status as any } });
               setSelectedProject({ ...selectedProject, pasStatus: projectStatusToUpdate.status as any });
               setProjectStatusToUpdate(null);
-            }}>
-              Oui, modifier
-            </AlertDialogAction>
+            }}>Oui, modifier</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -950,9 +909,7 @@ export default function SecurityOpsView() {
               updateAppMutation.mutate({ id: appToMarkRiskAnalyzed.id, updates: { lastRiskAnalysisDate: today } });
               setSelectedApp({ ...selectedApp, lastRiskAnalysisDate: today });
               setAppToMarkRiskAnalyzed(null);
-            }}>
-              Oui, marquer à jour
-            </AlertDialogAction>
+            }}>Oui, marquer à jour</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -973,9 +930,7 @@ export default function SecurityOpsView() {
               updateAppMutation.mutate({ id: appToMarkAudited.id, updates: { lastAuditDate: today } });
               setSelectedApp({ ...selectedApp, lastAuditDate: today });
               setAppToMarkAudited(null);
-            }}>
-              Oui, marquer audité
-            </AlertDialogAction>
+            }}>Oui, marquer audité</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -993,9 +948,7 @@ export default function SecurityOpsView() {
             <AlertDialogAction className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => {
               if (!vulnToClose) return;
               closeVulnMutation.mutate({ id: vulnToClose, status: 'resolu' });
-            }}>
-              Oui, clôturer
-            </AlertDialogAction>
+            }}>Oui, clôturer</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1014,9 +967,7 @@ export default function SecurityOpsView() {
               if (!projectToDelete) return;
               delProjectMutation.mutate(projectToDelete.id);
               setProjectToDelete(null);
-            }}>
-              Supprimer
-            </AlertDialogAction>
+            }}>Supprimer</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1035,9 +986,7 @@ export default function SecurityOpsView() {
               if (!appToDelete) return;
               delAppMutation.mutate(appToDelete.id);
               setAppToDelete(null);
-            }}>
-              Supprimer
-            </AlertDialogAction>
+            }}>Supprimer</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
