@@ -28,7 +28,7 @@ const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualSta
 };
 
 export default function ExecutiveSummary() {
-  const { entries } = useKpi();
+  const { selectedPeriod, getFilteredValue } = useKpi();
 
   // 1. FETCH DE TOUTES LES DONNÉES OPÉRATIONNELLES
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
@@ -76,18 +76,18 @@ export default function ExecutiveSummary() {
     // ---------------------------------------------------------
     // C. SENSIBILISATION
     // ---------------------------------------------------------
-    const currentYear = new Date().getFullYear();
+    const selectedYear = selectedPeriod ? parseInt(selectedPeriod.split("-")[0]) : new Date().getFullYear();
 
     const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
     const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
     const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
     const elearningScore = totalElearningAssigned > 0 ? (totalElearningCompleted / totalElearningAssigned) * 100 : 100;
 
-    const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === currentYear);
+    const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === selectedYear);
     const phishingExecScore = Math.min(100, (campaignsThisYear.length / 4) * 100);
 
     const sessionModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning");
-    const sessionsThisYear = sessionModules.filter(m => new Date(m.startDate || m.createdAt || "").getFullYear() === currentYear);
+    const sessionsThisYear = sessionModules.filter(m => new Date(m.startDate || m.createdAt || "").getFullYear() === selectedYear);
     const sessionsExecScore = Math.min(100, (sessionsThisYear.length / 4) * 100);
 
     const sensiBase = (elearningScore * 0.4) + (phishingExecScore * 0.3) + (sessionsExecScore * 0.3);
@@ -111,22 +111,18 @@ export default function ExecutiveSummary() {
     // D. MESSAGERIE SSI
     // ---------------------------------------------------------
     let msgScore = 100;
-    const msgEntries = entries.filter(e => e.kpiId.startsWith('msg-'));
-    if (msgEntries.length > 0) {
-      const latestPeriod = [...new Set(msgEntries.map(e => e.period))].sort().pop();
-      const fraude = safeNum(msgEntries.find(e => e.kpiId === 'msg-fraude' && e.period === latestPeriod)?.value);
-      const total = safeNum(msgEntries.find(e => e.kpiId === 'msg-total' && e.period === latestPeriod)?.value);
-      if (total > 0) {
-        const fraudeRate = (fraude / total) * 100;
-        if (fraudeRate > 20) msgScore -= 30;
-        else if (fraudeRate > 10) msgScore -= 10;
-      }
+    const fraude = getFilteredValue('msg-fraude') || 0;
+    const total = getFilteredValue('msg-total') || 0;
+    if (total > 0) {
+      const fraudeRate = (fraude / total) * 100;
+      if (fraudeRate > 20) msgScore -= 30;
+      else if (fraudeRate > 10) msgScore -= 10;
     }
 
     health.push({ cat: "messagerie", score: Math.round(msgScore), label: CATEGORY_LABELS["messagerie"], color: CATEGORY_COLORS["messagerie"] });
 
     return health;
-  }, [projects, apps, vulns, policies, gaps, campaigns, profiles, modules, entries]);
+  }, [projects, apps, vulns, policies, gaps, campaigns, profiles, modules, selectedPeriod, getFilteredValue]);
 
   // 3. LE SCORE GLOBAL DE LA CONSOLE
   const securityScore = categoryHealth.length > 0

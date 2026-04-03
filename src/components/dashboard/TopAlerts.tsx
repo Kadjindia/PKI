@@ -79,7 +79,7 @@ export default function TopAlerts() {
           icon: <FileText className="w-4 h-4" />,
           title: `Politique ${status}`,
           message: `"${p.title}" est ${status === "dépassé" ? 'expirée' : 'à réviser'}.`,
-          link: `/governance?policyId=${p.id}` // <-- Deep Link
+          link: `/gouvernance?policyId=${p.id}` // <-- Deep Link
         });
       }
     });

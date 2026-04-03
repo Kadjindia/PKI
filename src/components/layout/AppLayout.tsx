@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen, ShieldAlert, Users, Mail } from "lucide-react"; // <-- Ajout de Mail
+import { LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen, ShieldAlert, Users, Mail, Radar } from "lucide-react";
 
 const NAV_ITEMS = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -8,7 +8,8 @@ const NAV_ITEMS = [
   { path: "/gouvernance", label: "Revue des Politiques", icon: BookOpen },
   { path: "/security-ops", label: "PAS & Audits", icon: ShieldAlert },
   { path: "/sensibilisation", label: "Sensibilisation", icon: Users },
-  { path: "/messagerie", label: "Messagerie SSI", icon: Mail }, // <-- LE NOUVEAU MENU EST ICI
+  { path: "/messagerie", label: "Messagerie SSI", icon: Mail },
+  { path: "/risques", label: "Suivi des Risques", icon: Radar },
   { path: "/alertes", label: "Alertes", icon: Bell },
   { path: "/connecteurs", label: "Connecteurs", icon: Plug },
 ];
@@ -18,7 +19,6 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
-      {/* Sidebar */}
       <aside className="w-64 border-r border-border flex flex-col bg-sidebar shrink-0">
         <div className="p-6 border-b border-border">
           <div className="flex items-center gap-3">
@@ -53,7 +53,6 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 overflow-auto">
         <div className="p-8 max-w-[1600px] mx-auto">{children}</div>
       </main>
