@@ -15,7 +15,7 @@ export interface PhishingCampaign {
   recidivistsCount: number;
   notes?: string;
   failedEmails: string[];
-  detailedResults?: any[]; // NOUVEAU : Le journal exact de la campagne
+  detailedResults?: any[];
 }
 
 export interface PhishingProfile {
