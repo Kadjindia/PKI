@@ -4,7 +4,8 @@ import { DaxEngine } from "@/lib/DaxEngine";
 import {
   ArrowLeft, Shield, Plus, Trash2, BarChart3, LineChart as LineChartIcon,
   PieChart as PieChartIcon, Hash, Target, LayoutDashboard, Database, CheckSquare,
-  Calculator, Sigma, Filter, ChevronRight, GripVertical, FileSpreadsheet, Loader2, Calendar
+  Calculator, Sigma, Filter, ChevronRight, GripVertical, FileSpreadsheet, Loader2,
+  Calendar, Palette, Maximize, Tag, LayoutPanelLeft
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,12 +26,22 @@ type AggregationType = 'SUM' | 'AVERAGE' | 'MIN' | 'MAX' | 'COUNT' | 'DISTINCTCO
 type WidgetType = 'kpi' | 'bar' | 'area' | 'pie';
 type DateGrouping = 'none' | 'day' | 'week' | 'month' | 'quarter' | 'year';
 type FilterOperator = 'eq' | 'neq' | 'contains' | 'gt' | 'lt' | 'last_n_days';
+type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
+type WidgetSize = 'small' | 'medium' | 'large';
 
 interface FilterConfig { id: string; column: string; operator: FilterOperator; value: string; }
 interface Dataset { id: string; name: string; columns: string[]; data: any[]; }
 interface CustomMeasure { id: string; datasetId: string; name: string; formula: string; }
 interface ChartSeries { id: string; yAxisCol: string; isMeasure: boolean; aggregation: AggregationType; color: string; }
-interface WidgetConfig { id: string; title: string; type: WidgetType; datasetId: string; xAxisCol?: string; dateGrouping: DateGrouping; series: ChartSeries[]; filters: FilterConfig[]; }
+
+interface WidgetConfig {
+  id: string; title: string; type: WidgetType; datasetId: string;
+  xAxisCol?: string; dateGrouping: DateGrouping; series: ChartSeries[]; filters: FilterConfig[];
+  showLabels?: boolean;
+  legendPosition?: LegendPosition;
+  widgetSize?: WidgetSize;
+}
+
 interface TrackedRisk { id: string; title: string; description: string; icon: string; datasets: Dataset[]; measures: CustomMeasure[]; widgets: WidgetConfig[]; }
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e'];
@@ -166,14 +177,17 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
         const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
         const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !isNaN(v));
 
-        if (s.aggregation === 'COUNT') aggValue = nonBlanks.length;
-        else if (s.aggregation === 'DISTINCTCOUNT') aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
-        else if (numVals.length > 0) {
+        if (s.aggregation === 'COUNT') {
+          aggValue = nonBlanks.length;
+        } else if (s.aggregation === 'DISTINCTCOUNT') {
+          aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
+        } else if (numVals.length > 0) {
           if (s.aggregation === 'SUM') aggValue = numVals.reduce((a, b) => a + b, 0);
           if (s.aggregation === 'AVERAGE') aggValue = numVals.reduce((a, b) => a + b, 0) / numVals.length;
           if (s.aggregation === 'MIN') aggValue = Math.min(...numVals);
           if (s.aggregation === 'MAX') aggValue = Math.max(...numVals);
         }
+
         outRow[s.id] = Math.round((aggValue + Number.EPSILON) * 100) / 100;
       }
     });
@@ -182,7 +196,6 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
   return result;
 };
 
-// MODIFIÉ : Renvoie désormais un tableau de résultats (un par série)
 const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: CustomMeasure[], filters: FilterConfig[]): number[] => {
   if (series.length === 0) return [];
   const filteredData = applyFiltersToData(rawData, filters);
@@ -216,7 +229,7 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
 };
 
 // ============================================================================
-// COMPOSANT DÉDIÉ AU RENDU DU GRAPHIQUE (MÉMOÏSÉ)
+// COMPOSANT DÉDIÉ AU RENDU DU GRAPHIQUE (MÉMOÏSÉ + APPARENCE GÉRÉE)
 // ============================================================================
 const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: WidgetConfig, datasets: Dataset[], measures: CustomMeasure[] }) => {
   const dataset = datasets.find(d => d.id === widget.datasetId);
@@ -228,16 +241,22 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   }, [dataset?.data, widget.xAxisCol, widget.dateGrouping, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
 
   const kpiValues = useMemo(() => {
-    if (!dataset || widget.type !== 'kpi' || widget.series.length === 0) return [];
+    if (!dataset || widget.series.length === 0) return [];
     return aggregateGlobal(dataset.data, widget.series, measures, widget.filters || []);
   }, [dataset?.data, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
 
   if (!dataset) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">Source introuvable.</div>;
 
-  if (widget.type === 'kpi') {
-    if (widget.series.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Glissez une ou plusieurs valeurs.</div>;
+  if (widget.series.length === 0) {
+    return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Glissez une ou plusieurs valeurs.</div>;
+  }
 
-    // NOUVEAU RENDU KPI : Formatage propre et gestion multi-valeurs
+  if (widget.type !== 'kpi' && widget.type !== 'pie' && !widget.xAxisCol) {
+    return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Glissez une catégorie pour l'Axe X.</div>;
+  }
+
+  // RENDU KPI
+  if (widget.type === 'kpi') {
     return (
       <div className="flex flex-col h-full justify-center items-center px-4 gap-6 overflow-y-auto">
         {widget.series.map((s, idx) => (
@@ -254,18 +273,95 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
     );
   }
 
-  if (!widget.xAxisCol || widget.series.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Glissez des champs dans les Axes.</div>;
+  const formatLabel = (value: number) => new Intl.NumberFormat('fr-FR').format(value);
+
+  const legendPos = widget.legendPosition || 'bottom';
+  const renderLegend = () => {
+    if (legendPos === 'none') return null;
+    if (legendPos === 'left') return <Legend layout="vertical" verticalAlign="middle" align="left" wrapperStyle={{ fontSize: '11px', paddingRight: '20px' }}/>;
+    if (legendPos === 'right') return <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '11px', paddingLeft: '20px' }}/>;
+    if (legendPos === 'top') return <Legend layout="horizontal" verticalAlign="top" align="center" wrapperStyle={{ fontSize: '11px', paddingBottom: '10px' }}/>;
+    return <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }}/>;
+  };
+
+  // RENDU CAMEMBERT (PIE)
+  if (widget.type === 'pie') {
+    if (!widget.xAxisCol) {
+      const pieData = widget.series.map((s, idx) => ({
+        name: s.isMeasure ? s.yAxisCol : `${s.aggregation} de ${s.yAxisCol}`,
+        value: kpiValues[idx] || 0,
+        color: s.color
+      })).filter(d => d.value > 0);
+
+      if (pieData.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée positive.</div>;
+
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={pieData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={2} dataKey="value" nameKey="name"
+              label={widget.showLabels !== false ? ((entry) => formatLabel(entry.value)) : false}
+            >
+              {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+            </Pie>
+            <Tooltip formatter={(value: number) => formatLabel(value)} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            {renderLegend()}
+          </PieChart>
+        </ResponsiveContainer>
+      );
+    }
+    else {
+      if (chartData.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée.</div>;
+
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={chartData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={2} dataKey={widget.series[0].id} nameKey={widget.xAxisCol!}
+              label={widget.showLabels !== false ? ((entry) => formatLabel(entry[widget.series[0].id])) : false}
+            >
+              {chartData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+            </Pie>
+            <Tooltip formatter={(value: number) => formatLabel(value)} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            {renderLegend()}
+          </PieChart>
+        </ResponsiveContainer>
+      );
+    }
+  }
+
+  // RENDU BARRES ET COURBES
   if (chartData.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée correspondant aux filtres.</div>;
 
   return (
     <div className="h-full w-full">
       <ResponsiveContainer width="100%" height="100%">
         {widget.type === 'bar' ? (
-          <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} /><Legend wrapperStyle={{ fontSize: '11px' }} />{widget.series.map(s => <Bar key={s.id} dataKey={s.id} name={s.isMeasure ? s.yAxisCol : `${s.aggregation}(${s.yAxisCol})`} fill={s.color} radius={[2, 2, 0, 0]} />)}</BarChart>
-        ) : widget.type === 'area' ? (
-          <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} /><Legend wrapperStyle={{ fontSize: '11px' }} />{widget.series.map(s => <Area key={s.id} type="monotone" dataKey={s.id} name={s.isMeasure ? s.yAxisCol : `${s.aggregation}(${s.yAxisCol})`} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2} />)}</AreaChart>
+          <BarChart data={chartData} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+            <XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            {renderLegend()}
+            {widget.series.map(s => (
+                <Bar key={`bar-${s.id}`} dataKey={s.id} name={s.isMeasure ? s.yAxisCol : `${s.aggregation}(${s.yAxisCol})`} fill={s.color} radius={[2, 2, 0, 0]}
+                     label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
+            ))}
+          </BarChart>
         ) : (
-          <PieChart><Pie data={chartData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={2} dataKey={widget.series[0].id} nameKey={widget.xAxisCol!}>{chartData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}</Pie><Tooltip formatter={(value, name, props) => [value, props.payload[widget.xAxisCol!]]} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} /></PieChart>
+          <AreaChart data={chartData} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+            <XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+            <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+            {renderLegend()}
+            {widget.series.map(s => (
+              <Area
+                key={s.id} type="monotone" dataKey={s.id} name={s.isMeasure ? s.yAxisCol : `${s.aggregation}(${s.yAxisCol})`} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2}
+                label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false}
+              />
+            ))}
+          </AreaChart>
         )}
       </ResponsiveContainer>
     </div>
@@ -278,12 +374,12 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
 export default function RisksView() {
 
   const [risks, setRisks] = useState<TrackedRisk[]>(() => {
-    try { const saved = localStorage.getItem("pbi_risks_v12_kpi"); return saved ? JSON.parse(saved) : []; } catch { return []; }
+    try { const saved = localStorage.getItem("pbi_risks_v17_fixed"); return saved ? JSON.parse(saved) : []; } catch { return []; }
   });
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      try { const serialized = JSON.stringify(risks); if (serialized.length < 4000000) localStorage.setItem("pbi_risks_v12_kpi", serialized); } catch { console.warn("Stockage saturé."); }
+      try { const serialized = JSON.stringify(risks); if (serialized.length < 4000000) localStorage.setItem("pbi_risks_v17_fixed", serialized); } catch { console.warn("Stockage saturé."); }
     }, 800);
     return () => clearTimeout(timer);
   }, [risks]);
@@ -291,12 +387,10 @@ export default function RisksView() {
   const [activeRiskId, setActiveRiskId] = useState<string | null>(null);
   const [activeWidgetId, setActiveWidgetId] = useState<string | null>(null);
 
-  // UX : PANNEAUX PLIABLES
   const [isFiltersOpen, setIsFiltersOpen] = useState(true);
   const [isVisOpen, setIsVisOpen] = useState(true);
   const [isDataOpen, setIsDataOpen] = useState(true);
 
-  // ÉTATS WIZARD
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState<1|2>(1);
   const [isImporting, setIsImporting] = useState(false);
@@ -359,7 +453,11 @@ export default function RisksView() {
 
   const addWidgetToStudio = () => {
     if (!activeRisk || activeRisk.datasets.length === 0) return toast.error("Importez des données d'abord.");
-    const newWidget: WidgetConfig = { id: `w_${Date.now()}`, title: "Nouveau Visuel", type: "bar", datasetId: activeRisk.datasets[0].id, dateGrouping: "none", series: [], filters: [] };
+    const newWidget: WidgetConfig = {
+      id: `w_${Date.now()}`, title: "Nouveau Visuel", type: "bar", datasetId: activeRisk.datasets[0].id,
+      dateGrouping: "none", series: [], filters: [],
+      showLabels: true, legendPosition: 'bottom', widgetSize: 'medium'
+    };
     updateActiveRisk({ widgets: [...activeRisk.widgets, newWidget] });
     setActiveWidgetId(newWidget.id);
     setIsVisOpen(true); setIsDataOpen(true);
@@ -367,6 +465,7 @@ export default function RisksView() {
 
   const updateActiveWidget = (updates: Partial<WidgetConfig>) => {
     if (!activeRisk || !activeWidgetId) return;
+    // J'AI ENLEVÉ LE BLOCAGE QUI LIMITAIT LE PIE CHART ICI
     if (updates.datasetId && updates.datasetId !== activeWidget?.datasetId) { updates.xAxisCol = ""; updates.series = []; updates.filters = []; }
     updateActiveRisk({ widgets: activeRisk.widgets.map(w => w.id === activeWidgetId ? { ...w, ...updates } : w) });
   };
@@ -379,6 +478,7 @@ export default function RisksView() {
 
   const addSeriesWithData = (colName: string, isMeasure: boolean) => {
     if (!activeWidget) return;
+    // J'AI ENLEVÉ LE BLOCAGE QUI LIMITAIT LE PIE CHART ICI AUSSI
     const newSeries: ChartSeries = { id: `s_${Date.now()}`, yAxisCol: colName, isMeasure, aggregation: "SUM", color: COLORS[activeWidget.series.length % COLORS.length] };
     updateActiveWidget({ series: [...activeWidget.series, newSeries] });
   };
@@ -431,6 +531,11 @@ export default function RisksView() {
     } catch {}
   };
 
+  const getWidgetGridClass = (size?: WidgetSize) => {
+    if (size === 'small') return 'col-span-1';
+    if (size === 'large') return 'md:col-span-2 xl:col-span-3';
+    return 'md:col-span-2';
+  };
 
   // ============================================================================
   // VUE 1 : ACCUEIL
@@ -514,12 +619,12 @@ export default function RisksView() {
               {activeRisk?.widgets.map(widget => (
                 <Card
                   key={widget.id} onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); setIsFiltersOpen(true); setIsVisOpen(true); setIsDataOpen(true); }}
-                  className={`cursor-pointer transition-all bg-background ${widget.type === 'area' || widget.type === 'bar' ? 'md:col-span-2' : ''} ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10 relative' : 'hover:border-primary/50 shadow-sm'}`}
+                  className={`cursor-pointer transition-all bg-background ${getWidgetGridClass(widget.widgetSize)} ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10 relative' : 'hover:border-primary/50 shadow-sm'}`}
                 >
                   <CardHeader className="p-3 border-b flex flex-row items-center justify-between bg-card/50">
                     <CardTitle className="text-xs font-bold uppercase text-muted-foreground truncate">{widget.title}</CardTitle>
                   </CardHeader>
-                  <CardContent className="p-3 h-[250px]">
+                  <CardContent className={`p-3 ${widget.widgetSize === 'large' ? 'h-[400px]' : 'h-[250px]'}`}>
                     <DashboardWidget widget={widget} datasets={activeRisk.datasets} measures={activeRisk.measures} />
                   </CardContent>
                 </Card>
@@ -605,12 +710,22 @@ export default function RisksView() {
                     onDrop={handleDropOnX}
                     className="p-3 border rounded bg-secondary/10 space-y-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors"
                   >
-                    <Label className="text-[10px] uppercase font-bold text-muted-foreground">Axe X (Glissez un champ)</Label>
-                    <select value={activeWidget.xAxisCol || ''} onChange={e => updateActiveWidget({ xAxisCol: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-background"><option value="">Sélectionner...</option>{activeDataset?.columns.map(c => <option key={c} value={c}>{c}</option>)}</select>
-                    <div className="space-y-1 pt-1 border-t border-muted-foreground/10">
-                      <Label className="text-[9px] uppercase font-bold text-primary flex items-center gap-1"><Calendar className="w-3 h-3"/> Filtre Temporel</Label>
-                      <select value={activeWidget.dateGrouping || 'none'} onChange={e => updateActiveWidget({ dateGrouping: e.target.value as DateGrouping })} className="w-full h-7 rounded border border-primary/20 px-1 text-[10px] bg-primary/5 text-primary"><option value="none">Aucun (Standard)</option><option value="day">Jour</option><option value="week">Semaine</option><option value="month">Mois</option><option value="quarter">Trimestre</option><option value="year">Année</option></select>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-[10px] uppercase font-bold text-muted-foreground">
+                        {activeWidget.type === 'pie' ? 'Légende / Catégorie' : 'Axe X'}
+                      </Label>
+                      {activeWidget.type === 'pie' && activeWidget.xAxisCol && (
+                         <button onClick={() => updateActiveWidget({ xAxisCol: "" })} className="text-[10px] text-rose-500 font-bold hover:underline">Vider</button>
+                      )}
                     </div>
+                    <select value={activeWidget.xAxisCol || ''} onChange={e => updateActiveWidget({ xAxisCol: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-background"><option value="">{activeWidget.type === 'pie' ? 'Aucune (Mode Comparaison)' : 'Sélectionner...'}</option>{activeDataset?.columns.map(c => <option key={c} value={c}>{c}</option>)}</select>
+
+                    {activeWidget.xAxisCol && (
+                      <div className="space-y-1 pt-1 border-t border-muted-foreground/10">
+                        <Label className="text-[9px] uppercase font-bold text-primary flex items-center gap-1"><Calendar className="w-3 h-3"/> Filtre Temporel</Label>
+                        <select value={activeWidget.dateGrouping || 'none'} onChange={e => updateActiveWidget({ dateGrouping: e.target.value as DateGrouping })} className="w-full h-7 rounded border border-primary/20 px-1 text-[10px] bg-primary/5 text-primary"><option value="none">Aucun (Standard)</option><option value="day">Jour</option><option value="week">Semaine</option><option value="month">Mois</option><option value="quarter">Trimestre</option><option value="year">Année</option></select>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -621,13 +736,15 @@ export default function RisksView() {
                   className="p-3 border rounded bg-secondary/10 space-y-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors"
                 >
                   <div className="flex items-center justify-between">
-                    <Label className="text-[10px] uppercase font-bold text-muted-foreground">{activeWidget.type === 'pie' || activeWidget.type === 'kpi' ? 'Valeur' : 'Axe Y'}</Label>
+                    <Label className="text-[10px] uppercase font-bold text-muted-foreground">
+                      {activeWidget.type === 'pie' ? 'Valeurs (Taille des parts)' : activeWidget.type === 'kpi' ? 'Valeur' : 'Axe Y'}
+                    </Label>
                     <button onClick={addSeries} className="text-[10px] text-primary font-bold hover:underline">+ Ajouter</button>
                   </div>
 
                   {activeWidget.series.length === 0 && <div className="text-[10px] text-muted-foreground italic text-center">Glissez des données ici.</div>}
 
-                  {activeWidget.series.map(s => (
+                  {activeWidget.series.map((s, index) => (
                     <div key={s.id} className="p-2 bg-background border rounded space-y-2 relative group">
                       <button onClick={() => removeSeries(s.id)} className="absolute -top-2 -right-2 bg-rose-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3" /></button>
                       <select value={s.yAxisCol} onChange={e => { const val = e.target.value; const isMeas = activeRisk?.measures.some(m => m.name === val); updateSeries(s.id, { yAxisCol: val, isMeasure: isMeas }); }} className="w-full h-7 rounded border px-1 text-xs font-bold bg-background">
@@ -641,10 +758,48 @@ export default function RisksView() {
                           <option value="SUM">Somme</option><option value="AVERAGE">Moyenne</option><option value="COUNT">Nombre</option><option value="MAX">Maximum</option><option value="MIN">Minimum</option><option value="DISTINCTCOUNT">Comptage distinct</option>
                         </select>
                       )}
-                      <div className="flex gap-1">{COLORS.slice(0,5).map(c => <button key={c} onClick={() => updateSeries(s.id, { color: c })} className={`w-4 h-4 rounded-full ${s.color === c ? 'ring-1 ring-primary' : ''}`} style={{backgroundColor: c}}/>)}</div>
+
+                      {activeWidget.type !== 'pie' && (
+                        <div className="flex gap-1">{COLORS.slice(0,5).map(c => <button key={c} onClick={() => updateSeries(s.id, { color: c })} className={`w-4 h-4 rounded-full ${s.color === c ? 'ring-1 ring-primary' : ''}`} style={{backgroundColor: c}}/>)}</div>
+                      )}
                     </div>
                   ))}
                 </div>
+
+                {/* NOUVEAU BLOC : APPARENCE (FORMATAGE) */}
+                <div className="pt-2 border-t space-y-3">
+                  <h4 className="text-[10px] font-black uppercase text-primary flex items-center gap-1"><Palette className="w-3 h-3"/> Apparence</h4>
+
+                  {activeWidget.type !== 'kpi' && (
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs flex items-center gap-1 text-muted-foreground"><Tag className="w-3 h-3"/> Étiquettes de données</Label>
+                      <input type="checkbox" checked={activeWidget.showLabels !== false} onChange={(e) => updateActiveWidget({ showLabels: e.target.checked })} className="w-4 h-4 accent-primary" />
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <Label className="text-xs flex items-center gap-1 text-muted-foreground"><Maximize className="w-3 h-3"/> Taille du visuel</Label>
+                    <select value={activeWidget.widgetSize || 'medium'} onChange={e => updateActiveWidget({ widgetSize: e.target.value as WidgetSize })} className="w-full h-7 rounded border px-1 text-xs bg-background">
+                      <option value="small">Petit (1 colonne)</option>
+                      <option value="medium">Moyen (2 colonnes)</option>
+                      <option value="large">Grand (Largeur complète)</option>
+                    </select>
+                  </div>
+
+                  {activeWidget.type !== 'kpi' && (
+                    <div className="space-y-1">
+                      <Label className="text-xs flex items-center gap-1 text-muted-foreground"><LayoutPanelLeft className="w-3 h-3"/> Position de la légende</Label>
+                      <select value={activeWidget.legendPosition || 'bottom'} onChange={e => updateActiveWidget({ legendPosition: e.target.value as LegendPosition })} className="w-full h-7 rounded border px-1 text-xs bg-background">
+                        <option value="bottom">En bas</option>
+                        <option value="top">En haut</option>
+                        <option value="left">À gauche</option>
+                        <option value="right">À droite</option>
+                        <option value="none">Masquer la légende</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+
               </div>
             )}
           </div>
