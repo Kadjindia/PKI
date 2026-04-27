@@ -7,7 +7,8 @@ import {
   ArrowLeft, Shield, Plus, Trash2, BarChart3, LineChart as LineChartIcon,
   PieChart as PieChartIcon, Hash, Target, LayoutDashboard, Database, CheckSquare,
   Calculator, Sigma, Filter, ChevronRight, ChevronDown, GripVertical, FileSpreadsheet, Loader2,
-  Calendar, Palette, Maximize, Tag, LayoutPanelLeft, AlertTriangle, Edit2, Combine
+  Calendar, Palette, Maximize, Tag, LayoutPanelLeft, AlertTriangle, Edit2, Combine,
+  Eye, EyeOff
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -28,8 +29,8 @@ import { toast } from "sonner";
 // ============================================================================
 // CONSTANTES GLOBALES DE SÉCURITÉ
 // ============================================================================
-const MAX_ROWS_PER_DATASET = 5000; // Limite pour éviter le crash du navigateur et de l'API Supabase
-const MAX_PAYLOAD_SIZE = 4500000; // ~4.5MB limite pour l'upsert HTTP
+const MAX_ROWS_PER_DATASET = 5000;
+const MAX_PAYLOAD_SIZE = 4500000;
 
 // ============================================================================
 // TYPES
@@ -42,7 +43,7 @@ type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 type WidgetSize = 'small' | 'medium' | 'large';
 
 interface FilterConfig { id: string; column: string; operator: FilterOperator; value: string; }
-interface Dataset { id: string; name: string; columns: string[]; data: any[]; }
+interface Dataset { id: string; name: string; columns: string[]; data: any[]; isHidden?: boolean; }
 interface CustomMeasure { id: string; datasetId: string; name: string; formula: string; }
 
 interface ChartSeries {
@@ -400,6 +401,7 @@ export default function RisksView() {
   const [isInitialized, setIsInitialized] = useState(false);
 
   const [collapsedDatasets, setCollapsedDatasets] = useState<Set<string>>(new Set());
+  const [showHiddenDatasets, setShowHiddenDatasets] = useState(false); // NOUVEAU: Gère l'affichage de la corbeille des tables masquées
 
   const [riskToDelete, setRiskToDelete] = useState<string | null>(null);
   const [widgetToDelete, setWidgetToDelete] = useState<string | null>(null);
@@ -450,7 +452,6 @@ export default function RisksView() {
           updated_at: new Date().toISOString()
         }));
 
-        // PROTECTION "RANGE ERROR" AVANT L'ENVOI
         const payloadString = JSON.stringify(recordsToUpsert);
         if (payloadString.length > MAX_PAYLOAD_SIZE) {
           throw new Error("Payload too large");
@@ -467,7 +468,6 @@ export default function RisksView() {
            toast.error("Volume de données trop important pour la synchronisation Cloud.");
         }
 
-        // Sauvegarde de secours ultra-réduite
         try {
           const safeBackup = risks.map(r => ({
             ...r,
@@ -503,7 +503,7 @@ export default function RisksView() {
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
 
   // ============================================================================
-  // LOGIQUE WIZARD : IMPORTATION SÉCURISÉE (FILTRE STRICT SUR LA COLONNE "DATE")
+  // LOGIQUE WIZARD : IMPORTATION SÉCURISÉE AVEC FILTRE "DATE" OBLIGATOIRE
   // ============================================================================
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -523,32 +523,22 @@ export default function RisksView() {
             const rawData = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { blankrows: false });
             if (!rawData || rawData.length === 0) return;
 
-            // 1. Chercher dynamiquement s'il y a une colonne "Date" dans la table
-            // (Insensible à la casse : "Date", "DATE", "date_creation", etc.)
             const sampleRow = rawData[0] as object;
             const dateColumn = Object.keys(sampleRow).find(key => key.toUpperCase().includes('DATE'));
 
-            // 2. FILTRAGE STRICT DES LIGNES
             let cleanData = rawData.filter((row: any) => {
               if (dateColumn) {
-                // RÈGLE ABSOLUE : Si on a une colonne Date, la ligne n'est gardée QUE si la date est remplie
                 const val = row[dateColumn];
                 return val !== null && val !== undefined && String(val).trim() !== "";
               } else {
-                // (Fallback) Si c'est un tableau sans aucune colonne Date (ex: un référentiel Actifs),
-                // on garde la ligne si elle contient au moins une vraie info.
                 return Object.values(row).some(val => val !== null && val !== undefined && String(val).trim() !== "");
               }
             });
 
-            // Si la feuille n'est pas vide après ce nettoyage drastique
             if (cleanData.length > 0) {
-
-              // 3. MINIFICATION ET NETTOYAGE DES COLONNES INVISIBLES
               cleanData = cleanData.map((row: any) => {
                 const minifiedRow: any = {};
                 Object.keys(row).forEach(key => {
-                  // On ignore les fausses colonnes générées par Excel (__EMPTY) et les cases vides
                   if (!key.includes('__EMPTY') && row[key] !== null && row[key] !== undefined && String(row[key]).trim() !== "") {
                     minifiedRow[key] = row[key];
                   }
@@ -556,20 +546,19 @@ export default function RisksView() {
                 return minifiedRow;
               });
 
-              // 4. SÉCURITÉ DE VOLUME (Capping)
               if (cleanData.length > MAX_ROWS_PER_DATASET) {
                 toast.warning(`⚠️ La feuille "${sheetName}" contient trop de lignes avec des dates valides (${cleanData.length}). Seules les ${MAX_ROWS_PER_DATASET} premières ont été conservées.`);
                 cleanData = cleanData.slice(0, MAX_ROWS_PER_DATASET);
               }
 
-              // On récupère les colonnes finales et propres
               const validColumns = Array.from(new Set(cleanData.flatMap(r => Object.keys(r))));
 
               sheetsData.push({
                 id: `ds_${Date.now()}_${Math.random().toString(36).substring(7)}`,
                 name: sheetName,
                 columns: validColumns,
-                data: cleanData
+                data: cleanData,
+                isHidden: false // Par défaut, la table est visible
               });
             }
           });
@@ -579,7 +568,7 @@ export default function RisksView() {
           }
 
           setAvailableSheets(sheetsData);
-          setSelectedSheets(sheetsData.map(sheet => sheet.id)); // On pré-coche tout
+          setSelectedSheets(sheetsData.map(sheet => sheet.id));
           setWizardStep(2);
 
         } catch(err: any) {
@@ -645,6 +634,16 @@ export default function RisksView() {
     });
   };
 
+  const toggleDatasetVisibility = (e: React.MouseEvent, datasetId: string) => {
+    e.stopPropagation();
+    if (!activeRisk) return;
+    const updatedDatasets = activeRisk.datasets.map(d =>
+      d.id === datasetId ? { ...d, isHidden: !d.isHidden } : d
+    );
+    updateActiveRisk({ datasets: updatedDatasets });
+    toast.info("Visibilité de la table modifiée.");
+  };
+
   const handleAppendDatasets = () => {
     if (!activeRisk) return;
     if (!appendSource1 || !appendSource2) return toast.error("Sélectionnez deux tables à fusionner.");
@@ -659,7 +658,6 @@ export default function RisksView() {
     const combinedColumns = Array.from(new Set([...ds1.columns, ...ds2.columns]));
     let combinedData = [...ds1.data, ...ds2.data];
 
-    // Capping lors de la fusion
     if (combinedData.length > MAX_ROWS_PER_DATASET) {
         toast.warning(`⚠️ La fusion dépasse la limite. Seules les ${MAX_ROWS_PER_DATASET} premières lignes sont conservées.`);
         combinedData = combinedData.slice(0, MAX_ROWS_PER_DATASET);
@@ -669,7 +667,8 @@ export default function RisksView() {
       id: `ds_${Date.now()}`,
       name: appendNewName,
       columns: combinedColumns,
-      data: combinedData
+      data: combinedData,
+      isHidden: false // La nouvelle table issue de la fusion est visible par défaut
     };
 
     updateActiveRisk({ datasets: [...activeRisk.datasets, newDataset] });
@@ -685,8 +684,12 @@ export default function RisksView() {
   // ============================================================================
   const addWidgetToStudio = () => {
     if (!activeRisk || activeRisk.datasets.length === 0) return toast.error("Veuillez charger des données.");
+
+    // On présélectionne le premier dataset non masqué (ou le premier s'ils sont tous masqués)
+    const defaultDataset = activeRisk.datasets.find(d => !d.isHidden) || activeRisk.datasets[0];
+
     const newWidget: WidgetConfig = {
-      id: `w_${Date.now()}`, title: "Nouvel Indicateur", type: "bar", datasetId: activeRisk.datasets[0].id,
+      id: `w_${Date.now()}`, title: "Nouvel Indicateur", type: "bar", datasetId: defaultDataset.id,
       dateGrouping: "none", series: [], filters: [],
       showLabels: true, legendPosition: 'bottom', widgetSize: 'medium'
     };
@@ -768,6 +771,66 @@ export default function RisksView() {
     return 'md:col-span-2';
   };
 
+  // ============================================================================
+  // FONCTIONS DE RENDU UI DES DATASETS (Visibles et Masqués)
+  // ============================================================================
+  const renderDatasetItem = (ds: Dataset, isHiddenList: boolean = false) => (
+    <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
+      <div
+        className={`flex items-center justify-between p-2 rounded font-bold cursor-pointer transition-colors ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`}
+        onClick={() => toggleDatasetCollapse(ds.id)}
+      >
+        <div className="flex items-center gap-2 truncate">
+           {collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
+           <Database className={`w-3.5 h-3.5 shrink-0 ${isHiddenList ? 'opacity-40' : 'text-muted-foreground'}`}/>
+           <span className="truncate">{ds.name}</span>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+           {/* BOUTON MASQUER / AFFICHER */}
+           <button
+             onClick={(e) => toggleDatasetVisibility(e, ds.id)}
+             className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1"
+             title={isHiddenList ? "Restaurer l'affichage de cette table" : "Masquer la table"}
+           >
+              {isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}
+           </button>
+           {!isHiddenList && (
+             <button onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity p-1" title="Supprimer">
+                <Trash2 className="w-3 h-3"/>
+             </button>
+           )}
+        </div>
+      </div>
+
+      {/* BLOC COLLAPSIBLE : COLONNES ET MESURES */}
+      {(!collapsedDatasets.has(ds.id)) && (
+        <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1">
+          {activeRisk?.measures.filter(m => m.datasetId === ds.id).map(m => {
+            const isChecked = activeWidget?.datasetId === ds.id && activeWidget?.series.some(s => s.yAxisCol === m.name);
+            return (
+              <div key={m.id} draggable onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: m.name, isMeasure: true, datasetId: ds.id }))} className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}>
+                <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
+                <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(m.name, true, ds.id)} className="accent-primary shrink-0" />
+                <Calculator className="w-3 h-3 text-primary shrink-0"/> <span className="text-primary font-medium truncate">{m.name}</span>
+              </div>
+            );
+          })}
+          {ds.columns.map(col => {
+            const isChecked = activeWidget?.datasetId === ds.id && (activeWidget?.xAxisCol === col || activeWidget?.series.some(s => s.yAxisCol === col));
+            return (
+              <div key={col} draggable onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: col, isMeasure: false, datasetId: ds.id }))} className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}>
+                <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
+                <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(col, false, ds.id)} className="accent-primary shrink-0" />
+                <Sigma className="w-3 h-3 text-muted-foreground shrink-0"/> <span className="text-muted-foreground truncate" title={col}>{col}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+
   if (!isInitialized) {
     return (
       <div className="flex h-[calc(100vh-6rem)] items-center justify-center -m-4">
@@ -824,7 +887,7 @@ export default function RisksView() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pt-2">
           {risks.length === 0 && <div className="col-span-full py-12 text-center text-muted-foreground border-2 border-dashed rounded-xl">Ce module de suivi est vide. Ajoutez une première analyse de risques.</div>}
           {risks.map((risk) => (
-            <Card key={risk.id} onClick={() => { setActiveRiskId(risk.id); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); }} className="group cursor-pointer border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative">
+            <Card key={risk.id} onClick={() => { setActiveRiskId(risk.id); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); }} className="group cursor-pointer border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative">
               <button
                 onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }}
                 className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-10 transition-all"
@@ -977,7 +1040,11 @@ export default function RisksView() {
 
                 <div className="space-y-1 flex flex-col min-w-0">
                   <Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">Source de données</Label>
-                  <select value={activeWidget.datasetId} onChange={e => updateActiveWidget({ datasetId: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-muted/30 truncate">{activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select>
+                  <select value={activeWidget.datasetId} onChange={e => updateActiveWidget({ datasetId: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-muted/30 truncate">
+                    {activeRisk?.datasets
+                      .filter(d => !d.isHidden || d.id === activeWidget.datasetId)
+                      .map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
+                  </select>
                 </div>
 
                 {/* DROP ZONE AXE X */}
@@ -1092,7 +1159,7 @@ export default function RisksView() {
           </div>
         </div>
 
-        {/* PANNEAU 4 : DONNÉES & APPEND */}
+        {/* PANNEAU 4 : DONNÉES & APPEND (AVEC GESTION DE LA CORBEILLE) */}
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 overflow-hidden ${isDataOpen ? 'w-64' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
             <div
@@ -1104,11 +1171,9 @@ export default function RisksView() {
             </div>
             {isDataOpen ? (
                <div className="flex items-center gap-1 shrink-0">
-                 {/* Bonton FUSIONNER DES TABLES (APPEND) */}
                  <Button variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner deux tables (Append)">
                    <Combine className="w-3.5 h-3.5" />
                  </Button>
-                 {/* Bonton AJOUTER DES DONNÉES */}
                  <Button variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source">
                    <Plus className="w-3.5 h-3.5" />
                  </Button>
@@ -1120,59 +1185,34 @@ export default function RisksView() {
           </div>
 
           <div className={`flex-1 overflow-y-auto p-2 ${!isDataOpen && 'hidden'}`}>
-            {activeRisk?.datasets.map(ds => (
-              <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
-                <div
-                  className="flex items-center justify-between p-2 bg-muted/50 rounded font-bold text-foreground cursor-pointer hover:bg-muted/80 transition-colors"
-                  onClick={() => toggleDatasetCollapse(ds.id)}
+
+            {/* 1. LISTE DES TABLES VISIBLES (On exclut totalement les masquées de la vue principale) */}
+            {activeRisk?.datasets.filter(ds => !ds.isHidden).map(ds => renderDatasetItem(ds, false))}
+
+            {/* 2. BOUTON POUR AFFICHER LA CORBEILLE DES TABLES MASQUÉES */}
+            {activeRisk && activeRisk.datasets.some(ds => ds.isHidden) && (
+              <div className="mt-4 pt-2 border-t border-dashed">
+                <Button
+                  variant="ghost"
+                  className="w-full h-8 text-[10px] uppercase font-bold tracking-wider text-muted-foreground hover:bg-muted/50 transition-colors"
+                  onClick={() => setShowHiddenDatasets(!showHiddenDatasets)}
                 >
-                  <div className="flex items-center gap-2 truncate">
-                     {collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
-                     <Database className="w-3.5 h-3.5 text-muted-foreground shrink-0"/> <span className="truncate">{ds.name}</span>
-                  </div>
-                  <button onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity shrink-0 p-1" title="Retirer cette table">
-                     <Trash2 className="w-3 h-3"/>
-                  </button>
-                </div>
-
-                {/* BLOC COLLAPSIBLE : COLONNES ET MESURES */}
-                {!collapsedDatasets.has(ds.id) && (
-                  <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1">
-
-                    {activeRisk.measures.filter(m => m.datasetId === ds.id).map(m => {
-                      const isChecked = activeWidget?.datasetId === ds.id && activeWidget?.series.some(s => s.yAxisCol === m.name);
-                      return (
-                        <div
-                          key={m.id} draggable
-                          onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: m.name, isMeasure: true, datasetId: ds.id }))}
-                          className="flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0"
-                        >
-                          <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
-                          <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(m.name, true, ds.id)} className="accent-primary shrink-0" />
-                          <Calculator className="w-3 h-3 text-primary shrink-0"/> <span className="text-primary font-medium truncate">{m.name}</span>
-                        </div>
-                      );
-                    })}
-
-                    {ds.columns.map(col => {
-                      const isChecked = activeWidget?.datasetId === ds.id && (activeWidget?.xAxisCol === col || activeWidget?.series.some(s => s.yAxisCol === col));
-                      return (
-                        <div
-                          key={col} draggable
-                          onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: col, isMeasure: false, datasetId: ds.id }))}
-                          className="flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0"
-                        >
-                          <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
-                          <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(col, false, ds.id)} className="accent-primary shrink-0" />
-                          <Sigma className="w-3 h-3 text-muted-foreground shrink-0"/> <span className="text-muted-foreground truncate" title={col}>{col}</span>
-                        </div>
-                      );
-                    })}
-
-                  </div>
-                )}
+                  {showHiddenDatasets ? <EyeOff className="w-3 h-3 mr-2" /> : <Eye className="w-3 h-3 mr-2" />}
+                  {showHiddenDatasets
+                    ? "Masquer les tables retirées"
+                    : `Voir ${activeRisk.datasets.filter(d => d.isHidden).length} table(s) retirée(s)`
+                  }
+                </Button>
               </div>
-            ))}
+            )}
+
+            {/* 3. LISTE DES TABLES MASQUÉES (S'affiche uniquement si l'utilisateur clique sur le bouton) */}
+            {showHiddenDatasets && (
+               <div className="mt-2 pl-2 border-l-2 border-muted">
+                 {activeRisk?.datasets.filter(ds => ds.isHidden).map(ds => renderDatasetItem(ds, true))}
+               </div>
+            )}
+
           </div>
         </div>
 
@@ -1234,7 +1274,8 @@ export default function RisksView() {
                 <Label>Première table</Label>
                 <select value={appendSource1} onChange={e => setAppendSource1(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background">
                   <option value="">Sélectionner la table de base...</option>
-                  {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {/* Les tables masquées restent disponibles pour la fusion */}
+                  {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
                 </select>
               </div>
 
@@ -1244,7 +1285,7 @@ export default function RisksView() {
                 <Label>Table à empiler</Label>
                 <select value={appendSource2} onChange={e => setAppendSource2(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background">
                   <option value="">Sélectionner la table à ajouter...</option>
-                  {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
                 </select>
               </div>
 
