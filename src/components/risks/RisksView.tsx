@@ -8,8 +8,9 @@ import {
   PieChart as PieChartIcon, Hash, Target, LayoutDashboard, Database, CheckSquare,
   Calculator, Sigma, Filter, ChevronRight, ChevronDown, GripVertical, FileSpreadsheet, Loader2,
   Calendar, Palette, Maximize, Tag, LayoutPanelLeft, AlertTriangle, Edit2, Combine,
-  Eye, EyeOff
+  Eye, EyeOff, X
 } from "lucide-react";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,9 +43,32 @@ type FilterOperator = 'eq' | 'neq' | 'contains' | 'gt' | 'lt' | 'last_n_days';
 type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 type WidgetSize = 'small' | 'medium' | 'large';
 
-interface FilterConfig { id: string; column: string; operator: FilterOperator; value: string; }
-interface Dataset { id: string; name: string; columns: string[]; data: any[]; isHidden?: boolean; }
-interface CustomMeasure { id: string; datasetId: string; name: string; formula: string; }
+interface FilterConfig {
+  id: string;
+  column: string;
+  operator: FilterOperator;
+  value: string;
+}
+
+interface Dataset {
+  id: string;
+  name: string;
+  columns: string[];
+  data: any[];
+  isHidden?: boolean;
+}
+
+interface CustomMeasure {
+  id: string;
+  datasetId: string;
+  name: string;
+  formula: string;
+}
+
+interface DashboardTab {
+  id: string;
+  name: string;
+}
 
 interface ChartSeries {
   id: string;
@@ -56,16 +80,29 @@ interface ChartSeries {
 }
 
 interface WidgetConfig {
-  id: string; title: string; type: WidgetType; datasetId: string;
-  xAxisCol?: string; dateGrouping: DateGrouping; series: ChartSeries[]; filters: FilterConfig[];
+  id: string;
+  title: string;
+  type: WidgetType;
+  datasetId: string;
+  xAxisCol?: string;
+  dateGrouping: DateGrouping;
+  series: ChartSeries[];
+  filters: FilterConfig[];
   showLabels?: boolean;
   legendPosition?: LegendPosition;
   widgetSize?: WidgetSize;
+  tabId?: string; // Lien avec l'onglet
 }
 
 interface TrackedRisk {
-  id: string; title: string; description: string; icon: string;
-  datasets: Dataset[]; measures: CustomMeasure[]; widgets: WidgetConfig[];
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  datasets: Dataset[];
+  measures: CustomMeasure[];
+  widgets: WidgetConfig[];
+  tabs?: DashboardTab[]; // Liste des onglets de ce tableau de bord
 }
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e'];
@@ -98,7 +135,11 @@ const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
   if (grouping === 'none' || !rawDate) return safeString(rawDate || 'N/A');
   const d = parseExcelDate(rawDate);
   if (isNaN(d.getTime())) return safeString(rawDate);
-  const year = d.getFullYear(); const month = String(d.getMonth() + 1).padStart(2, '0'); const day = String(d.getDate()).padStart(2, '0');
+
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+
   switch (grouping) {
     case 'day': return `${year}-${month}-${day}`;
     case 'month': return `${year}-${month}`;
@@ -138,8 +179,10 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
         const rowDate = parseExcelDate(rawVal);
         const filterDate = parseExcelDate(f.value);
         if (!isNaN(rowDate.getTime()) && !isNaN(filterDate.getTime())) {
-          rowDate.setHours(0, 0, 0, 0); filterDate.setHours(0, 0, 0, 0);
-          const rTime = rowDate.getTime(); const fTime = filterDate.getTime();
+          rowDate.setHours(0, 0, 0, 0);
+          filterDate.setHours(0, 0, 0, 0);
+          const rTime = rowDate.getTime();
+          const fTime = filterDate.getTime();
           switch (f.operator) {
             case 'eq': return rTime === fTime;
             case 'neq': return rTime !== fTime;
@@ -158,11 +201,13 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
         case 'neq': return strVal !== filterVal;
         case 'contains': return strVal.includes(filterVal);
         case 'gt':
-          const numRaw = safeNumber(rawVal); const numFilt = safeNumber(f.value);
+          const numRaw = safeNumber(rawVal);
+          const numFilt = safeNumber(f.value);
           if (!isNaN(numRaw) && !isNaN(numFilt)) return numRaw > numFilt;
           return strVal > filterVal;
         case 'lt':
-          const numRawLt = safeNumber(rawVal); const numFiltLt = safeNumber(f.value);
+          const numRawLt = safeNumber(rawVal);
+          const numFiltLt = safeNumber(f.value);
           if (!isNaN(numRawLt) && !isNaN(numFiltLt)) return numRawLt < numFiltLt;
           return strVal < filterVal;
         default: return true;
@@ -172,7 +217,7 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
 };
 
 // ============================================================================
-// MOTEURS D'AGRÉGATION
+// MOTEURS D'AGRÉGATION (DAX)
 // ============================================================================
 const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: DateGrouping, series: ChartSeries[], measures: CustomMeasure[], filters: FilterConfig[]) => {
   const filteredData = applyFiltersToData(rawData, filters);
@@ -181,7 +226,9 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
 
   filteredData.forEach(row => {
     let key = row[xAxisCol];
-    if (dateGrouping !== 'none') key = formatTimeGrouping(key, dateGrouping); else key = safeString(key || 'N/A');
+    if (dateGrouping !== 'none') key = formatTimeGrouping(key, dateGrouping);
+    else key = safeString(key || 'N/A');
+
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
   });
@@ -194,7 +241,14 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
     series.forEach(s => {
       if (s.isMeasure) {
         const m = measures.find(measure => measure.name === s.yAxisCol);
-        if (m) { try { const subEngine = new DaxEngine(rows); outRow[s.id] = subEngine.evaluateMeasure(m.formula); } catch { outRow[s.id] = 0; } }
+        if (m) {
+          try {
+            const subEngine = new DaxEngine(rows);
+            outRow[s.id] = subEngine.evaluateMeasure(m.formula);
+          } catch {
+            outRow[s.id] = 0;
+          }
+        }
       } else {
         let aggValue = 0;
         const rawVals = rows.map(r => r[s.yAxisCol]);
@@ -229,7 +283,12 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
     if (s.isMeasure) {
       const m = measures.find(measure => measure.name === s.yAxisCol);
       if (!m) return 0;
-      try { const engine = new DaxEngine(filteredData); return engine.evaluateMeasure(m.formula); } catch { return 0; }
+      try {
+        const engine = new DaxEngine(filteredData);
+        return engine.evaluateMeasure(m.formula);
+      } catch {
+        return 0;
+      }
     }
 
     let aggValue = 0;
@@ -275,14 +334,8 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   }, [dataset?.data, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
 
   if (!dataset) return <div className="flex h-full items-center justify-center text-xs text-rose-500 font-bold text-center px-4">Source de données introuvable.</div>;
-
-  if (widget.series.length === 0) {
-    return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Sélectionnez les données à analyser.</div>;
-  }
-
-  if (widget.type !== 'kpi' && widget.type !== 'pie' && !widget.xAxisCol) {
-    return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Définissez l'Axe de répartition (ex: Mois, Entité).</div>;
-  }
+  if (widget.series.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Sélectionnez les données à analyser.</div>;
+  if (widget.type !== 'kpi' && widget.type !== 'pie' && !widget.xAxisCol) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Définissez l'Axe de répartition.</div>;
 
   if (widget.type === 'kpi') {
     return (
@@ -358,37 +411,37 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   const marginConfig = { top: 30, right: 20, left: -15, bottom: legendPos === 'bottom' ? 10 : 0 };
 
   return (
-    <div className="h-full w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        {widget.type === 'bar' ? (
-          <BarChart data={chartData} margin={marginConfig}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-            <XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
-            {renderLegend()}
-            {widget.series.map(s => (
-                <Bar key={`bar-${s.id}`} dataKey={s.id} name={getSeriesName(s)} fill={s.color} radius={[2, 2, 0, 0]}
-                     label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
-            ))}
-          </BarChart>
-        ) : (
-          <AreaChart data={chartData} margin={marginConfig}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-            <XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-            <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
-            {renderLegend()}
-            {widget.series.map(s => (
-              <Area
-                key={s.id} type="monotone" dataKey={s.id} name={getSeriesName(s)} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2}
+    <ResponsiveContainer width="100%" height="100%">
+      {widget.type === 'bar' ? (
+        <BarChart data={chartData} margin={marginConfig}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+          <XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+          {renderLegend()}
+          {widget.series.map(s => (
+              <Bar
+                key={`bar-${s.id}`} dataKey={s.id} name={getSeriesName(s)} fill={s.color} radius={[2, 2, 0, 0]}
                 label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false}
               />
-            ))}
-          </AreaChart>
-        )}
-      </ResponsiveContainer>
-    </div>
+          ))}
+        </BarChart>
+      ) : (
+        <AreaChart data={chartData} margin={marginConfig}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+          <XAxis dataKey={widget.xAxisCol} tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+          {renderLegend()}
+          {widget.series.map(s => (
+            <Area
+              key={s.id} type="monotone" dataKey={s.id} name={getSeriesName(s)} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2}
+              label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false}
+            />
+          ))}
+        </AreaChart>
+      )}
+    </ResponsiveContainer>
   );
 });
 
@@ -400,97 +453,30 @@ export default function RisksView() {
   const [risks, setRisks] = useState<TrackedRisk[]>([]);
   const [isInitialized, setIsInitialized] = useState(false);
 
+  // GESTION DE L'INTERFACE UTILISATEUR
   const [collapsedDatasets, setCollapsedDatasets] = useState<Set<string>>(new Set());
-  const [showHiddenDatasets, setShowHiddenDatasets] = useState(false); // NOUVEAU: Gère l'affichage de la corbeille des tables masquées
-
-  const [riskToDelete, setRiskToDelete] = useState<string | null>(null);
-  const [widgetToDelete, setWidgetToDelete] = useState<string | null>(null);
-  const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
-
-  // 1. CHARGEMENT INITIAL DEPUIS SUPABASE
-  useEffect(() => {
-    const fetchRisks = async () => {
-      try {
-        const { data, error } = await supabase.from('risk_dashboards' as any).select('*');
-        if (error) throw error;
-
-        if (data && data.length > 0) {
-          const formattedRisks = data.map((row: any) => ({
-            id: row.id,
-            title: row.title,
-            description: row.description || "",
-            icon: row.icon || "shield",
-            datasets: row.datasets || [],
-            measures: row.measures || [],
-            widgets: row.widgets || []
-          }));
-          setRisks(formattedRisks);
-        }
-      } catch (error) {
-        console.error("Erreur de chargement depuis Supabase :", error);
-        toast.error("Impossible de charger les données depuis le cloud.");
-      } finally {
-        setIsInitialized(true);
-      }
-    };
-    fetchRisks();
-  }, []);
-
-  // 2. SAUVEGARDE AUTOMATIQUE DANS SUPABASE
-  useEffect(() => {
-    if (!isInitialized) return;
-    const timer = setTimeout(async () => {
-      try {
-        const recordsToUpsert = risks.map(r => ({
-          id: r.id,
-          title: r.title,
-          description: r.description,
-          icon: r.icon,
-          datasets: r.datasets,
-          measures: r.measures,
-          widgets: r.widgets,
-          updated_at: new Date().toISOString()
-        }));
-
-        const payloadString = JSON.stringify(recordsToUpsert);
-        if (payloadString.length > MAX_PAYLOAD_SIZE) {
-          throw new Error("Payload too large");
-        }
-
-        if (recordsToUpsert.length > 0) {
-          const { error } = await supabase.from('risk_dashboards' as any).upsert(recordsToUpsert);
-          if (error) throw error;
-        }
-      } catch (err: any) {
-        console.error("Erreur de sauvegarde Cloud :", err);
-
-        if (err.message === "Payload too large" || String(err).includes("Invalid string length")) {
-           toast.error("Volume de données trop important pour la synchronisation Cloud.");
-        }
-
-        try {
-          const safeBackup = risks.map(r => ({
-            ...r,
-            datasets: r.datasets.map(d => ({ ...d, data: d.data.slice(0, 100) }))
-          }));
-          localStorage.setItem("pbi_risks_backup", JSON.stringify(safeBackup));
-        } catch(e) {}
-      }
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [risks, isInitialized]);
-
-  const [activeRiskId, setActiveRiskId] = useState<string | null>(null);
-  const [activeWidgetId, setActiveWidgetId] = useState<string | null>(null);
+  const [showHiddenDatasets, setShowHiddenDatasets] = useState(false);
 
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [isVisOpen, setIsVisOpen] = useState(false);
   const [isDataOpen, setIsDataOpen] = useState(false);
 
+  // GESTION DES ONGLETS (TABS)
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingTabName, setEditingTabName] = useState("");
+
+  const [activeRiskId, setActiveRiskId] = useState<string | null>(null);
+  const [activeWidgetId, setActiveWidgetId] = useState<string | null>(null);
+
+  const [riskToDelete, setRiskToDelete] = useState<string | null>(null);
+  const [widgetToDelete, setWidgetToDelete] = useState<string | null>(null);
+  const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
+
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isAddDataOpen, setIsAddDataOpen] = useState(false);
-
   const [isAppendOpen, setIsAppendOpen] = useState(false);
+
   const [appendSource1, setAppendSource1] = useState<string>("");
   const [appendSource2, setAppendSource2] = useState<string>("");
   const [appendNewName, setAppendNewName] = useState<string>("");
@@ -503,7 +489,95 @@ export default function RisksView() {
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
 
   // ============================================================================
-  // LOGIQUE WIZARD : IMPORTATION SÉCURISÉE AVEC FILTRE "DATE" OBLIGATOIRE
+  // 1. CHARGEMENT INITIAL DEPUIS SUPABASE (Gère la rétrocompatibilité des onglets)
+  // ============================================================================
+  useEffect(() => {
+    const fetchRisks = async () => {
+      try {
+        const { data, error } = await supabase.from('risk_dashboards' as any).select('*');
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          const formattedRisks = data.map((row: any) => {
+            // Création d'un onglet par défaut si ce dashboard n'en a pas encore
+            const defaultTabId = `tab_${row.id}_default`;
+            const existingTabs = (row.tabs && row.tabs.length > 0) ? row.tabs : [{ id: defaultTabId, name: 'Page 1' }];
+
+            // Assignation des anciens widgets à ce nouvel onglet par défaut
+            const existingWidgets = (row.widgets || []).map((w: any) => ({
+               ...w,
+               tabId: w.tabId || existingTabs[0].id
+            }));
+
+            return {
+              id: row.id,
+              title: row.title,
+              description: row.description || "",
+              icon: row.icon || "shield",
+              datasets: row.datasets || [],
+              measures: row.measures || [],
+              widgets: existingWidgets,
+              tabs: existingTabs
+            };
+          });
+          setRisks(formattedRisks);
+        }
+      } catch (error) {
+        toast.error("Impossible de charger les données depuis le cloud.");
+      } finally {
+        setIsInitialized(true);
+      }
+    };
+    fetchRisks();
+  }, []);
+
+  // ============================================================================
+  // 2. SAUVEGARDE AUTOMATIQUE DANS SUPABASE
+  // ============================================================================
+  useEffect(() => {
+    if (!isInitialized) return;
+    const timer = setTimeout(async () => {
+      try {
+        const recordsToUpsert = risks.map(r => ({
+          id: r.id,
+          title: r.title,
+          description: r.description,
+          icon: r.icon,
+          datasets: r.datasets,
+          measures: r.measures,
+          widgets: r.widgets,
+          tabs: r.tabs, // Sauvegarde des onglets
+          updated_at: new Date().toISOString()
+        }));
+
+        if (JSON.stringify(recordsToUpsert).length > MAX_PAYLOAD_SIZE) {
+          throw new Error("Payload too large");
+        }
+
+        if (recordsToUpsert.length > 0) {
+          const { error } = await supabase.from('risk_dashboards' as any).upsert(recordsToUpsert);
+          if (error) throw error;
+        }
+      } catch (err: any) {
+        if (err.message === "Payload too large") {
+          toast.error("Volume de données trop important pour le Cloud.");
+        }
+        try {
+          // Sauvegarde de secours en local avec échantillonnage si erreur
+          const safeBackup = risks.map(r => ({
+            ...r,
+            datasets: r.datasets.map(d => ({ ...d, data: d.data.slice(0, 100) }))
+          }));
+          localStorage.setItem("pbi_risks_backup", JSON.stringify(safeBackup));
+        } catch(e) {}
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [risks, isInitialized]);
+
+  // ============================================================================
+  // LOGIQUE WIZARD D'IMPORT (AVEC LE FILTRE DATE INFAILLIBLE)
   // ============================================================================
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -524,13 +598,16 @@ export default function RisksView() {
             if (!rawData || rawData.length === 0) return;
 
             const sampleRow = rawData[0] as object;
+            // On cherche s'il y a une colonne "Date"
             const dateColumn = Object.keys(sampleRow).find(key => key.toUpperCase().includes('DATE'));
 
+            // On filtre les lignes
             let cleanData = rawData.filter((row: any) => {
               if (dateColumn) {
-                const val = row[dateColumn];
-                return val !== null && val !== undefined && String(val).trim() !== "";
+                // S'il y a une colonne Date, la ligne est valide SEULEMENT si cette date n'est pas vide
+                return row[dateColumn] !== null && row[dateColumn] !== undefined && String(row[dateColumn]).trim() !== "";
               } else {
+                // Sinon on vérifie qu'il y a au moins une info textuelle sur la ligne
                 return Object.values(row).some(val => val !== null && val !== undefined && String(val).trim() !== "");
               }
             });
@@ -547,7 +624,7 @@ export default function RisksView() {
               });
 
               if (cleanData.length > MAX_ROWS_PER_DATASET) {
-                toast.warning(`⚠️ La feuille "${sheetName}" contient trop de lignes avec des dates valides (${cleanData.length}). Seules les ${MAX_ROWS_PER_DATASET} premières ont été conservées.`);
+                toast.warning(`⚠️ La feuille "${sheetName}" est trop volumineuse. Limitée à ${MAX_ROWS_PER_DATASET} lignes.`);
                 cleanData = cleanData.slice(0, MAX_ROWS_PER_DATASET);
               }
 
@@ -558,21 +635,17 @@ export default function RisksView() {
                 name: sheetName,
                 columns: validColumns,
                 data: cleanData,
-                isHidden: false // Par défaut, la table est visible
+                isHidden: false // Les nouvelles tables sont visibles par défaut
               });
             }
           });
 
-          if (sheetsData.length === 0) {
-            throw new Error("Le fichier ne contient aucune ligne valide (Colonne 'Date' vide ou fichier inexploitable).");
-          }
-
+          if (sheetsData.length === 0) throw new Error("Le fichier ne contient aucune ligne valide.");
           setAvailableSheets(sheetsData);
           setSelectedSheets(sheetsData.map(sheet => sheet.id));
           setWizardStep(2);
-
         } catch(err: any) {
-          toast.error(err.message || "Erreur de lecture du fichier.");
+          toast.error(err.message || "Erreur de lecture.");
         } finally {
           setIsImporting(false);
         }
@@ -581,25 +654,64 @@ export default function RisksView() {
     reader.readAsArrayBuffer(file);
   };
 
-  const toggleSheetSelection = (id: string) => { setSelectedSheets(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]); };
-  const resetWizard = () => { setWizardStep(1); setNewRiskTitle(""); setNewRiskDesc(""); setAvailableSheets([]); setSelectedSheets([]); };
+  const toggleSheetSelection = (id: string) => {
+    setSelectedSheets(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
+  };
+
+  const resetWizard = () => {
+    setWizardStep(1);
+    setNewRiskTitle("");
+    setNewRiskDesc("");
+    setAvailableSheets([]);
+    setSelectedSheets([]);
+  };
 
   const finalizeRiskCreation = () => {
     if (selectedSheets.length === 0) return toast.error("Sélectionnez au moins une table.");
+
     const datasets = availableSheets.filter(s => selectedSheets.includes(s.id));
-    const newRisk: TrackedRisk = { id: `risk_${Date.now()}`, title: newRiskTitle, description: newRiskDesc, icon: "shield", datasets, measures: [], widgets: [] };
+    const defaultTab = { id: `tab_${Date.now()}`, name: 'Page 1' };
+
+    const newRisk: TrackedRisk = {
+      id: `risk_${Date.now()}`,
+      title: newRiskTitle,
+      description: newRiskDesc,
+      icon: "shield",
+      datasets,
+      measures: [],
+      widgets: [],
+      tabs: [defaultTab]
+    };
+
     setRisks([...risks, newRisk]);
-    setIsAddOpen(false); resetWizard();
-    toast.success(`Analyse créée avec succès !`);
+    setIsAddOpen(false);
+    resetWizard();
+    toast.success(`Analyse créée !`);
     setActiveRiskId(newRisk.id);
+    setActiveTabId(defaultTab.id); // On active le 1er onglet par défaut
   };
 
   const finalizeAddData = () => {
     if (selectedSheets.length === 0) return toast.error("Sélectionnez au moins une table.");
     const newDatasets = availableSheets.filter(s => selectedSheets.includes(s.id));
     updateActiveRisk({ datasets: [...(activeRisk?.datasets || []), ...newDatasets] });
-    setIsAddDataOpen(false); resetWizard();
-    toast.success(`${newDatasets.length} source(s) ajoutée(s) au modèle.`);
+    setIsAddDataOpen(false);
+    resetWizard();
+    toast.success(`${newDatasets.length} source(s) ajoutée(s).`);
+  };
+
+  // ============================================================================
+  // FONCTIONS DE GESTION DU RAPPORT ACTIF
+  // ============================================================================
+  const activeRisk = risks.find(r => r.id === activeRiskId);
+  const activeWidget = activeRisk?.widgets.find(w => w.id === activeWidgetId);
+  const activeDataset = activeWidget ? activeRisk?.datasets.find(d => d.id === activeWidget.datasetId) : null;
+
+  // NOUVEAU : On filtre les widgets pour n'afficher que ceux de l'onglet actif !
+  const visibleWidgets = activeRisk?.widgets.filter(w => w.tabId === activeTabId) || [];
+
+  const updateActiveRisk = (updates: Partial<TrackedRisk>) => {
+    setRisks(risks.map(r => r.id === activeRiskId ? { ...r, ...updates } : r));
   };
 
   const confirmDeleteRisk = async (id: string) => {
@@ -607,29 +719,94 @@ export default function RisksView() {
     if (activeRiskId === id) setActiveRiskId(null);
     try {
       await supabase.from('risk_dashboards' as any).delete().eq('id', id);
-      toast.success("Analyse supprimée définitivement.");
-    } catch(err) { console.error(err); }
+      toast.success("Analyse supprimée.");
+    } catch(err) {}
     setRiskToDelete(null);
   };
 
-  const activeRisk = risks.find(r => r.id === activeRiskId);
-  const activeWidget = activeRisk?.widgets.find(w => w.id === activeWidgetId);
-  const activeDataset = activeWidget ? activeRisk?.datasets.find(d => d.id === activeWidget.datasetId) : null;
-
-  const updateActiveRisk = (updates: Partial<TrackedRisk>) => { setRisks(risks.map(r => r.id === activeRiskId ? { ...r, ...updates } : r)); };
-
-  const confirmRemoveDataset = (datasetId: string) => {
+  // ============================================================================
+  // GESTION DES ONGLETS (TABS)
+  // ============================================================================
+  const handleAddNewTab = () => {
     if (!activeRisk) return;
-    updateActiveRisk({ datasets: activeRisk.datasets.filter(d => d.id !== datasetId) });
-    toast.success("Source de données supprimée.");
-    setDatasetToDelete(null);
+    const newTab = { id: `tab_${Date.now()}`, name: `Page ${(activeRisk.tabs?.length || 0) + 1}` };
+    updateActiveRisk({ tabs: [...(activeRisk.tabs || []), newTab] });
+    setActiveTabId(newTab.id);
   };
 
+  const handleRenameTab = (tabId: string, newName: string) => {
+    if (!activeRisk || !newName.trim()) return;
+    updateActiveRisk({
+      tabs: activeRisk.tabs?.map(t => t.id === tabId ? { ...t, name: newName.trim() } : t)
+    });
+  };
+
+  const handleDeleteTab = (tabId: string) => {
+    if (!activeRisk || (activeRisk.tabs && activeRisk.tabs.length <= 1)) {
+      return toast.error("Vous devez conserver au moins une page.");
+    }
+    const updatedTabs = activeRisk.tabs!.filter(t => t.id !== tabId);
+    const updatedWidgets = activeRisk.widgets.filter(w => w.tabId !== tabId); // On supprime aussi ses graphiques
+
+    updateActiveRisk({ tabs: updatedTabs, widgets: updatedWidgets });
+
+    if (activeTabId === tabId) {
+      setActiveTabId(updatedTabs[0].id); // On bascule sur un autre onglet
+    }
+    toast.success("Page supprimée.");
+  };
+
+  // ============================================================================
+  // GESTION DU STUDIO BI ET DES WIDGETS
+  // ============================================================================
+  const addWidgetToStudio = () => {
+    if (!activeRisk || activeRisk.datasets.length === 0) return toast.error("Veuillez charger des données.");
+
+    const defaultDataset = activeRisk.datasets.find(d => !d.isHidden) || activeRisk.datasets[0];
+
+    const newWidget: WidgetConfig = {
+      id: `w_${Date.now()}`,
+      title: "Nouvel Indicateur",
+      type: "bar",
+      datasetId: defaultDataset.id,
+      dateGrouping: "none",
+      series: [],
+      filters: [],
+      showLabels: true,
+      legendPosition: 'bottom',
+      widgetSize: 'medium',
+      tabId: activeTabId! // Le widget est lié à l'onglet actif !
+    };
+
+    updateActiveRisk({ widgets: [...activeRisk.widgets, newWidget] });
+    setActiveWidgetId(newWidget.id);
+    setIsVisOpen(true);
+    setIsDataOpen(true);
+  };
+
+  const updateActiveWidget = (updates: Partial<WidgetConfig>) => {
+    if (!activeRisk || !activeWidgetId) return;
+    if (updates.datasetId && updates.datasetId !== activeWidget?.datasetId) {
+      updates.xAxisCol = "";
+      updates.series = [];
+      updates.filters = [];
+    }
+    updateActiveRisk({
+      widgets: activeRisk.widgets.map(w => w.id === activeWidgetId ? { ...w, ...updates } : w)
+    });
+  };
+
+  const confirmDeleteWidget = () => {
+    updateActiveRisk({ widgets: activeRisk!.widgets.filter(w => w.id !== widgetToDelete) });
+    if (activeWidgetId === widgetToDelete) setActiveWidgetId(null);
+    setWidgetToDelete(null);
+  };
+
+  // Gestion des tables
   const toggleDatasetCollapse = (datasetId: string) => {
     setCollapsedDatasets(prev => {
       const next = new Set(prev);
-      if (next.has(datasetId)) next.delete(datasetId);
-      else next.add(datasetId);
+      if (next.has(datasetId)) next.delete(datasetId); else next.add(datasetId);
       return next;
     });
   };
@@ -637,38 +814,33 @@ export default function RisksView() {
   const toggleDatasetVisibility = (e: React.MouseEvent, datasetId: string) => {
     e.stopPropagation();
     if (!activeRisk) return;
-    const updatedDatasets = activeRisk.datasets.map(d =>
-      d.id === datasetId ? { ...d, isHidden: !d.isHidden } : d
-    );
-    updateActiveRisk({ datasets: updatedDatasets });
-    toast.info("Visibilité de la table modifiée.");
+    updateActiveRisk({
+      datasets: activeRisk.datasets.map(d => d.id === datasetId ? { ...d, isHidden: !d.isHidden } : d)
+    });
+  };
+
+  const confirmRemoveDataset = (datasetId: string) => {
+    if (!activeRisk) return;
+    updateActiveRisk({ datasets: activeRisk.datasets.filter(d => d.id !== datasetId) });
+    setDatasetToDelete(null);
   };
 
   const handleAppendDatasets = () => {
-    if (!activeRisk) return;
-    if (!appendSource1 || !appendSource2) return toast.error("Sélectionnez deux tables à fusionner.");
-    if (appendSource1 === appendSource2) return toast.error("Sélectionnez deux tables différentes.");
-    if (!appendNewName) return toast.error("Donnez un nom à la nouvelle table.");
+    if (!activeRisk || !appendSource1 || !appendSource2 || !appendNewName) return toast.error("Complétez le formulaire de fusion.");
 
     const ds1 = activeRisk.datasets.find(d => d.id === appendSource1);
     const ds2 = activeRisk.datasets.find(d => d.id === appendSource2);
+    if (!ds1 || !ds2) return;
 
-    if (!ds1 || !ds2) return toast.error("Table introuvable.");
-
-    const combinedColumns = Array.from(new Set([...ds1.columns, ...ds2.columns]));
     let combinedData = [...ds1.data, ...ds2.data];
-
-    if (combinedData.length > MAX_ROWS_PER_DATASET) {
-        toast.warning(`⚠️ La fusion dépasse la limite. Seules les ${MAX_ROWS_PER_DATASET} premières lignes sont conservées.`);
-        combinedData = combinedData.slice(0, MAX_ROWS_PER_DATASET);
-    }
+    if (combinedData.length > MAX_ROWS_PER_DATASET) combinedData = combinedData.slice(0, MAX_ROWS_PER_DATASET);
 
     const newDataset: Dataset = {
       id: `ds_${Date.now()}`,
       name: appendNewName,
-      columns: combinedColumns,
+      columns: Array.from(new Set([...ds1.columns, ...ds2.columns])),
       data: combinedData,
-      isHidden: false // La nouvelle table issue de la fusion est visible par défaut
+      isHidden: false
     };
 
     updateActiveRisk({ datasets: [...activeRisk.datasets, newDataset] });
@@ -676,73 +848,36 @@ export default function RisksView() {
     setAppendSource1("");
     setAppendSource2("");
     setAppendNewName("");
-    toast.success(`Table "${appendNewName}" fusionnée avec succès (${combinedData.length} lignes).`);
+    toast.success(`Table "${appendNewName}" créée.`);
   };
 
-  // ============================================================================
-  // LOGIQUE STUDIO BI
-  // ============================================================================
-  const addWidgetToStudio = () => {
-    if (!activeRisk || activeRisk.datasets.length === 0) return toast.error("Veuillez charger des données.");
+  // Gestion des Séries et Filtres
+  const addSeriesWithData = (colName: string, isMeasure: boolean) => { updateActiveWidget({ series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: colName, isMeasure, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }] }); };
+  const addSeries = () => { updateActiveWidget({ series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: "", isMeasure: false, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }] }); };
+  const updateSeries = (seriesId: string, updates: Partial<ChartSeries>) => { updateActiveWidget({ series: activeWidget!.series.map(s => s.id === seriesId ? { ...s, ...updates } : s) }); };
+  const removeSeries = (seriesId: string) => { updateActiveWidget({ series: activeWidget!.series.filter(s => s.id !== seriesId) }); };
 
-    // On présélectionne le premier dataset non masqué (ou le premier s'ils sont tous masqués)
-    const defaultDataset = activeRisk.datasets.find(d => !d.isHidden) || activeRisk.datasets[0];
-
-    const newWidget: WidgetConfig = {
-      id: `w_${Date.now()}`, title: "Nouvel Indicateur", type: "bar", datasetId: defaultDataset.id,
-      dateGrouping: "none", series: [], filters: [],
-      showLabels: true, legendPosition: 'bottom', widgetSize: 'medium'
-    };
-    updateActiveRisk({ widgets: [...activeRisk.widgets, newWidget] });
-    setActiveWidgetId(newWidget.id);
-    setIsVisOpen(true); setIsDataOpen(true);
-  };
-
-  const updateActiveWidget = (updates: Partial<WidgetConfig>) => {
-    if (!activeRisk || !activeWidgetId) return;
-    if (updates.datasetId && updates.datasetId !== activeWidget?.datasetId) { updates.xAxisCol = ""; updates.series = []; updates.filters = []; }
-    updateActiveRisk({ widgets: activeRisk.widgets.map(w => w.id === activeWidgetId ? { ...w, ...updates } : w) });
-  };
-
-  const confirmDeleteWidget = () => {
-    if (!activeRisk || !widgetToDelete) return;
-    updateActiveRisk({ widgets: activeRisk.widgets.filter(w => w.id !== widgetToDelete) });
-    if (activeWidgetId === widgetToDelete) setActiveWidgetId(null);
-    setWidgetToDelete(null);
-    toast.success("Indicateur supprimé.");
-  };
-
-  const addSeriesWithData = (colName: string, isMeasure: boolean) => {
-    if (!activeWidget) return;
-    const newSeries: ChartSeries = { id: `s_${Date.now()}`, yAxisCol: colName, isMeasure, aggregation: "SUM", color: COLORS[activeWidget.series.length % COLORS.length] };
-    updateActiveWidget({ series: [...activeWidget.series, newSeries] });
-  };
-
-  const addSeries = () => {
-    if (!activeWidget) return;
-    const newSeries: ChartSeries = { id: `s_${Date.now()}`, yAxisCol: "", isMeasure: false, aggregation: "SUM", color: COLORS[activeWidget.series.length % COLORS.length] };
-    updateActiveWidget({ series: [...activeWidget.series, newSeries] });
-  };
-
-  const updateSeries = (seriesId: string, updates: Partial<ChartSeries>) => { if (!activeWidget) return; updateActiveWidget({ series: activeWidget.series.map(s => s.id === seriesId ? { ...s, ...updates } : s) }); };
-  const removeSeries = (seriesId: string) => { if (!activeWidget) return; updateActiveWidget({ series: activeWidget.series.filter(s => s.id !== seriesId) }); };
-
-  const addFilter = () => { if (!activeWidget) return; updateActiveWidget({ filters: [...(activeWidget.filters || []), { id: `f_${Date.now()}`, column: "", operator: "eq", value: "" }] }); setIsFiltersOpen(true); };
-  const updateFilter = (filterId: string, updates: Partial<FilterConfig>) => { if (!activeWidget) return; updateActiveWidget({ filters: activeWidget.filters.map(f => f.id === filterId ? { ...f, ...updates } : f) }); };
-  const removeFilter = (filterId: string) => { if (!activeWidget) return; updateActiveWidget({ filters: activeWidget.filters.filter(f => f.id !== filterId) }); };
+  const addFilter = () => { updateActiveWidget({ filters: [...(activeWidget!.filters || []), { id: `f_${Date.now()}`, column: "", operator: "eq", value: "" }] }); setIsFiltersOpen(true); };
+  const updateFilter = (filterId: string, updates: Partial<FilterConfig>) => { updateActiveWidget({ filters: activeWidget!.filters.map(f => f.id === filterId ? { ...f, ...updates } : f) }); };
+  const removeFilter = (filterId: string) => { updateActiveWidget({ filters: activeWidget!.filters.filter(f => f.id !== filterId) }); };
 
   const toggleColumnInWidget = (colName: string, isMeasure: boolean, datasetId: string) => {
-    if (!activeWidget) return toast.info("Sélectionnez un indicateur d'abord.");
-    if (activeWidget.datasetId !== datasetId) return toast.error("Cette donnée appartient à une autre source.");
+    if (!activeWidget) return toast.info("Sélectionnez un indicateur.");
+    if (activeWidget.datasetId !== datasetId) return toast.error("Source différente.");
 
     const isX = activeWidget.xAxisCol === colName;
     const seriesMatch = activeWidget.series.find(s => s.yAxisCol === colName);
 
-    if (isX) { updateActiveWidget({ xAxisCol: "" }); }
-    else if (seriesMatch) { removeSeries(seriesMatch.id); }
-    else {
-      if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') { updateActiveWidget({ xAxisCol: colName }); }
-      else { addSeriesWithData(colName, isMeasure); }
+    if (isX) {
+      updateActiveWidget({ xAxisCol: "" });
+    } else if (seriesMatch) {
+      removeSeries(seriesMatch.id);
+    } else {
+      if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') {
+        updateActiveWidget({ xAxisCol: colName });
+      } else {
+        addSeriesWithData(colName, isMeasure);
+      }
     }
   };
 
@@ -765,15 +900,6 @@ export default function RisksView() {
     } catch {}
   };
 
-  const getWidgetGridClass = (size?: WidgetSize) => {
-    if (size === 'small') return 'col-span-1';
-    if (size === 'large') return 'md:col-span-2 xl:col-span-3';
-    return 'md:col-span-2';
-  };
-
-  // ============================================================================
-  // FONCTIONS DE RENDU UI DES DATASETS (Visibles et Masqués)
-  // ============================================================================
   const renderDatasetItem = (ds: Dataset, isHiddenList: boolean = false) => (
     <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
       <div
@@ -786,12 +912,7 @@ export default function RisksView() {
            <span className="truncate">{ds.name}</span>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-           {/* BOUTON MASQUER / AFFICHER */}
-           <button
-             onClick={(e) => toggleDatasetVisibility(e, ds.id)}
-             className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1"
-             title={isHiddenList ? "Restaurer l'affichage de cette table" : "Masquer la table"}
-           >
+           <button onClick={(e) => toggleDatasetVisibility(e, ds.id)} className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1" title={isHiddenList ? "Restaurer la table" : "Masquer la table"}>
               {isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}
            </button>
            {!isHiddenList && (
@@ -802,7 +923,6 @@ export default function RisksView() {
         </div>
       </div>
 
-      {/* BLOC COLLAPSIBLE : COLONNES ET MESURES */}
       {(!collapsedDatasets.has(ds.id)) && (
         <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1">
           {activeRisk?.measures.filter(m => m.datasetId === ds.id).map(m => {
@@ -830,7 +950,6 @@ export default function RisksView() {
     </div>
   );
 
-
   if (!isInitialized) {
     return (
       <div className="flex h-[calc(100vh-6rem)] items-center justify-center -m-4">
@@ -850,34 +969,68 @@ export default function RisksView() {
       <div className="space-y-6 animate-in fade-in duration-500">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border/50">
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2"><AlertTriangle className="w-6 h-6 text-primary" /> Suivi des Risques</h1>
+            <h1 className="text-2xl font-bold flex items-center gap-2">
+              <AlertTriangle className="w-6 h-6 text-primary" /> Suivi des Risques
+            </h1>
             <p className="text-sm text-muted-foreground mt-1">Gérez vos modèles d'analyse et suivez vos indicateurs de risques.</p>
           </div>
+
           <Dialog open={isAddOpen} onOpenChange={(o) => { setIsAddOpen(o); if(!o) resetWizard(); }}>
-            <DialogTrigger asChild><Button className="gap-2"><Plus className="w-4 h-4" /> Nouvelle Analyse</Button></DialogTrigger>
+            <DialogTrigger asChild>
+              <Button className="gap-2"><Plus className="w-4 h-4" /> Nouvelle Analyse</Button>
+            </DialogTrigger>
             <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Configuration de l'Analyse de Risques</DialogTitle></DialogHeader>
+
               {wizardStep === 1 && (
                 <div className="space-y-4 py-4">
-                  <div className="space-y-2"><Label>Nom de l'analyse (ex: Risques Cybersécurité Q3)</Label><Input value={newRiskTitle} onChange={e => setNewRiskTitle(e.target.value)} /></div>
-                  <div className="space-y-2"><Label>Description de l'objectif</Label><Input value={newRiskDesc} onChange={e => setNewRiskDesc(e.target.value)} /></div>
+                  <div className="space-y-2">
+                    <Label>Nom de l'analyse (ex: Risques Cybersécurité Q3)</Label>
+                    <Input value={newRiskTitle} onChange={e => setNewRiskTitle(e.target.value)} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Description de l'objectif</Label>
+                    <Input value={newRiskDesc} onChange={e => setNewRiskDesc(e.target.value)} />
+                  </div>
                   <div className="space-y-2 pt-4 border-t">
                     <Label className="text-primary font-bold">Source de données (.xlsx, .csv)</Label>
-                    {isImporting ? <div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div> : <div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={!newRiskTitle} /><Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2" disabled={!newRiskTitle}><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>}
+                    {isImporting ? (
+                      <div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10">
+                        <Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" />
+                      </div>
+                    ) : (
+                      <div className="relative">
+                        <input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={!newRiskTitle} />
+                        <Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2" disabled={!newRiskTitle}>
+                          <FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span>
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
+
               {wizardStep === 2 && (
                 <div className="space-y-6 py-4">
-                  <div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure dans l'analyse.</p></div></div>
+                  <div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3">
+                    <Database className="w-6 h-6 shrink-0"/>
+                    <div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure dans l'analyse.</p></div>
+                  </div>
                   <div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">
                     {availableSheets.map(sheet => (
                       <div key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}>
-                        <div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge>
+                        <div className="flex items-center gap-3">
+                          <CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} />
+                          <p className="font-bold text-sm">{sheet.name}</p>
+                        </div>
+                        <Badge variant="secondary">{sheet.data.length} entrées</Badge>
                       </div>
                     ))}
                   </div>
-                  <div className="flex gap-2 pt-4"><Button variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button onClick={finalizeRiskCreation} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer le Tableau de bord</Button></div>
+                  <div className="flex gap-2 pt-4">
+                    <Button variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button>
+                    <Button onClick={finalizeRiskCreation} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer le Tableau de bord</Button>
+                  </div>
                 </div>
               )}
             </DialogContent>
@@ -886,8 +1039,21 @@ export default function RisksView() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pt-2">
           {risks.length === 0 && <div className="col-span-full py-12 text-center text-muted-foreground border-2 border-dashed rounded-xl">Ce module de suivi est vide. Ajoutez une première analyse de risques.</div>}
+
           {risks.map((risk) => (
-            <Card key={risk.id} onClick={() => { setActiveRiskId(risk.id); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); }} className="group cursor-pointer border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative">
+            <Card
+              key={risk.id}
+              onClick={() => {
+                setActiveRiskId(risk.id);
+                setActiveTabId(risk.tabs?.[0]?.id || null); // On charge le premier onglet
+                setIsFiltersOpen(false);
+                setIsVisOpen(false);
+                setIsDataOpen(false);
+                setActiveWidgetId(null);
+                setShowHiddenDatasets(false);
+              }}
+              className="group cursor-pointer border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative"
+            >
               <button
                 onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }}
                 className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-10 transition-all"
@@ -895,21 +1061,24 @@ export default function RisksView() {
                 <Trash2 className="w-4 h-4" />
               </button>
               <CardContent className="p-6">
-                <div className="flex items-center gap-3 mb-4 pr-8"><div className="p-2.5 rounded-lg bg-primary/10 text-primary"><Shield className="w-6 h-6" /></div><div className="min-w-0"><h3 className="font-bold text-lg truncate">{risk.title}</h3></div></div>
-                <div className="flex gap-2 mb-4"><Badge variant="outline" className="text-[10px] bg-secondary/50"><Database className="w-3 h-3 mr-1"/> {risk.datasets.length} Sources</Badge><Badge variant="outline" className="text-[10px] bg-secondary/50"><BarChart3 className="w-3 h-3 mr-1"/> {risk.widgets.length} Indicateurs</Badge></div>
+                <div className="flex items-center gap-3 mb-4 pr-8">
+                  <div className="p-2.5 rounded-lg bg-primary/10 text-primary"><Shield className="w-6 h-6" /></div>
+                  <div className="min-w-0"><h3 className="font-bold text-lg truncate">{risk.title}</h3></div>
+                </div>
+                <div className="flex gap-2 mb-4">
+                  <Badge variant="outline" className="text-[10px] bg-secondary/50"><Database className="w-3 h-3 mr-1"/> {risk.datasets.length} Sources</Badge>
+                  <Badge variant="outline" className="text-[10px] bg-secondary/50"><BarChart3 className="w-3 h-3 mr-1"/> {risk.widgets.length} Indicateurs</Badge>
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
 
-        {/* ALERTE DE CONFIRMATION POUR SUPPRESSION DE RAPPORT */}
         <AlertDialog open={!!riskToDelete} onOpenChange={(open) => !open && setRiskToDelete(null)}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Êtes-vous absolument sûr ?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Cette action est irréversible. Cela supprimera définitivement l'analyse et toutes les configurations associées.
-              </AlertDialogDescription>
+              <AlertDialogDescription>Cette action est irréversible. Cela supprimera définitivement l'analyse.</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Annuler</AlertDialogCancel>
@@ -928,6 +1097,7 @@ export default function RisksView() {
   return (
     <div className="flex flex-col h-[calc(100vh-6rem)] animate-in fade-in duration-300 -m-4 bg-slate-50 dark:bg-slate-900/50">
 
+      {/* HEADER TOP */}
       <div className="flex items-center justify-between p-3 border-b bg-background shadow-sm z-20">
         <div className="flex items-center gap-4 min-w-0">
           <Button variant="ghost" size="icon" onClick={() => {setActiveRiskId(null); setActiveWidgetId(null)}}><ArrowLeft className="w-5 h-5" /></Button>
@@ -936,20 +1106,71 @@ export default function RisksView() {
         <Button variant="default" size="sm" onClick={addWidgetToStudio} className="gap-2 shrink-0"><Plus className="w-4 h-4"/> Nouvel Indicateur</Button>
       </div>
 
+      {/* BARRE DES ONGLETS (TABS) */}
+      <div className="flex items-center gap-1 px-4 bg-background border-b shadow-sm z-10 overflow-x-auto h-12 shrink-0 custom-scrollbar">
+        {activeRisk?.tabs?.map(tab => (
+          <div
+            key={tab.id}
+            onClick={() => { setActiveTabId(tab.id); setActiveWidgetId(null); }}
+            className={`flex items-center gap-2 px-4 h-full border-b-2 cursor-pointer transition-colors whitespace-nowrap group ${activeTabId === tab.id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+          >
+            {editingTabId === tab.id ? (
+              <Input
+                value={editingTabName}
+                onChange={e => setEditingTabName(e.target.value)}
+                onBlur={() => { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); }}
+                onKeyDown={e => { if(e.key === 'Enter') { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); } }}
+                autoFocus
+                className="h-7 text-sm w-32 font-bold px-2 py-0 border-primary"
+                onClick={e => e.stopPropagation()}
+              />
+            ) : (
+              <span
+                onDoubleClick={(e) => { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabName(tab.name); }}
+                className="font-bold text-sm select-none"
+                title="Double-cliquez pour renommer"
+              >
+                {tab.name}
+              </span>
+            )}
+
+            {/* Bouton de suppression de l'onglet */}
+            {activeTabId === tab.id && activeRisk.tabs!.length > 1 && editingTabId !== tab.id && (
+              <button
+                onClick={(e) => { e.stopPropagation(); handleDeleteTab(tab.id); }}
+                className="p-1 rounded-full hover:bg-rose-100 text-rose-500 transition-colors ml-1 shrink-0"
+                title="Supprimer la page"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        ))}
+
+        <div className="px-2">
+           <Button variant="ghost" size="sm" onClick={handleAddNewTab} className="h-8 px-2 text-muted-foreground hover:text-primary">
+             <Plus className="w-4 h-4 mr-1"/> Page
+           </Button>
+        </div>
+      </div>
+
       <div className="flex flex-1 overflow-hidden">
 
-        {/* PANNEAU 1 : CANVAS */}
+        {/* PANNEAU 1 : CANVAS DES WIDGETS */}
         <div className="flex-1 overflow-auto p-6 transition-all" onClick={() => setActiveWidgetId(null)}>
-          {activeRisk?.widgets.length === 0 ? (
+          {visibleWidgets.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
-              <LayoutDashboard className="w-16 h-16 mb-4" /><p>Le tableau de bord est vide.</p><p className="text-sm mt-2">Cliquez sur "Nouvel Indicateur" pour commencer.</p>
+              <LayoutDashboard className="w-16 h-16 mb-4" />
+              <p>Cette page est vide.</p>
+              <p className="text-sm mt-2">Cliquez sur "Nouvel Indicateur" en haut à droite.</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-              {activeRisk?.widgets.map(widget => (
+              {visibleWidgets.map(widget => (
                 <Card
-                  key={widget.id} onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); }}
-                  className={`cursor-pointer transition-all bg-background min-w-0 ${getWidgetGridClass(widget.widgetSize)} ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10 relative' : 'hover:border-primary/50 shadow-sm'}`}
+                  key={widget.id}
+                  onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); }}
+                  className={`cursor-pointer transition-all bg-background min-w-0 ${widget.widgetSize === 'small' ? 'col-span-1' : widget.widgetSize === 'large' ? 'md:col-span-2 xl:col-span-3' : 'md:col-span-2'} ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10 relative' : 'hover:border-primary/50 shadow-sm'}`}
                 >
                   <CardHeader className="p-3 border-b flex flex-row items-center justify-between bg-card/50 min-w-0">
                     <CardTitle className="text-xs font-bold uppercase text-muted-foreground truncate w-full pr-2">{widget.title}</CardTitle>
@@ -982,7 +1203,9 @@ export default function RisksView() {
                   <h4 className="text-[10px] font-black uppercase text-primary truncate">Sur cet indicateur</h4>
                   <Button variant="ghost" size="sm" onClick={addFilter} className="h-6 px-1 text-[10px] text-primary shrink-0"><Plus className="w-3 h-3 mr-1"/> Ajouter</Button>
                 </div>
+
                 {(!activeWidget.filters || activeWidget.filters.length === 0) && <div className="p-3 text-center border border-dashed rounded bg-muted/20 text-[10px] text-muted-foreground">Aucun filtre actif.</div>}
+
                 <div className="space-y-3">
                   {activeWidget.filters?.map(f => (
                     <div key={f.id} className="p-2 border border-primary/20 bg-primary/5 rounded relative group flex flex-col gap-2 shadow-sm min-w-0">
@@ -993,13 +1216,7 @@ export default function RisksView() {
                       <select value={f.operator} onChange={e => updateFilter(f.id, { operator: e.target.value as FilterOperator })} className="w-full h-7 rounded border px-1 text-[10px] text-muted-foreground bg-background truncate">
                         <option value="eq">Égal à</option><option value="neq">Différent de</option><option value="contains">Contient</option><option value="gt">Supérieur à</option><option value="lt">Inférieur à</option><option value="last_n_days">Derniers X jours</option>
                       </select>
-                      <Input
-                        type={f.operator === 'last_n_days' ? 'number' : 'text'}
-                        value={f.value}
-                        onChange={e => updateFilter(f.id, { value: e.target.value })}
-                        placeholder={f.operator === 'last_n_days' ? 'Nombre de jours...' : 'Valeur...'}
-                        className="h-7 text-xs bg-background w-full"
-                      />
+                      <Input type={f.operator === 'last_n_days' ? 'number' : 'text'} value={f.value} onChange={e => updateFilter(f.id, { value: e.target.value })} placeholder={f.operator === 'last_n_days' ? 'Nombre de jours...' : 'Valeur...'} className="h-7 text-xs bg-background w-full" />
                     </div>
                   ))}
                 </div>
@@ -1024,71 +1241,57 @@ export default function RisksView() {
             ) : (
               <div className="space-y-4 animate-in fade-in">
 
-                {/* BLOC 1 : TYPE */}
                 <div className="space-y-2 flex flex-col min-w-0">
                   <div className="flex justify-between items-center min-w-0 gap-2">
                     <Input value={activeWidget.title} onChange={e => updateActiveWidget({ title: e.target.value })} className="h-8 text-xs font-bold w-full truncate" />
                     <button onClick={() => setWidgetToDelete(activeWidget.id)} className="text-rose-500 hover:bg-rose-50 p-1.5 rounded shrink-0"><Trash2 className="w-4 h-4"/></button>
                   </div>
                   <div className="grid grid-cols-4 gap-1.5 border-b pb-4">
-                    <button onClick={() => updateActiveWidget({ type: 'bar' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'bar' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`} title="Barres"><BarChart3 className="w-4 h-4"/></button>
-                    <button onClick={() => updateActiveWidget({ type: 'area' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'area' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`} title="Aires/Courbes"><LineChartIcon className="w-4 h-4"/></button>
-                    <button onClick={() => updateActiveWidget({ type: 'pie' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'pie' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`} title="Secteurs (Répartition)"><PieChartIcon className="w-4 h-4"/></button>
-                    <button onClick={() => updateActiveWidget({ type: 'kpi' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'kpi' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`} title="Valeur globale (KPI)"><Hash className="w-4 h-4"/></button>
+                    <button onClick={() => updateActiveWidget({ type: 'bar' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'bar' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><BarChart3 className="w-4 h-4"/></button>
+                    <button onClick={() => updateActiveWidget({ type: 'area' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'area' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><LineChartIcon className="w-4 h-4"/></button>
+                    <button onClick={() => updateActiveWidget({ type: 'pie' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'pie' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><PieChartIcon className="w-4 h-4"/></button>
+                    <button onClick={() => updateActiveWidget({ type: 'kpi' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'kpi' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><Hash className="w-4 h-4"/></button>
                   </div>
                 </div>
 
                 <div className="space-y-1 flex flex-col min-w-0">
                   <Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">Source de données</Label>
                   <select value={activeWidget.datasetId} onChange={e => updateActiveWidget({ datasetId: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-muted/30 truncate">
-                    {activeRisk?.datasets
-                      .filter(d => !d.isHidden || d.id === activeWidget.datasetId)
-                      .map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
+                    {activeRisk?.datasets.filter(d => !d.isHidden || d.id === activeWidget.datasetId).map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
                   </select>
                 </div>
 
-                {/* DROP ZONE AXE X */}
                 {activeWidget.type !== 'kpi' && (
-                  <div
-                    onDragOver={e => e.preventDefault()}
-                    onDrop={handleDropOnX}
-                    className="p-3 border rounded bg-secondary/10 flex flex-col gap-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors min-w-0"
-                  >
+                  <div onDragOver={e => e.preventDefault()} onDrop={handleDropOnX} className="p-3 border rounded bg-secondary/10 flex flex-col gap-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors min-w-0">
                     <div className="flex items-center justify-between min-w-0 gap-2">
-                      <Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">
-                        {activeWidget.type === 'pie' ? 'Catégorie de découpage' : 'Axe d\'analyse (X)'}
-                      </Label>
-                      {activeWidget.type === 'pie' && activeWidget.xAxisCol && (
-                         <button onClick={() => updateActiveWidget({ xAxisCol: "" })} className="text-[10px] text-rose-500 font-bold hover:underline shrink-0">Vider</button>
-                      )}
+                      <Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{activeWidget.type === 'pie' ? 'Catégorie de découpage' : 'Axe d\'analyse (X)'}</Label>
+                      {activeWidget.type === 'pie' && activeWidget.xAxisCol && <button onClick={() => updateActiveWidget({ xAxisCol: "" })} className="text-[10px] text-rose-500 font-bold hover:underline shrink-0">Vider</button>}
                     </div>
-                    <select value={activeWidget.xAxisCol || ''} onChange={e => updateActiveWidget({ xAxisCol: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-background truncate"><option value="">{activeWidget.type === 'pie' ? 'Aucun (Comparaison globale)' : 'Glisser ou sélectionner...'}</option>{activeDataset?.columns.map(c => <option key={c} value={c}>{c}</option>)}</select>
+                    <select value={activeWidget.xAxisCol || ''} onChange={e => updateActiveWidget({ xAxisCol: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-background truncate">
+                      <option value="">Sélectionner...</option>
+                      {activeDataset?.columns.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
 
                     {activeWidget.xAxisCol && (
                       <div className="flex flex-col gap-1 pt-1 border-t border-muted-foreground/10 min-w-0">
                         <Label className="text-[9px] uppercase font-bold text-primary flex items-center gap-1 truncate"><Calendar className="w-3 h-3 shrink-0"/> Format Date</Label>
-                        <select value={activeWidget.dateGrouping || 'none'} onChange={e => updateActiveWidget({ dateGrouping: e.target.value as DateGrouping })} className="w-full h-7 rounded border border-primary/20 px-1 text-[10px] bg-primary/5 text-primary truncate"><option value="none">Ne pas regrouper</option><option value="day">Jour</option><option value="week">Semaine</option><option value="month">Mois</option><option value="quarter">Trimestre</option><option value="year">Année</option></select>
+                        <select value={activeWidget.dateGrouping || 'none'} onChange={e => updateActiveWidget({ dateGrouping: e.target.value as DateGrouping })} className="w-full h-7 rounded border border-primary/20 px-1 text-[10px] bg-primary/5 text-primary truncate">
+                          <option value="none">Ne pas regrouper</option><option value="day">Jour</option><option value="week">Semaine</option><option value="month">Mois</option><option value="quarter">Trimestre</option><option value="year">Année</option>
+                        </select>
                       </div>
                     )}
                   </div>
                 )}
 
-                {/* DROP ZONE AXE Y */}
-                <div
-                  onDragOver={e => e.preventDefault()}
-                  onDrop={handleDropOnY}
-                  className="p-3 border rounded bg-secondary/10 flex flex-col gap-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors min-w-0"
-                >
+                <div onDragOver={e => e.preventDefault()} onDrop={handleDropOnY} className="p-3 border rounded bg-secondary/10 flex flex-col gap-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors min-w-0">
                   <div className="flex items-center justify-between min-w-0 gap-2">
-                    <Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">
-                      {activeWidget.type === 'pie' ? 'Données évaluées' : activeWidget.type === 'kpi' ? 'Valeur du KPI' : 'Mesure de l\'Axe Y'}
-                    </Label>
+                    <Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{activeWidget.type === 'pie' ? 'Données évaluées' : activeWidget.type === 'kpi' ? 'Valeur du KPI' : 'Mesure de l\'Axe Y'}</Label>
                     <button onClick={addSeries} className="text-[10px] text-primary font-bold hover:underline shrink-0">+ Ajouter</button>
                   </div>
 
                   {activeWidget.series.length === 0 && <div className="text-[10px] text-muted-foreground italic text-center w-full">Déposez vos données ici.</div>}
 
-                  {activeWidget.series.map((s, index) => (
+                  {activeWidget.series.map((s) => (
                     <div key={s.id} className="p-2 bg-background border rounded flex flex-col gap-2 relative group min-w-0">
                       <button onClick={() => removeSeries(s.id)} className="absolute -top-2 -right-2 bg-rose-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10"><Trash2 className="w-3 h-3" /></button>
                       <select value={s.yAxisCol} onChange={e => { const val = e.target.value; const isMeas = activeRisk?.measures.some(m => m.name === val); updateSeries(s.id, { yAxisCol: val, isMeasure: isMeas }); }} className="w-full h-7 rounded border px-1 text-xs font-bold bg-background truncate">
@@ -1105,12 +1308,7 @@ export default function RisksView() {
 
                       <div className="flex items-center gap-1 mt-1">
                         <Edit2 className="w-3 h-3 text-muted-foreground shrink-0"/>
-                        <Input
-                          value={s.alias || ''}
-                          onChange={e => updateSeries(s.id, { alias: e.target.value })}
-                          placeholder="Renommer l'étiquette (Optionnel)..."
-                          className="h-6 text-[10px] bg-background w-full placeholder:italic"
-                        />
+                        <Input value={s.alias || ''} onChange={e => updateSeries(s.id, { alias: e.target.value })} placeholder="Renommer l'étiquette..." className="h-6 text-[10px] bg-background w-full placeholder:italic"/>
                       </div>
 
                       {!(activeWidget.type === 'pie' && activeWidget.xAxisCol) && (
@@ -1120,7 +1318,6 @@ export default function RisksView() {
                   ))}
                 </div>
 
-                {/* BLOC APPARENCE */}
                 <div className="pt-2 border-t flex flex-col gap-3 min-w-0">
                   <h4 className="text-[10px] font-black uppercase text-primary flex items-center gap-1 truncate"><Palette className="w-3 h-3 shrink-0"/> Options de Rendu</h4>
 
@@ -1134,9 +1331,9 @@ export default function RisksView() {
                   <div className="flex flex-col gap-1 min-w-0">
                     <Label className="text-xs flex items-center gap-1 text-muted-foreground truncate"><Maximize className="w-3 h-3 shrink-0"/> Taille du panneau</Label>
                     <select value={activeWidget.widgetSize || 'medium'} onChange={e => updateActiveWidget({ widgetSize: e.target.value as WidgetSize })} className="w-full h-7 rounded border px-1 text-xs bg-background truncate">
-                      <option value="small">Tiers de page (Petit)</option>
-                      <option value="medium">Deux Tiers (Standard)</option>
-                      <option value="large">Pleine page (Détail)</option>
+                      <option value="small">Tiers de page</option>
+                      <option value="medium">Deux Tiers</option>
+                      <option value="large">Pleine page</option>
                     </select>
                   </div>
 
@@ -1159,64 +1356,50 @@ export default function RisksView() {
           </div>
         </div>
 
-        {/* PANNEAU 4 : DONNÉES & APPEND (AVEC GESTION DE LA CORBEILLE) */}
+        {/* PANNEAU 4 : DONNÉES ET CORBEILLE */}
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 overflow-hidden ${isDataOpen ? 'w-64' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-            <div
-              onClick={() => setIsDataOpen(!isDataOpen)}
-              className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1"
-            >
+            <div onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1">
               <Database className="w-4 h-4 text-muted-foreground shrink-0" />
-              {isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Modèle de Données</h3>}
+              {isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Données</h3>}
             </div>
             {isDataOpen ? (
-               <div className="flex items-center gap-1 shrink-0">
-                 <Button variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner deux tables (Append)">
-                   <Combine className="w-3.5 h-3.5" />
-                 </Button>
-                 <Button variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source">
-                   <Plus className="w-3.5 h-3.5" />
-                 </Button>
-                 <button onClick={() => setIsDataOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground"><ChevronRight className="w-4 h-4" /></button>
-               </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <Button variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner (Append)"><Combine className="w-3.5 h-3.5" /></Button>
+                <Button variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source"><Plus className="w-3.5 h-3.5" /></Button>
+                <button onClick={() => setIsDataOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground"><ChevronRight className="w-4 h-4" /></button>
+              </div>
             ) : (
-               <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsDataOpen(true)} />
+              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsDataOpen(true)} />
             )}
           </div>
 
           <div className={`flex-1 overflow-y-auto p-2 ${!isDataOpen && 'hidden'}`}>
 
-            {/* 1. LISTE DES TABLES VISIBLES (On exclut totalement les masquées de la vue principale) */}
+            {/* 1. LISTE DES TABLES VISIBLES */}
             {activeRisk?.datasets.filter(ds => !ds.isHidden).map(ds => renderDatasetItem(ds, false))}
 
-            {/* 2. BOUTON POUR AFFICHER LA CORBEILLE DES TABLES MASQUÉES */}
+            {/* 2. BOUTON CORBEILLE */}
             {activeRisk && activeRisk.datasets.some(ds => ds.isHidden) && (
               <div className="mt-4 pt-2 border-t border-dashed">
-                <Button
-                  variant="ghost"
-                  className="w-full h-8 text-[10px] uppercase font-bold tracking-wider text-muted-foreground hover:bg-muted/50 transition-colors"
-                  onClick={() => setShowHiddenDatasets(!showHiddenDatasets)}
-                >
+                <Button variant="ghost" className="w-full h-8 text-[10px] uppercase font-bold tracking-wider text-muted-foreground hover:bg-muted/50" onClick={() => setShowHiddenDatasets(!showHiddenDatasets)}>
                   {showHiddenDatasets ? <EyeOff className="w-3 h-3 mr-2" /> : <Eye className="w-3 h-3 mr-2" />}
-                  {showHiddenDatasets
-                    ? "Masquer les tables retirées"
-                    : `Voir ${activeRisk.datasets.filter(d => d.isHidden).length} table(s) retirée(s)`
-                  }
+                  {showHiddenDatasets ? "Masquer les tables retirées" : `Voir ${activeRisk.datasets.filter(d => d.isHidden).length} table(s) retirée(s)`}
                 </Button>
               </div>
             )}
 
-            {/* 3. LISTE DES TABLES MASQUÉES (S'affiche uniquement si l'utilisateur clique sur le bouton) */}
+            {/* 3. LISTE DES TABLES MASQUÉES */}
             {showHiddenDatasets && (
-               <div className="mt-2 pl-2 border-l-2 border-muted">
-                 {activeRisk?.datasets.filter(ds => ds.isHidden).map(ds => renderDatasetItem(ds, true))}
-               </div>
+              <div className="mt-2 pl-2 border-l-2 border-muted">
+                {activeRisk?.datasets.filter(ds => ds.isHidden).map(ds => renderDatasetItem(ds, true))}
+              </div>
             )}
 
           </div>
         </div>
 
-        {/* MODAL POUR AJOUTER DES DONNÉES AU RAPPORT EXISTANT */}
+        {/* MODALES DIVERSES (AJOUT DATA, APPEND, SUPPRESSION) */}
         <Dialog open={isAddDataOpen} onOpenChange={(o) => { setIsAddDataOpen(o); if(!o) resetWizard(); }}>
           <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
             <DialogHeader><DialogTitle>Ajouter des sources au modèle</DialogTitle></DialogHeader>
@@ -1225,11 +1408,15 @@ export default function RisksView() {
                 <div className="space-y-2">
                   <Label className="text-primary font-bold">Fichier source (.xlsx, .csv)</Label>
                   {isImporting ? (
-                     <div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>
+                    <div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10">
+                      <Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" />
+                    </div>
                   ) : (
                     <div className="relative">
                       <input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
-                      <Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2"><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button>
+                      <Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2">
+                        <FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span>
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -1237,61 +1424,48 @@ export default function RisksView() {
             )}
             {wizardStep === 2 && (
               <div className="space-y-6 py-4">
-                <div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Fichier analysé</h4><p className="text-xs">Cochez les tables à importer.</p></div></div>
                 <div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">
                   {availableSheets.map(sheet => (
                     <div key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}>
-                      <div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge>
+                      <div className="flex items-center gap-3">
+                        <CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} />
+                        <p className="font-bold text-sm">{sheet.name}</p>
+                      </div>
+                      <Badge variant="secondary">{sheet.data.length} entrées</Badge>
                     </div>
                   ))}
                 </div>
                 <div className="flex gap-2 pt-4">
                   <Button variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button>
-                  <Button onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter au modèle</Button>
+                  <Button onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button>
                 </div>
               </div>
             )}
           </DialogContent>
         </Dialog>
 
-        {/* MODAL POUR FUSIONNER (APPEND) DEUX TABLES */}
-        <Dialog open={isAppendOpen} onOpenChange={(o) => {
-          setIsAppendOpen(o);
-          if(!o) { setAppendSource1(""); setAppendSource2(""); setAppendNewName(""); }
-        }}>
+        <Dialog open={isAppendOpen} onOpenChange={(o) => { setIsAppendOpen(o); if(!o) { setAppendSource1(""); setAppendSource2(""); setAppendNewName(""); }}}>
           <DialogContent className="sm:max-w-[500px]">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Combine className="w-5 h-5 text-primary" /> Fusionner des tables (Append)
-              </DialogTitle>
-            </DialogHeader>
+            <DialogHeader><DialogTitle className="flex items-center gap-2"><Combine className="w-5 h-5 text-primary" /> Fusionner des tables</DialogTitle></DialogHeader>
             <div className="space-y-4 py-4">
-              <p className="text-xs text-muted-foreground">
-                Cette action va empiler les lignes de deux tables. (Si votre deuxième table se trouve dans un autre fichier Excel, fermez cette fenêtre et utilisez le bouton "+" pour importer le fichier d'abord).
-              </p>
-
               <div className="space-y-2">
                 <Label>Première table</Label>
                 <select value={appendSource1} onChange={e => setAppendSource1(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background">
-                  <option value="">Sélectionner la table de base...</option>
-                  {/* Les tables masquées restent disponibles pour la fusion */}
+                  <option value="">Sélectionner...</option>
                   {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
                 </select>
               </div>
-
               <div className="flex justify-center"><Plus className="w-4 h-4 text-muted-foreground" /></div>
-
               <div className="space-y-2">
                 <Label>Table à empiler</Label>
                 <select value={appendSource2} onChange={e => setAppendSource2(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background">
-                  <option value="">Sélectionner la table à ajouter...</option>
+                  <option value="">Sélectionner...</option>
                   {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
                 </select>
               </div>
-
               <div className="space-y-2 pt-4 border-t">
-                <Label className="text-primary font-bold">Nom de la nouvelle table générée</Label>
-                <Input value={appendNewName} onChange={e => setAppendNewName(e.target.value)} placeholder="ex: Risques Globaux Q1+Q2" />
+                <Label className="text-primary font-bold">Nom de la table fusionnée</Label>
+                <Input value={appendNewName} onChange={e => setAppendNewName(e.target.value)} />
               </div>
             </div>
             <DialogFooter>
@@ -1301,13 +1475,9 @@ export default function RisksView() {
           </DialogContent>
         </Dialog>
 
-        {/* ALERTES DE CONFIRMATIONS POUR LE STUDIO BI */}
         <AlertDialog open={!!widgetToDelete} onOpenChange={(open) => !open && setWidgetToDelete(null)}>
           <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Supprimer cet indicateur ?</AlertDialogTitle>
-              <AlertDialogDescription>Vous allez supprimer ce graphique de votre tableau de bord.</AlertDialogDescription>
-            </AlertDialogHeader>
+            <AlertDialogHeader><AlertDialogTitle>Supprimer cet indicateur ?</AlertDialogTitle></AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Annuler</AlertDialogCancel>
               <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={confirmDeleteWidget}>Supprimer</AlertDialogAction>
@@ -1317,10 +1487,7 @@ export default function RisksView() {
 
         <AlertDialog open={!!datasetToDelete} onOpenChange={(open) => !open && setDatasetToDelete(null)}>
           <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Retirer cette source de données ?</AlertDialogTitle>
-              <AlertDialogDescription>Les indicateurs utilisant cette table risquent de ne plus fonctionner.</AlertDialogDescription>
-            </AlertDialogHeader>
+            <AlertDialogHeader><AlertDialogTitle>Retirer cette source ?</AlertDialogTitle></AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Annuler</AlertDialogCancel>
               <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => datasetToDelete && confirmRemoveDataset(datasetToDelete)}>Retirer</AlertDialogAction>
