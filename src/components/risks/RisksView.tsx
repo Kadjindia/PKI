@@ -9,7 +9,8 @@ import {
   Calculator, Sigma, Filter, ChevronRight, ChevronDown, GripVertical, FileSpreadsheet, Loader2,
   Calendar, Palette, Maximize, Tag, LayoutPanelLeft, AlertTriangle, Edit2, Combine,
   Eye, EyeOff, X, AlignLeft, Copy, ChevronLeft, ChevronRight as ChevronRightIcon,
-  ChevronUp, RefreshCw, Type, Shapes, Image as ImageIcon, DatabaseZap, TableProperties, MousePointerClick, Settings2
+  ChevronUp, RefreshCw, Type, Shapes, Image as ImageIcon, DatabaseZap, TableProperties, MousePointerClick, Settings2,
+  MoreVertical // NOUVEL IMPORT POUR LES TROIS PETITS POINTS
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,6 +28,15 @@ import {
   Tooltip, CartesianGrid, PieChart, Pie, Cell, Legend
 } from "recharts";
 import { toast } from "sonner";
+
+// NOUVEAUX IMPORTS POUR LE MENU DÉROULANT DES ONGLETS
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // ============================================================================
 // CONSTANTES GLOBALES DE SÉCURITÉ
@@ -209,11 +219,8 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
 
   filteredData.forEach(row => {
     let key = row[xAxisCol];
-    if (dateGrouping !== 'none') {
-      key = formatTimeGrouping(key, dateGrouping);
-    } else {
-      key = safeString(key || 'N/A');
-    }
+    if (dateGrouping !== 'none') key = formatTimeGrouping(key, dateGrouping);
+    else key = safeString(key || 'N/A');
 
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
@@ -241,11 +248,9 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
         const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
         const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !isNaN(v));
 
-        if (s.aggregation === 'COUNT') {
-          aggValue = nonBlanks.length;
-        } else if (s.aggregation === 'DISTINCTCOUNT') {
-          aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
-        } else if (numVals.length > 0) {
+        if (s.aggregation === 'COUNT') aggValue = nonBlanks.length;
+        else if (s.aggregation === 'DISTINCTCOUNT') aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
+        else if (numVals.length > 0) {
           if (s.aggregation === 'SUM') aggValue = numVals.reduce((a, b) => a + b, 0);
           if (s.aggregation === 'AVERAGE') aggValue = numVals.reduce((a, b) => a + b, 0) / numVals.length;
           if (s.aggregation === 'MIN') aggValue = Math.min(...numVals);
@@ -282,11 +287,9 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
     const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
     const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !isNaN(v));
 
-    if (s.aggregation === 'COUNT') {
-      aggValue = nonBlanks.length;
-    } else if (s.aggregation === 'DISTINCTCOUNT') {
-      aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
-    } else if (numVals.length > 0) {
+    if (s.aggregation === 'COUNT') aggValue = nonBlanks.length;
+    else if (s.aggregation === 'DISTINCTCOUNT') aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
+    else if (numVals.length > 0) {
       if (s.aggregation === 'SUM') aggValue = numVals.reduce((a, b) => a + b, 0);
       if (s.aggregation === 'AVERAGE') aggValue = numVals.reduce((a, b) => a + b, 0) / numVals.length;
       if (s.aggregation === 'MIN') aggValue = Math.min(...numVals);
@@ -300,7 +303,6 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
 // ============================================================================
 // SOUS-COMPOSANTS : AMÉLIORATION DE L'AFFICHAGE DES GRAPHIQUES
 // ============================================================================
-
 const truncateText = (text: string, maxLength: number) => {
   const str = String(text || "");
   if (str.length <= maxLength) return str;
@@ -311,14 +313,9 @@ const CustomXAxisTick = ({ x, y, payload }: any) => {
   return (
     <g transform={`translate(${x},${y})`}>
       <text
-        x={0}
-        y={0}
-        dy={14}
-        textAnchor="end"
-        fill="currentColor"
-        className="text-muted-foreground"
-        transform="rotate(-40)"
-        fontSize={10}
+        x={0} y={0} dy={14}
+        textAnchor="end" fill="currentColor" className="text-muted-foreground"
+        transform="rotate(-40)" fontSize={10}
       >
         {truncateText(payload.value, 15)}
         <title>{payload.value}</title>
@@ -435,26 +432,17 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
         <PieChart margin={{ top: 20, right: 30, left: 30, bottom: 20 }}>
           <Pie
             data={pieData}
-            cx="50%"
-            cy="50%"
+            cx="50%" cy="50%"
             innerRadius={widget.widgetSize === 'large' ? "40%" : "30%"}
             outerRadius={widget.widgetSize === 'large' ? "65%" : "55%"}
-            paddingAngle={2}
-            dataKey="value"
-            nameKey="name"
+            paddingAngle={2} dataKey="value" nameKey="name"
             labelLine={false}
             label={widget.showLabels !== false ? renderCustomizedPieLabel : false}
-            stroke="hsl(var(--background))"
-            strokeWidth={2}
+            stroke="hsl(var(--background))" strokeWidth={2}
           >
-            {pieData.map((entry, index) => (
-              <Cell key={`cell-${index}`} fill={entry.color} />
-            ))}
+            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
           </Pie>
-          <Tooltip
-            formatter={renderPieTooltip}
-            contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-          />
+          <Tooltip formatter={renderPieTooltip} contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
           {renderLegend()}
         </PieChart>
       </ResponsiveContainer>
@@ -462,6 +450,7 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   }
 
   const isHorizontal = widget.orientation === 'horizontal';
+
   const marginConfig = {
     top: 20,
     right: isHorizontal ? 30 : 10,
@@ -472,38 +461,28 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   return (
     <ResponsiveContainer width="100%" height="100%">
       {widget.type === 'bar' ? (
-        <BarChart
-          data={chartData}
-          margin={marginConfig}
-          layout={isHorizontal ? "vertical" : "horizontal"}
-        >
+        <BarChart data={chartData} margin={marginConfig} layout={isHorizontal ? "vertical" : "horizontal"}>
           <CartesianGrid strokeDasharray="3 3" horizontal={!isHorizontal} vertical={isHorizontal} stroke="hsl(var(--border))" opacity={0.5} />
           <XAxis
             type={isHorizontal ? "number" : "category"}
             dataKey={isHorizontal ? undefined : widget.xAxisCol}
             tick={isHorizontal ? { fontSize: 10 } : <CustomXAxisTick />}
             height={isHorizontal ? 30 : 80}
-            axisLine={false}
-            tickLine={false}
-            interval={0}
+            axisLine={false} tickLine={false} interval={0}
           />
           <YAxis
             type={isHorizontal ? "category" : "number"}
             dataKey={isHorizontal ? widget.xAxisCol : undefined}
             tick={{ fontSize: 10 }}
             width={isHorizontal ? 250 : 70}
-            axisLine={false}
-            tickLine={false}
+            axisLine={false} tickLine={false}
             tickFormatter={(val) => isHorizontal ? truncateText(val, 40) : val}
           />
           <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
           {renderLegend()}
           {widget.series.map(s => (
             <Bar
-              key={`bar-${s.id}`}
-              dataKey={s.id}
-              name={getSeriesName(s)}
-              fill={s.color}
+              key={`bar-${s.id}`} dataKey={s.id} name={getSeriesName(s)} fill={s.color}
               radius={isHorizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]}
               label={widget.showLabels !== false ? { position: isHorizontal ? 'right' : 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false}
             />
@@ -516,23 +495,14 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
             dataKey={widget.xAxisCol}
             tick={<CustomXAxisTick />}
             height={80}
-            axisLine={false}
-            tickLine={false}
-            interval={0}
+            axisLine={false} tickLine={false} interval={0}
           />
           <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={50} />
           <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
           {renderLegend()}
           {widget.series.map(s => (
             <Area
-              key={s.id}
-              type="monotone"
-              dataKey={s.id}
-              name={getSeriesName(s)}
-              stroke={s.color}
-              fill={s.color}
-              fillOpacity={0.1}
-              strokeWidth={2}
+              key={s.id} type="monotone" dataKey={s.id} name={getSeriesName(s)} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2}
               label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false}
             />
           ))}
@@ -829,9 +799,12 @@ export default function RisksView() {
     }
     const updatedTabs = activeRisk.tabs!.filter(t => t.id !== tabId);
     const updatedWidgets = activeRisk.widgets.filter(w => w.tabId !== tabId);
+
     updateActiveRisk({ tabs: updatedTabs, widgets: updatedWidgets });
 
-    if (activeTabId === tabId) setActiveTabId(updatedTabs[0].id);
+    if (activeTabId === tabId) {
+      setActiveTabId(updatedTabs[0].id);
+    }
     toast.success("Page supprimée.");
   };
 
@@ -873,7 +846,9 @@ export default function RisksView() {
       const temp = tabs[currentIndex + 1];
       tabs[currentIndex + 1] = tabs[currentIndex];
       tabs[currentIndex] = temp;
-    } else return;
+    } else {
+      return;
+    }
 
     updateActiveRisk({ tabs });
   };
@@ -951,7 +926,9 @@ export default function RisksView() {
     if (!ds1 || !ds2) return;
 
     let combinedData = [...ds1.data, ...ds2.data];
-    if (combinedData.length > MAX_ROWS_PER_DATASET) combinedData = combinedData.slice(0, MAX_ROWS_PER_DATASET);
+    if (combinedData.length > MAX_ROWS_PER_DATASET) {
+      combinedData = combinedData.slice(0, MAX_ROWS_PER_DATASET);
+    }
 
     const newDataset: Dataset = {
       id: `ds_${Date.now()}`,
@@ -967,24 +944,36 @@ export default function RisksView() {
   };
 
   const addSeriesWithData = (colName: string, isMeasure: boolean) => {
-    updateActiveWidget({ series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: colName, isMeasure, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }] });
+    updateActiveWidget({
+      series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: colName, isMeasure, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }]
+    });
   };
+
   const addSeries = () => {
-    updateActiveWidget({ series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: "", isMeasure: false, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }] });
+    updateActiveWidget({
+      series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: "", isMeasure: false, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }]
+    });
   };
+
   const updateSeries = (seriesId: string, updates: Partial<ChartSeries>) => {
-    updateActiveWidget({ series: activeWidget!.series.map(s => s.id === seriesId ? { ...s, ...updates } : s) });
+    updateActiveWidget({
+      series: activeWidget!.series.map(s => s.id === seriesId ? { ...s, ...updates } : s)
+    });
   };
+
   const removeSeries = (seriesId: string) => {
     updateActiveWidget({ series: activeWidget!.series.filter(s => s.id !== seriesId) });
   };
+
   const addFilter = () => {
     updateActiveWidget({ filters: [...(activeWidget!.filters || []), { id: `f_${Date.now()}`, column: "", operator: "eq", value: "" }] });
     setIsFiltersOpen(true);
   };
+
   const updateFilter = (filterId: string, updates: Partial<FilterConfig>) => {
     updateActiveWidget({ filters: activeWidget!.filters.map(f => f.id === filterId ? { ...f, ...updates } : f) });
   };
+
   const removeFilter = (filterId: string) => {
     updateActiveWidget({ filters: activeWidget!.filters.filter(f => f.id !== filterId) });
   };
@@ -996,11 +985,16 @@ export default function RisksView() {
     const isX = activeWidget.xAxisCol === colName;
     const seriesMatch = activeWidget.series.find(s => s.yAxisCol === colName);
 
-    if (isX) updateActiveWidget({ xAxisCol: "" });
-    else if (seriesMatch) removeSeries(seriesMatch.id);
-    else {
-      if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') updateActiveWidget({ xAxisCol: colName });
-      else addSeriesWithData(colName, isMeasure);
+    if (isX) {
+      updateActiveWidget({ xAxisCol: "" });
+    } else if (seriesMatch) {
+      removeSeries(seriesMatch.id);
+    } else {
+      if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') {
+        updateActiveWidget({ xAxisCol: colName });
+      } else {
+        addSeriesWithData(colName, isMeasure);
+      }
     }
   };
 
@@ -1013,6 +1007,7 @@ export default function RisksView() {
       updateActiveWidget({ xAxisCol: data.colName });
     } catch {}
   };
+
   const handleDropOnY = (e: React.DragEvent) => {
     e.preventDefault();
     try {
@@ -1244,7 +1239,7 @@ export default function RisksView() {
   }
 
   // ============================================================================
-  // VUE 2 : STUDIO BI (LAYOUT FAÇON POWER BI AVEC RUBAN RÉTRACTABLE)
+  // VUE 2 : STUDIO BI
   // ============================================================================
   return (
     <div className="flex flex-col h-[calc(100vh-6rem)] animate-in fade-in duration-300 -m-4 bg-slate-50 dark:bg-slate-900/50">
@@ -1265,7 +1260,7 @@ export default function RisksView() {
             </div>
 
             <div className="flex gap-1">
-              {['Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
+              {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
                 <button
                   key={tab}
                   onClick={() => {
@@ -1299,6 +1294,12 @@ export default function RisksView() {
         {/* Ligne 2 : Les Outils (Le Ruban Actif - Masqué si isRibbonCollapsed est true) */}
         <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
           <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
+
+            {activeRibbonTab === 'Fichier' && (
+              <div className="flex items-center text-xs text-muted-foreground px-4 italic">
+                Menu fichier (Enregistrer, Exporter, Imprimer...)
+              </div>
+            )}
 
             {activeRibbonTab === 'Accueil' && (
               <>
@@ -1461,13 +1462,13 @@ export default function RisksView() {
             )}
           </div>
 
-          {/* BARRE DES ONGLETS (TABS) PLACÉE TOUT EN BAS */}
+          {/* BARRE DES ONGLETS (TABS) PLACÉE TOUT EN BAS AVEC MENU DROPDOWN */}
           <div className="flex items-center gap-1 px-4 bg-background border-t shadow-sm z-10 overflow-x-auto h-12 shrink-0 custom-scrollbar">
             {activeRisk?.tabs?.map(tab => (
               <div
                 key={tab.id}
                 onClick={() => { setActiveTabId(tab.id); setActiveWidgetId(null); }}
-                className={`flex items-center gap-2 px-4 h-full border-t-2 cursor-pointer transition-colors whitespace-nowrap group ${activeTabId === tab.id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+                className={`flex items-center px-4 h-full border-t-2 cursor-pointer transition-colors whitespace-nowrap group ${activeTabId === tab.id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
               >
                 {editingTabId === tab.id ? (
                   <Input
@@ -1482,49 +1483,60 @@ export default function RisksView() {
                 ) : (
                   <span
                     onDoubleClick={(e) => { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabName(tab.name); }}
-                    className="font-bold text-sm select-none"
+                    className="font-bold text-sm select-none mr-1"
                     title="Double-cliquez pour renommer"
                   >
                     {tab.name}
                   </span>
                 )}
 
-                {/* BOUTONS D'ACTION SUR L'ONGLET ACTIF */}
+                {/* MENU DÉROULANT (TROIS POINTS) SUR L'ONGLET ACTIF */}
                 {activeTabId === tab.id && editingTabId !== tab.id && (
-                  <div className="flex items-center ml-2 space-x-0.5 shrink-0 bg-background/50 rounded px-1 border">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'left'); }}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
-                      title="Déplacer à gauche"
-                      disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === 0}
-                    >
-                      <ChevronLeft className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'right'); }}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
-                      title="Déplacer à droite"
-                      disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === (activeRisk.tabs?.length || 1) - 1}
-                    >
-                      <ChevronRightIcon className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDuplicateTab(tab.id); }}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
-                      title="Dupliquer la page"
-                    >
-                      <Copy className="w-3 h-3" />
-                    </button>
-                    {activeRisk.tabs!.length > 1 && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteTab(tab.id); }}
-                        className="p-1 rounded hover:bg-rose-100 text-rose-500 transition-colors"
-                        title="Supprimer la page"
+                        className="p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-primary transition-colors ml-1 shrink-0 outline-none"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <X className="w-3 h-3" />
+                        <MoreVertical className="w-3.5 h-3.5" />
                       </button>
-                    )}
-                  </div>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'left'); }}
+                        disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === 0}
+                        className="text-xs cursor-pointer"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5 mr-2" /> Déplacer à gauche
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'right'); }}
+                        disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === (activeRisk.tabs?.length || 1) - 1}
+                        className="text-xs cursor-pointer"
+                      >
+                        <ChevronRightIcon className="w-3.5 h-3.5 mr-2" /> Déplacer à droite
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); handleDuplicateTab(tab.id); }}
+                        className="text-xs cursor-pointer"
+                      >
+                        <Copy className="w-3.5 h-3.5 mr-2" /> Dupliquer la page
+                      </DropdownMenuItem>
+
+                      {activeRisk.tabs!.length > 1 && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={(e) => { e.stopPropagation(); handleDeleteTab(tab.id); }}
+                            className="text-xs text-rose-500 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 mr-2" /> Supprimer
+                          </DropdownMenuItem>
+                        </>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 )}
               </div>
             ))}
