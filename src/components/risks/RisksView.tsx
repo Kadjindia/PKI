@@ -1260,7 +1260,7 @@ export default function RisksView() {
             </div>
 
             <div className="flex gap-1">
-              {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
+              {['Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
                 <button
                   key={tab}
                   onClick={() => {
@@ -1294,12 +1294,6 @@ export default function RisksView() {
         {/* Ligne 2 : Les Outils (Le Ruban Actif - Masqué si isRibbonCollapsed est true) */}
         <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
           <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
-
-            {activeRibbonTab === 'Fichier' && (
-              <div className="flex items-center text-xs text-muted-foreground px-4 italic">
-                Menu fichier (Enregistrer, Exporter, Imprimer...)
-              </div>
-            )}
 
             {activeRibbonTab === 'Accueil' && (
               <>
