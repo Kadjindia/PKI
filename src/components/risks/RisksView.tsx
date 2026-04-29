@@ -8,7 +8,8 @@ import {
   PieChart as PieChartIcon, Hash, Target, LayoutDashboard, Database, CheckSquare,
   Calculator, Sigma, Filter, ChevronRight, ChevronDown, GripVertical, FileSpreadsheet, Loader2,
   Calendar, Palette, Maximize, Tag, LayoutPanelLeft, AlertTriangle, Edit2, Combine,
-  Eye, EyeOff, X, AlignLeft
+  Eye, EyeOff, X, AlignLeft, Copy, ChevronLeft, ChevronRight as ChevronRightIcon,
+  ChevronUp, RefreshCw, Type, Shapes, Image as ImageIcon, DatabaseZap, TableProperties, MousePointerClick, Settings2
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,32 +45,10 @@ type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 type WidgetSize = 'small' | 'medium' | 'large';
 type ChartOrientation = 'vertical' | 'horizontal';
 
-interface FilterConfig {
-  id: string;
-  column: string;
-  operator: FilterOperator;
-  value: string;
-}
-
-interface Dataset {
-  id: string;
-  name: string;
-  columns: string[];
-  data: any[];
-  isHidden?: boolean;
-}
-
-interface CustomMeasure {
-  id: string;
-  datasetId: string;
-  name: string;
-  formula: string;
-}
-
-interface DashboardTab {
-  id: string;
-  name: string;
-}
+interface FilterConfig { id: string; column: string; operator: FilterOperator; value: string; }
+interface Dataset { id: string; name: string; columns: string[]; data: any[]; isHidden?: boolean; }
+interface CustomMeasure { id: string; datasetId: string; name: string; formula: string; }
+interface DashboardTab { id: string; name: string; }
 
 interface ChartSeries {
   id: string;
@@ -143,14 +122,10 @@ const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
   const day = String(d.getDate()).padStart(2, '0');
 
   switch (grouping) {
-    case 'day':
-      return `${year}-${month}-${day}`;
-    case 'month':
-      return `${year}-${month}`;
-    case 'year':
-      return `${year}`;
-    case 'quarter':
-      return `${year}-Q${Math.ceil((d.getMonth() + 1) / 3)}`;
+    case 'day': return `${year}-${month}-${day}`;
+    case 'month': return `${year}-${month}`;
+    case 'year': return `${year}`;
+    case 'quarter': return `${year}-Q${Math.ceil((d.getMonth() + 1) / 3)}`;
     case 'week': {
       const d2 = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
       const dayNum = d2.getUTCDay() || 7;
@@ -159,8 +134,7 @@ const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
       const weekNo = Math.ceil((((d2.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
       return `${d2.getUTCFullYear()}-S${String(weekNo).padStart(2, '0')}`;
     }
-    default:
-      return safeString(rawDate);
+    default: return safeString(rawDate);
   }
 };
 
@@ -201,10 +175,7 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
         }
       }
 
-      if (rawVal === undefined || rawVal === null || rawVal === '') {
-        return f.operator === 'neq';
-      }
-
+      if (rawVal === undefined || rawVal === null || rawVal === '') return f.operator === 'neq';
       const strVal = safeString(rawVal).toLowerCase();
       const filterVal = safeString(f.value).toLowerCase();
 
@@ -244,9 +215,7 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
       key = safeString(key || 'N/A');
     }
 
-    if (!groups.has(key)) {
-      groups.set(key, []);
-    }
+    if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
   });
 
@@ -332,14 +301,12 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
 // SOUS-COMPOSANTS : AMÉLIORATION DE L'AFFICHAGE DES GRAPHIQUES
 // ============================================================================
 
-// Fonction pour raccourcir les longs textes (labels d'axes ou de camemberts)
 const truncateText = (text: string, maxLength: number) => {
   const str = String(text || "");
   if (str.length <= maxLength) return str;
   return str.substring(0, maxLength) + "...";
 };
 
-// Tick personnalisé pour l'Axe X (Pour incliner les étiquettes et éviter la superposition)
 const CustomXAxisTick = ({ x, y, payload }: any) => {
   return (
     <g transform={`translate(${x},${y})`}>
@@ -381,21 +348,10 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
     return aggregateGlobal(dataset.data, widget.series, measures, widget.filters || []);
   }, [dataset?.data, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
 
-  if (!dataset) {
-    return <div className="flex h-full items-center justify-center text-xs text-rose-500 font-bold text-center px-4">Source de données introuvable.</div>;
-  }
+  if (!dataset) return <div className="flex h-full items-center justify-center text-xs text-rose-500 font-bold text-center px-4">Source de données introuvable.</div>;
+  if (widget.series.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Sélectionnez les données à analyser.</div>;
+  if (widget.type !== 'kpi' && widget.type !== 'pie' && !widget.xAxisCol) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Définissez l'Axe de répartition.</div>;
 
-  if (widget.series.length === 0) {
-    return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Sélectionnez les données à analyser.</div>;
-  }
-
-  if (widget.type !== 'kpi' && widget.type !== 'pie' && !widget.xAxisCol) {
-    return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Définissez l'Axe de répartition.</div>;
-  }
-
-  // -----------------------------------------------------
-  // RENDU : WIDGET KPI (Chiffre global)
-  // -----------------------------------------------------
   if (widget.type === 'kpi') {
     return (
       <div className="flex flex-col h-full justify-center items-center px-4 gap-6 overflow-y-auto">
@@ -415,32 +371,19 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
 
   const formatLabel = (value: number) => new Intl.NumberFormat('fr-FR').format(value);
 
-  // -----------------------------------------------------
-  // RENDU : ÉTIQUETTES INTELLIGENTES CAMEMBERT
-  // -----------------------------------------------------
   const renderCustomizedPieLabel = (props: any) => {
     const { cx, cy, midAngle, outerRadius, percent, index, name, fill } = props;
-
-    // On masque l'étiquette si la part représente moins de 2%
     if (percent < 0.02) return null;
-
     const RADIAN = Math.PI / 180;
     const sin = Math.sin(-RADIAN * midAngle);
     const cos = Math.cos(-RADIAN * midAngle);
-
-    // Point de départ (bord du camembert)
     const sx = cx + (outerRadius) * cos;
     const sy = cy + (outerRadius) * sin;
-
-    // Cassure en quinconce : longueur alternée pour éviter les superpositions
     const distanceCassure = index % 2 === 0 ? 15 : 35;
     const mx = cx + (outerRadius + distanceCassure) * cos;
     const my = cy + (outerRadius + distanceCassure) * sin;
-
-    // Ligne horizontale finale
     const ex = mx + (cos >= 0 ? 1 : -1) * 20;
     const ey = my;
-
     const textAnchor = cos >= 0 ? 'start' : 'end';
     const formattedPercent = (percent * 100).toFixed(1).replace('.', ',');
 
@@ -495,12 +438,12 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
             cx="50%"
             cy="50%"
             innerRadius={widget.widgetSize === 'large' ? "40%" : "30%"}
-            outerRadius={widget.widgetSize === 'large' ? "60%" : "45%"}
+            outerRadius={widget.widgetSize === 'large' ? "65%" : "55%"}
             paddingAngle={2}
             dataKey="value"
             nameKey="name"
-            labelLine={false} // Désactive les traits de Recharts par défaut
-            label={widget.showLabels !== false ? renderCustomizedPieLabel : false} // Utilise nos étiquettes
+            labelLine={false}
+            label={widget.showLabels !== false ? renderCustomizedPieLabel : false}
             stroke="hsl(var(--background))"
             strokeWidth={2}
           >
@@ -518,15 +461,7 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
     );
   }
 
-  // -----------------------------------------------------
-  // RENDU : GRAPHIQUES BARRES / AIRES
-  // -----------------------------------------------------
-  if (chartData.length === 0) {
-    return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée correspondant aux filtres.</div>;
-  }
-
   const isHorizontal = widget.orientation === 'horizontal';
-
   const marginConfig = {
     top: 20,
     right: isHorizontal ? 30 : 10,
@@ -543,7 +478,6 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
           layout={isHorizontal ? "vertical" : "horizontal"}
         >
           <CartesianGrid strokeDasharray="3 3" horizontal={!isHorizontal} vertical={isHorizontal} stroke="hsl(var(--border))" opacity={0.5} />
-
           <XAxis
             type={isHorizontal ? "number" : "category"}
             dataKey={isHorizontal ? undefined : widget.xAxisCol}
@@ -553,7 +487,6 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
             tickLine={false}
             interval={0}
           />
-
           <YAxis
             type={isHorizontal ? "category" : "number"}
             dataKey={isHorizontal ? widget.xAxisCol : undefined}
@@ -561,9 +494,8 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
             width={isHorizontal ? 250 : 70}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(val) => isHorizontal ? truncateText(val, 18) : val}
+            tickFormatter={(val) => isHorizontal ? truncateText(val, 40) : val}
           />
-
           <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
           {renderLegend()}
           {widget.series.map(s => (
@@ -618,6 +550,10 @@ export default function RisksView() {
   const [risks, setRisks] = useState<TrackedRisk[]>([]);
   const [isInitialized, setIsInitialized] = useState(false);
 
+  // ETAT POUR RÉDUIRE/AGRANDIR LE RUBAN
+  const [isRibbonCollapsed, setIsRibbonCollapsed] = useState(false);
+  const [activeRibbonTab, setActiveRibbonTab] = useState<string>('Accueil');
+
   // ÉTATS UI
   const [collapsedDatasets, setCollapsedDatasets] = useState<Set<string>>(new Set());
   const [showHiddenDatasets, setShowHiddenDatasets] = useState(false);
@@ -653,7 +589,6 @@ export default function RisksView() {
   const [availableSheets, setAvailableSheets] = useState<Dataset[]>([]);
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
 
-  // 1. CHARGEMENT
   useEffect(() => {
     const fetchRisks = async () => {
       try {
@@ -692,7 +627,6 @@ export default function RisksView() {
     fetchRisks();
   }, []);
 
-  // 2. SAUVEGARDE
   useEffect(() => {
     if (!isInitialized) return;
     const timer = setTimeout(async () => {
@@ -734,7 +668,6 @@ export default function RisksView() {
     return () => clearTimeout(timer);
   }, [risks, isInitialized]);
 
-  // WIZARD
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -776,7 +709,7 @@ export default function RisksView() {
               });
 
               if (cleanData.length > MAX_ROWS_PER_DATASET) {
-                toast.warning(`⚠️ La feuille "${sheetName}" contient trop de lignes avec des dates valides (${cleanData.length}). Seules les ${MAX_ROWS_PER_DATASET} premières ont été conservées.`);
+                toast.warning(`⚠️ La feuille "${sheetName}" contient trop de lignes avec des dates valides. Seules les ${MAX_ROWS_PER_DATASET} premières ont été conservées.`);
                 cleanData = cleanData.slice(0, MAX_ROWS_PER_DATASET);
               }
 
@@ -823,9 +756,7 @@ export default function RisksView() {
   };
 
   const finalizeRiskCreation = () => {
-    if (selectedSheets.length === 0) {
-      return toast.error("Sélectionnez au moins une table.");
-    }
+    if (selectedSheets.length === 0) return toast.error("Sélectionnez au moins une table.");
 
     const datasets = availableSheets.filter(s => selectedSheets.includes(s.id));
     const defaultTab = { id: `tab_${Date.now()}`, name: 'Page 1' };
@@ -850,9 +781,7 @@ export default function RisksView() {
   };
 
   const finalizeAddData = () => {
-    if (selectedSheets.length === 0) {
-      return toast.error("Sélectionnez au moins une table.");
-    }
+    if (selectedSheets.length === 0) return toast.error("Sélectionnez au moins une table.");
     const newDatasets = availableSheets.filter(s => selectedSheets.includes(s.id));
     updateActiveRisk({ datasets: [...(activeRisk?.datasets || []), ...newDatasets] });
     setIsAddDataOpen(false);
@@ -860,7 +789,6 @@ export default function RisksView() {
     toast.success(`${newDatasets.length} source(s) ajoutée(s).`);
   };
 
-  // ACTIONS RAPPORTS
   const activeRisk = risks.find(r => r.id === activeRiskId);
   const activeWidget = activeRisk?.widgets.find(w => w.id === activeWidgetId);
   const activeDataset = activeWidget ? activeRisk?.datasets.find(d => d.id === activeWidget.datasetId) : null;
@@ -881,7 +809,6 @@ export default function RisksView() {
     setRiskToDelete(null);
   };
 
-  // ACTIONS ONGLETS
   const handleAddNewTab = () => {
     if (!activeRisk) return;
     const newTab = { id: `tab_${Date.now()}`, name: `Page ${(activeRisk.tabs?.length || 0) + 1}` };
@@ -902,23 +829,58 @@ export default function RisksView() {
     }
     const updatedTabs = activeRisk.tabs!.filter(t => t.id !== tabId);
     const updatedWidgets = activeRisk.widgets.filter(w => w.tabId !== tabId);
-
     updateActiveRisk({ tabs: updatedTabs, widgets: updatedWidgets });
 
-    if (activeTabId === tabId) {
-      setActiveTabId(updatedTabs[0].id);
-    }
+    if (activeTabId === tabId) setActiveTabId(updatedTabs[0].id);
     toast.success("Page supprimée.");
   };
 
-  // ACTIONS WIDGETS ET DONNÉES
+  const handleDuplicateTab = (tabId: string) => {
+    if (!activeRisk) return;
+    const tabToCopy = activeRisk.tabs?.find(t => t.id === tabId);
+    if (!tabToCopy) return;
+
+    const newTabId = `tab_${Date.now()}`;
+    const newTab = { id: newTabId, name: `${tabToCopy.name} (Copie)` };
+
+    const widgetsToCopy = activeRisk.widgets.filter(w => w.tabId === tabId);
+    const clonedWidgets = widgetsToCopy.map(w => ({
+      ...w,
+      id: `w_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+      tabId: newTabId
+    }));
+
+    updateActiveRisk({
+      tabs: [...(activeRisk.tabs || []), newTab],
+      widgets: [...activeRisk.widgets, ...clonedWidgets]
+    });
+
+    setActiveTabId(newTabId);
+    toast.success("Page dupliquée !");
+  };
+
+  const handleMoveTab = (tabId: string, direction: 'left' | 'right') => {
+    if (!activeRisk || !activeRisk.tabs) return;
+    const tabs = [...activeRisk.tabs];
+    const currentIndex = tabs.findIndex(t => t.id === tabId);
+    if (currentIndex < 0) return;
+
+    if (direction === 'left' && currentIndex > 0) {
+      const temp = tabs[currentIndex - 1];
+      tabs[currentIndex - 1] = tabs[currentIndex];
+      tabs[currentIndex] = temp;
+    } else if (direction === 'right' && currentIndex < tabs.length - 1) {
+      const temp = tabs[currentIndex + 1];
+      tabs[currentIndex + 1] = tabs[currentIndex];
+      tabs[currentIndex] = temp;
+    } else return;
+
+    updateActiveRisk({ tabs });
+  };
+
   const addWidgetToStudio = () => {
-    if (!activeRisk || activeRisk.datasets.length === 0) {
-      return toast.error("Veuillez charger des données.");
-    }
-
+    if (!activeRisk || activeRisk.datasets.length === 0) return toast.error("Veuillez charger des données.");
     const defaultDataset = activeRisk.datasets.find(d => !d.isHidden) || activeRisk.datasets[0];
-
     const newWidget: WidgetConfig = {
       id: `w_${Date.now()}`,
       title: "Nouvel Indicateur",
@@ -933,7 +895,6 @@ export default function RisksView() {
       tabId: activeTabId!,
       orientation: 'vertical'
     };
-
     updateActiveRisk({ widgets: [...activeRisk.widgets, newWidget] });
     setActiveWidgetId(newWidget.id);
     setIsVisOpen(true);
@@ -961,11 +922,8 @@ export default function RisksView() {
   const toggleDatasetCollapse = (datasetId: string) => {
     setCollapsedDatasets(prev => {
       const next = new Set(prev);
-      if (next.has(datasetId)) {
-        next.delete(datasetId);
-      } else {
-        next.add(datasetId);
-      }
+      if (next.has(datasetId)) next.delete(datasetId);
+      else next.add(datasetId);
       return next;
     });
   };
@@ -988,16 +946,12 @@ export default function RisksView() {
     if (!activeRisk || !appendSource1 || !appendSource2 || !appendNewName) {
       return toast.error("Complétez le formulaire de fusion.");
     }
-
     const ds1 = activeRisk.datasets.find(d => d.id === appendSource1);
     const ds2 = activeRisk.datasets.find(d => d.id === appendSource2);
-
     if (!ds1 || !ds2) return;
 
     let combinedData = [...ds1.data, ...ds2.data];
-    if (combinedData.length > MAX_ROWS_PER_DATASET) {
-      combinedData = combinedData.slice(0, MAX_ROWS_PER_DATASET);
-    }
+    if (combinedData.length > MAX_ROWS_PER_DATASET) combinedData = combinedData.slice(0, MAX_ROWS_PER_DATASET);
 
     const newDataset: Dataset = {
       id: `ds_${Date.now()}`,
@@ -1008,44 +962,29 @@ export default function RisksView() {
     };
 
     updateActiveRisk({ datasets: [...activeRisk.datasets, newDataset] });
-    setIsAppendOpen(false);
-    setAppendSource1("");
-    setAppendSource2("");
-    setAppendNewName("");
+    setIsAppendOpen(false); setAppendSource1(""); setAppendSource2(""); setAppendNewName("");
     toast.success(`Table "${appendNewName}" créée.`);
   };
 
   const addSeriesWithData = (colName: string, isMeasure: boolean) => {
-    updateActiveWidget({
-      series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: colName, isMeasure, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }]
-    });
+    updateActiveWidget({ series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: colName, isMeasure, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }] });
   };
-
   const addSeries = () => {
-    updateActiveWidget({
-      series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: "", isMeasure: false, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }]
-    });
+    updateActiveWidget({ series: [...activeWidget!.series, { id: `s_${Date.now()}`, yAxisCol: "", isMeasure: false, aggregation: "SUM", color: COLORS[activeWidget!.series.length % COLORS.length] }] });
   };
-
   const updateSeries = (seriesId: string, updates: Partial<ChartSeries>) => {
-    updateActiveWidget({
-      series: activeWidget!.series.map(s => s.id === seriesId ? { ...s, ...updates } : s)
-    });
+    updateActiveWidget({ series: activeWidget!.series.map(s => s.id === seriesId ? { ...s, ...updates } : s) });
   };
-
   const removeSeries = (seriesId: string) => {
     updateActiveWidget({ series: activeWidget!.series.filter(s => s.id !== seriesId) });
   };
-
   const addFilter = () => {
     updateActiveWidget({ filters: [...(activeWidget!.filters || []), { id: `f_${Date.now()}`, column: "", operator: "eq", value: "" }] });
     setIsFiltersOpen(true);
   };
-
   const updateFilter = (filterId: string, updates: Partial<FilterConfig>) => {
     updateActiveWidget({ filters: activeWidget!.filters.map(f => f.id === filterId ? { ...f, ...updates } : f) });
   };
-
   const removeFilter = (filterId: string) => {
     updateActiveWidget({ filters: activeWidget!.filters.filter(f => f.id !== filterId) });
   };
@@ -1057,16 +996,11 @@ export default function RisksView() {
     const isX = activeWidget.xAxisCol === colName;
     const seriesMatch = activeWidget.series.find(s => s.yAxisCol === colName);
 
-    if (isX) {
-      updateActiveWidget({ xAxisCol: "" });
-    } else if (seriesMatch) {
-      removeSeries(seriesMatch.id);
-    } else {
-      if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') {
-        updateActiveWidget({ xAxisCol: colName });
-      } else {
-        addSeriesWithData(colName, isMeasure);
-      }
+    if (isX) updateActiveWidget({ xAxisCol: "" });
+    else if (seriesMatch) removeSeries(seriesMatch.id);
+    else {
+      if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') updateActiveWidget({ xAxisCol: colName });
+      else addSeriesWithData(colName, isMeasure);
     }
   };
 
@@ -1079,7 +1013,6 @@ export default function RisksView() {
       updateActiveWidget({ xAxisCol: data.colName });
     } catch {}
   };
-
   const handleDropOnY = (e: React.DragEvent) => {
     e.preventDefault();
     try {
@@ -1095,9 +1028,6 @@ export default function RisksView() {
     return 'md:col-span-2';
   };
 
-  // ============================================================================
-  // AFFICHAGE DES TABLES (PANNEAU DROIT)
-  // ============================================================================
   const renderDatasetItem = (ds: Dataset, isHiddenList: boolean = false) => (
     <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
       <div
@@ -1314,96 +1244,301 @@ export default function RisksView() {
   }
 
   // ============================================================================
-  // VUE 2 : STUDIO BI
+  // VUE 2 : STUDIO BI (LAYOUT FAÇON POWER BI AVEC RUBAN RÉTRACTABLE)
   // ============================================================================
   return (
     <div className="flex flex-col h-[calc(100vh-6rem)] animate-in fade-in duration-300 -m-4 bg-slate-50 dark:bg-slate-900/50">
 
-      {/* HEADER TOP */}
-      <div className="flex items-center justify-between p-3 border-b bg-background shadow-sm z-20">
-        <div className="flex items-center gap-4 min-w-0">
-          <Button variant="ghost" size="icon" onClick={() => {setActiveRiskId(null); setActiveWidgetId(null)}}><ArrowLeft className="w-5 h-5" /></Button>
-          <div className="min-w-0"><h2 className="font-bold text-lg leading-tight truncate">{activeRisk?.title}</h2></div>
-        </div>
-        <Button variant="default" size="sm" onClick={addWidgetToStudio} className="gap-2 shrink-0"><Plus className="w-4 h-4"/> Nouvel Indicateur</Button>
-      </div>
+      {/* =================================================================== */}
+      {/* LE RUBAN (RIBBON) POWER BI AVEC FONCTION DE RÉDUCTION               */}
+      {/* =================================================================== */}
+      <div className="flex flex-col bg-background shadow-sm z-20 relative">
 
-      {/* BARRE DES ONGLETS (TABS) */}
-      <div className="flex items-center gap-1 px-4 bg-background border-b shadow-sm z-10 overflow-x-auto h-12 shrink-0 custom-scrollbar">
-        {activeRisk?.tabs?.map(tab => (
-          <div
-            key={tab.id}
-            onClick={() => { setActiveTabId(tab.id); setActiveWidgetId(null); }}
-            className={`flex items-center gap-2 px-4 h-full border-b-2 cursor-pointer transition-colors whitespace-nowrap group ${activeTabId === tab.id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
-          >
-            {editingTabId === tab.id ? (
-              <Input
-                value={editingTabName}
-                onChange={e => setEditingTabName(e.target.value)}
-                onBlur={() => { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); }}
-                onKeyDown={e => { if(e.key === 'Enter') { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); } }}
-                autoFocus
-                className="h-7 text-sm w-32 font-bold px-2 py-0 border-primary"
-                onClick={e => e.stopPropagation()}
-              />
-            ) : (
-              <span
-                onDoubleClick={(e) => { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabName(tab.name); }}
-                className="font-bold text-sm select-none"
-                title="Double-cliquez pour renommer"
-              >
-                {tab.name}
-              </span>
-            )}
+        {/* Ligne 1 : Titre et Menu textuel (Onglets du Ruban) */}
+        <div className="flex items-end justify-between px-2 pt-2 text-sm border-b bg-muted/20">
+          <div className="flex items-end gap-4">
+            <div className="flex items-center gap-2 pr-4 border-r pb-1">
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => {setActiveRiskId(null); setActiveWidgetId(null)}}>
+                <ArrowLeft className="w-4 h-4" />
+              </Button>
+              <span className="font-bold truncate max-w-[200px]">{activeRisk?.title}</span>
+            </div>
 
-            {/* Bouton de suppression de l'onglet */}
-            {activeTabId === tab.id && activeRisk.tabs!.length > 1 && editingTabId !== tab.id && (
-              <button
-                onClick={(e) => { e.stopPropagation(); handleDeleteTab(tab.id); }}
-                className="p-1 rounded-full hover:bg-rose-100 text-rose-500 transition-colors ml-1 shrink-0"
-                title="Supprimer la page"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
+            <div className="flex gap-1">
+              {['Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => {
+                    setActiveRibbonTab(tab);
+                    if (isRibbonCollapsed) setIsRibbonCollapsed(false);
+                  }}
+                  className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] ${
+                    activeRibbonTab === tab && !isRibbonCollapsed
+                      ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]'
+                      : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
           </div>
-        ))}
-        <div className="px-2">
-          <Button variant="ghost" size="sm" onClick={handleAddNewTab} className="h-8 px-2 text-muted-foreground hover:text-primary">
-            <Plus className="w-4 h-4 mr-1"/> Page
-          </Button>
+
+          {/* Bouton pour Réduire/Agrandir le ruban */}
+          <div className="pb-1 pr-2">
+            <button
+              onClick={() => setIsRibbonCollapsed(!isRibbonCollapsed)}
+              className="p-1 text-muted-foreground hover:bg-muted hover:text-foreground rounded transition-colors"
+              title={isRibbonCollapsed ? "Développer le ruban" : "Réduire le ruban"}
+            >
+               {isRibbonCollapsed ? <ChevronDown className="w-4 h-4"/> : <ChevronUp className="w-4 h-4"/>}
+            </button>
+          </div>
+        </div>
+
+        {/* Ligne 2 : Les Outils (Le Ruban Actif - Masqué si isRibbonCollapsed est true) */}
+        <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
+          <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
+
+            {activeRibbonTab === 'Accueil' && (
+              <>
+                <div className="flex gap-1 border-r pr-4">
+                  <button onClick={() => setIsAddDataOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
+                    <DatabaseZap className="w-6 h-6 text-yellow-600" />
+                    <span className="text-[10px] leading-tight text-center text-foreground font-medium">Obtenir<br/>les données</span>
+                  </button>
+                  <button onClick={() => setIsAddDataOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
+                    <FileSpreadsheet className="w-6 h-6 text-emerald-600" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Classeur<br/>Excel</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Database className="w-6 h-6 text-blue-600" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Hub de<br/>données</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <TableProperties className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Entrer les<br/>données</span>
+                  </button>
+                </div>
+
+                <div className="flex gap-1 border-r pr-4">
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <RefreshCw className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Actualiser</span>
+                  </button>
+                </div>
+
+                <div className="flex gap-1 border-r pr-4">
+                  <button onClick={addWidgetToStudio} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
+                    <BarChart3 className="w-6 h-6 text-blue-600" />
+                    <span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveau<br/>visuel</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Type className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Zone de<br/>texte</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeRibbonTab === 'Insérer' && (
+              <>
+                <div className="flex gap-1 border-r pr-4">
+                  <button onClick={handleAddNewTab} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
+                    <Plus className="w-6 h-6 text-emerald-600" />
+                    <span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouvelle<br/>page</span>
+                  </button>
+                </div>
+                <div className="flex gap-1 border-r pr-4">
+                  <button onClick={addWidgetToStudio} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
+                    <PieChartIcon className="w-6 h-6 text-primary" />
+                    <span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveaux<br/>visuels</span>
+                  </button>
+                </div>
+                <div className="flex gap-1 border-r pr-4">
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Type className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Zone de<br/>texte</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <MousePointerClick className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Boutons</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Shapes className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Formes</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <ImageIcon className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Images</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeRibbonTab === 'Modélisation' && (
+              <>
+                <div className="flex gap-1 border-r pr-4">
+                  <button onClick={() => setIsAppendOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
+                    <Combine className="w-6 h-6 text-purple-600" />
+                    <span className="text-[10px] leading-tight text-center text-foreground font-medium">Gérer les<br/>relations</span>
+                  </button>
+                </div>
+                <div className="flex gap-1 border-r pr-4">
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Calculator className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>mesure</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Sigma className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>colonne</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <TableProperties className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>table</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeRibbonTab === 'Affichage' && (
+              <>
+                <div className="flex gap-1 border-r pr-4">
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Palette className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Thèmes</span>
+                  </button>
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Maximize className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Vue Page</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            {(activeRibbonTab === 'Optimiser' || activeRibbonTab === 'Aide') && (
+              <div className="flex items-center text-xs text-muted-foreground px-4 italic">
+                Options spécifiques à venir...
+              </div>
+            )}
+
+          </div>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
 
-        {/* PANNEAU 1 : CANVAS DES WIDGETS */}
-        <div className="flex-1 overflow-auto p-6 transition-all" onClick={() => setActiveWidgetId(null)}>
-          {visibleWidgets.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
-              <LayoutDashboard className="w-16 h-16 mb-4" />
-              <p>Cette page est vide.</p>
-              <p className="text-sm mt-2">Cliquez sur "Nouvel Indicateur" en haut à droite.</p>
+        {/* =================================================================== */}
+        {/* ZONE GAUCHE : LE CANVAS ET LES ONGLETS EN BAS                       */}
+        {/* =================================================================== */}
+        <div className="flex-1 flex flex-col min-w-0 bg-[#f3f2f1] dark:bg-slate-900/50">
+
+          {/* PANNEAU 1 : CANVAS DES WIDGETS */}
+          <div className="flex-1 overflow-auto p-6 transition-all" onClick={() => setActiveWidgetId(null)}>
+            {visibleWidgets.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
+                <LayoutDashboard className="w-16 h-16 mb-4" />
+                <p>Cette page est vide.</p>
+                <p className="text-sm mt-2">Cliquez sur "Nouveau visuel" dans le ruban en haut.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                {visibleWidgets.map(widget => (
+                  <Card
+                    key={widget.id}
+                    onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); }}
+                    className={`cursor-pointer transition-all bg-background min-w-0 ${getWidgetGridClass(widget.widgetSize)} ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10 relative' : 'hover:border-primary/50 shadow-sm'}`}
+                  >
+                    <CardHeader className="p-3 border-b flex flex-row items-center justify-between bg-card/50 min-w-0">
+                      <CardTitle className="text-xs font-bold uppercase text-muted-foreground truncate w-full pr-2">{widget.title}</CardTitle>
+                    </CardHeader>
+                    <CardContent className={`p-3 min-w-0 overflow-hidden ${widget.widgetSize === 'large' ? 'h-[400px]' : 'h-[250px]'}`}>
+                      <DashboardWidget widget={widget} datasets={activeRisk.datasets} measures={activeRisk.measures} />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* BARRE DES ONGLETS (TABS) PLACÉE TOUT EN BAS */}
+          <div className="flex items-center gap-1 px-4 bg-background border-t shadow-sm z-10 overflow-x-auto h-12 shrink-0 custom-scrollbar">
+            {activeRisk?.tabs?.map(tab => (
+              <div
+                key={tab.id}
+                onClick={() => { setActiveTabId(tab.id); setActiveWidgetId(null); }}
+                className={`flex items-center gap-2 px-4 h-full border-t-2 cursor-pointer transition-colors whitespace-nowrap group ${activeTabId === tab.id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+              >
+                {editingTabId === tab.id ? (
+                  <Input
+                    value={editingTabName}
+                    onChange={e => setEditingTabName(e.target.value)}
+                    onBlur={() => { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); }}
+                    onKeyDown={e => { if(e.key === 'Enter') { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); } }}
+                    autoFocus
+                    className="h-7 text-sm w-32 font-bold px-2 py-0 border-primary"
+                    onClick={e => e.stopPropagation()}
+                  />
+                ) : (
+                  <span
+                    onDoubleClick={(e) => { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabName(tab.name); }}
+                    className="font-bold text-sm select-none"
+                    title="Double-cliquez pour renommer"
+                  >
+                    {tab.name}
+                  </span>
+                )}
+
+                {/* BOUTONS D'ACTION SUR L'ONGLET ACTIF */}
+                {activeTabId === tab.id && editingTabId !== tab.id && (
+                  <div className="flex items-center ml-2 space-x-0.5 shrink-0 bg-background/50 rounded px-1 border">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'left'); }}
+                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
+                      title="Déplacer à gauche"
+                      disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === 0}
+                    >
+                      <ChevronLeft className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'right'); }}
+                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
+                      title="Déplacer à droite"
+                      disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === (activeRisk.tabs?.length || 1) - 1}
+                    >
+                      <ChevronRightIcon className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDuplicateTab(tab.id); }}
+                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
+                      title="Dupliquer la page"
+                    >
+                      <Copy className="w-3 h-3" />
+                    </button>
+                    {activeRisk.tabs!.length > 1 && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteTab(tab.id); }}
+                        className="p-1 rounded hover:bg-rose-100 text-rose-500 transition-colors"
+                        title="Supprimer la page"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+            <div className="px-2 border-l ml-2 pl-4">
+              <Button variant="ghost" size="sm" onClick={handleAddNewTab} className="h-8 px-2 text-muted-foreground hover:text-primary">
+                <Plus className="w-4 h-4 mr-1"/> Page
+              </Button>
             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-              {visibleWidgets.map(widget => (
-                <Card
-                  key={widget.id}
-                  onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); }}
-                  className={`cursor-pointer transition-all bg-background min-w-0 ${getWidgetGridClass(widget.widgetSize)} ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10 relative' : 'hover:border-primary/50 shadow-sm'}`}
-                >
-                  <CardHeader className="p-3 border-b flex flex-row items-center justify-between bg-card/50 min-w-0">
-                    <CardTitle className="text-xs font-bold uppercase text-muted-foreground truncate w-full pr-2">{widget.title}</CardTitle>
-                  </CardHeader>
-                  <CardContent className={`p-3 min-w-0 overflow-hidden ${widget.widgetSize === 'large' ? 'h-[400px]' : 'h-[250px]'}`}>
-                    <DashboardWidget widget={widget} datasets={activeRisk.datasets} measures={activeRisk.measures} />
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
+          </div>
         </div>
+
+        {/* =================================================================== */}
+        {/* ZONE DROITE : PANNEAUX LATÉRAUX                                     */}
+        {/* =================================================================== */}
 
         {/* PANNEAU 2 : FILTRES */}
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-lg transition-all duration-300 overflow-hidden ${isFiltersOpen ? 'w-64' : 'w-10'}`}>
