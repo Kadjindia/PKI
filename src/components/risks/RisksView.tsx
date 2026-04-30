@@ -10,7 +10,8 @@ import {
   Calendar, Palette, Maximize, Tag, LayoutPanelLeft, AlertTriangle, Edit2, Combine,
   Eye, EyeOff, X, AlignLeft, Copy, ChevronLeft, ChevronRight as ChevronRightIcon,
   ChevronUp, RefreshCw, Type, Shapes, Image as ImageIcon, DatabaseZap, TableProperties, MousePointerClick, Settings2,
-  MoreVertical // NOUVEL IMPORT POUR LES TROIS PETITS POINTS
+  MoreVertical, Clipboard, Scissors, Paintbrush, FileEdit, UploadCloud, Save,
+  Columns, Table2, ArrowUpToLine, Replace, Wand2, Braces, FunctionSquare, Waypoints, ListOrdered, FileJson
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,7 +30,6 @@ import {
 } from "recharts";
 import { toast } from "sonner";
 
-// NOUVEAUX IMPORTS POUR LE MENU DÉROULANT DES ONGLETS
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,9 +56,36 @@ type WidgetSize = 'small' | 'medium' | 'large';
 type ChartOrientation = 'vertical' | 'horizontal';
 
 interface FilterConfig { id: string; column: string; operator: FilterOperator; value: string; }
-interface Dataset { id: string; name: string; columns: string[]; data: any[]; isHidden?: boolean; }
-interface CustomMeasure { id: string; datasetId: string; name: string; formula: string; }
-interface DashboardTab { id: string; name: string; }
+
+// Type pour les étapes Power Query
+type PQStepType = 'PROMOTE_HEADERS' | 'REPLACE_VALUE' | 'DROP_COLUMN';
+interface PQTransformStep {
+  id: string;
+  type: PQStepType;
+  name: string;
+  params: any;
+}
+
+interface Dataset {
+  id: string;
+  name: string;
+  columns: string[];
+  data: any[];
+  isHidden?: boolean;
+  transformations?: PQTransformStep[]; // Liste des étapes de nettoyage
+}
+
+interface CustomMeasure {
+  id: string;
+  datasetId: string;
+  name: string;
+  formula: string;
+}
+
+interface DashboardTab {
+  id: string;
+  name: string;
+}
 
 interface ChartSeries {
   id: string;
@@ -148,6 +175,54 @@ const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
   }
 };
 
+// ============================================================================
+// MOTEUR POWER QUERY (Transformations à la volée)
+// ============================================================================
+const computeDatasetPreview = (dataset: Dataset | undefined) => {
+  if (!dataset) return { columns: [], data: [] };
+
+  let currentData = [...dataset.data];
+  let currentColumns = [...dataset.columns];
+
+  (dataset.transformations || []).forEach(step => {
+    if (step.type === 'PROMOTE_HEADERS') {
+      if (currentData.length > 0) {
+        const firstRow = currentData[0];
+        const newColumns: string[] = [];
+        currentData = currentData.slice(1).map(row => {
+          const newRow: any = {};
+          currentColumns.forEach(col => {
+            const newColName = firstRow[col] !== undefined && firstRow[col] !== null ? String(firstRow[col]).trim() : col;
+            if (!newColumns.includes(newColName)) newColumns.push(newColName);
+            newRow[newColName] = row[col];
+          });
+          return newRow;
+        });
+        currentColumns = Array.from(new Set(newColumns));
+      }
+    }
+    else if (step.type === 'REPLACE_VALUE') {
+      const { column, search, replace } = step.params;
+      currentData = currentData.map(row => {
+        const val = row[column];
+        let newVal = val;
+        if (val !== undefined && val !== null) {
+          const strVal = String(val);
+          // Remplacement exact ou partiel
+          if (strVal === search) {
+            newVal = replace;
+          } else if (strVal.includes(search)) {
+            newVal = strVal.replaceAll(search, replace);
+          }
+        }
+        return { ...row, [column]: newVal };
+      });
+    }
+  });
+
+  return { columns: currentColumns, data: currentData };
+};
+
 const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
   if (!filters || filters.length === 0) return data;
   const now = new Date();
@@ -209,9 +284,6 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
   });
 };
 
-// ============================================================================
-// MOTEURS D'AGRÉGATION (DAX)
-// ============================================================================
 const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: DateGrouping, series: ChartSeries[], measures: CustomMeasure[], filters: FilterConfig[]) => {
   const filteredData = applyFiltersToData(rawData, filters);
   if (!filteredData || filteredData.length === 0) return [];
@@ -219,8 +291,11 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
 
   filteredData.forEach(row => {
     let key = row[xAxisCol];
-    if (dateGrouping !== 'none') key = formatTimeGrouping(key, dateGrouping);
-    else key = safeString(key || 'N/A');
+    if (dateGrouping !== 'none') {
+      key = formatTimeGrouping(key, dateGrouping);
+    } else {
+      key = safeString(key || 'N/A');
+    }
 
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
@@ -236,8 +311,7 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
         const m = measures.find(measure => measure.name === s.yAxisCol);
         if (m) {
           try {
-            const subEngine = new DaxEngine(rows);
-            outRow[s.id] = subEngine.evaluateMeasure(m.formula);
+            outRow[s.id] = new DaxEngine(rows).evaluateMeasure(m.formula);
           } catch {
             outRow[s.id] = 0;
           }
@@ -248,15 +322,16 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
         const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
         const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !isNaN(v));
 
-        if (s.aggregation === 'COUNT') aggValue = nonBlanks.length;
-        else if (s.aggregation === 'DISTINCTCOUNT') aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
-        else if (numVals.length > 0) {
+        if (s.aggregation === 'COUNT') {
+          aggValue = nonBlanks.length;
+        } else if (s.aggregation === 'DISTINCTCOUNT') {
+          aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
+        } else if (numVals.length > 0) {
           if (s.aggregation === 'SUM') aggValue = numVals.reduce((a, b) => a + b, 0);
           if (s.aggregation === 'AVERAGE') aggValue = numVals.reduce((a, b) => a + b, 0) / numVals.length;
           if (s.aggregation === 'MIN') aggValue = Math.min(...numVals);
           if (s.aggregation === 'MAX') aggValue = Math.max(...numVals);
         }
-
         outRow[s.id] = Math.round((aggValue + Number.EPSILON) * 100) / 100;
       }
     });
@@ -274,28 +349,23 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
     if (s.isMeasure) {
       const m = measures.find(measure => measure.name === s.yAxisCol);
       if (!m) return 0;
-      try {
-        const engine = new DaxEngine(filteredData);
-        return engine.evaluateMeasure(m.formula);
-      } catch {
-        return 0;
-      }
+      try { return new DaxEngine(filteredData).evaluateMeasure(m.formula); } catch { return 0; }
     }
-
     let aggValue = 0;
     const rawVals = filteredData.map(r => r[s.yAxisCol]);
     const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
     const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !isNaN(v));
 
-    if (s.aggregation === 'COUNT') aggValue = nonBlanks.length;
-    else if (s.aggregation === 'DISTINCTCOUNT') aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
-    else if (numVals.length > 0) {
+    if (s.aggregation === 'COUNT') {
+      aggValue = nonBlanks.length;
+    } else if (s.aggregation === 'DISTINCTCOUNT') {
+      aggValue = new Set(nonBlanks.map(v => safeString(v).toLowerCase())).size;
+    } else if (numVals.length > 0) {
       if (s.aggregation === 'SUM') aggValue = numVals.reduce((a, b) => a + b, 0);
       if (s.aggregation === 'AVERAGE') aggValue = numVals.reduce((a, b) => a + b, 0) / numVals.length;
       if (s.aggregation === 'MIN') aggValue = Math.min(...numVals);
       if (s.aggregation === 'MAX') aggValue = Math.max(...numVals);
     }
-
     return Math.round((aggValue + Number.EPSILON) * 100) / 100;
   });
 };
@@ -337,13 +407,25 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
 
   const chartData = useMemo(() => {
     if (!dataset || widget.type === 'kpi' || !widget.xAxisCol || widget.series.length === 0) return [];
-    return aggregateMultiSeries(dataset.data, widget.xAxisCol, widget.dateGrouping, widget.series, measures, widget.filters || []);
-  }, [dataset?.data, widget.xAxisCol, widget.dateGrouping, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
+
+    // Utiliser les données TRANSFORMÉES pour les graphiques !
+    const processedDataset = computeDatasetPreview(dataset);
+
+    return aggregateMultiSeries(
+      processedDataset.data,
+      widget.xAxisCol,
+      widget.dateGrouping,
+      widget.series,
+      measures,
+      widget.filters || []
+    );
+  }, [dataset, widget.xAxisCol, widget.dateGrouping, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
 
   const kpiValues = useMemo(() => {
     if (!dataset || widget.series.length === 0) return [];
-    return aggregateGlobal(dataset.data, widget.series, measures, widget.filters || []);
-  }, [dataset?.data, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
+    const processedDataset = computeDatasetPreview(dataset);
+    return aggregateGlobal(processedDataset.data, widget.series, measures, widget.filters || []);
+  }, [dataset, JSON.stringify(widget.series), JSON.stringify(widget.filters), measures]);
 
   if (!dataset) return <div className="flex h-full items-center justify-center text-xs text-rose-500 font-bold text-center px-4">Source de données introuvable.</div>;
   if (widget.series.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Sélectionnez les données à analyser.</div>;
@@ -389,14 +471,9 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
         <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1} />
         <circle cx={ex} cy={ey} r={2.5} fill={fill} stroke="none" />
         <text
-          x={ex + (cos >= 0 ? 1 : -1) * 8}
-          y={ey}
-          textAnchor={textAnchor}
-          fill="currentColor"
-          className="text-muted-foreground"
-          dominantBaseline="central"
-          fontSize={10}
-          fontWeight="600"
+          x={ex + (cos >= 0 ? 1 : -1) * 8} y={ey}
+          textAnchor={textAnchor} fill="currentColor" className="text-muted-foreground"
+          dominantBaseline="central" fontSize={10} fontWeight="600"
         >
           {`${truncateText(name, 12)} : ${formattedPercent}%`}
         </text>
@@ -423,21 +500,17 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
       ? widget.series.map((s, idx) => ({ name: getSeriesName(s), value: kpiValues[idx] || 0, color: s.color })).filter(d => d.value > 0)
       : chartData.map((d, index) => ({ name: d[widget.xAxisCol!], value: d[widget.series[0].id], color: COLORS[index % COLORS.length] })).filter(d => d.value > 0);
 
-    if (pieData.length === 0) {
-      return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée exploitable.</div>;
-    }
+    if (pieData.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée exploitable.</div>;
 
     return (
       <ResponsiveContainer width="100%" height="100%">
         <PieChart margin={{ top: 20, right: 30, left: 30, bottom: 20 }}>
           <Pie
-            data={pieData}
-            cx="50%" cy="50%"
+            data={pieData} cx="50%" cy="50%"
             innerRadius={widget.widgetSize === 'large' ? "40%" : "30%"}
             outerRadius={widget.widgetSize === 'large' ? "65%" : "55%"}
             paddingAngle={2} dataKey="value" nameKey="name"
-            labelLine={false}
-            label={widget.showLabels !== false ? renderCustomizedPieLabel : false}
+            labelLine={false} label={widget.showLabels !== false ? renderCustomizedPieLabel : false}
             stroke="hsl(var(--background))" strokeWidth={2}
           >
             {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
@@ -450,61 +523,30 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   }
 
   const isHorizontal = widget.orientation === 'horizontal';
-
-  const marginConfig = {
-    top: 20,
-    right: isHorizontal ? 30 : 10,
-    left: isHorizontal ? 0 : 0,
-    bottom: legendPos === 'bottom' ? 0 : 0
-  };
+  const marginConfig = { top: 20, right: isHorizontal ? 30 : 10, left: isHorizontal ? 0 : 0, bottom: legendPos === 'bottom' ? 0 : 0 };
 
   return (
     <ResponsiveContainer width="100%" height="100%">
       {widget.type === 'bar' ? (
         <BarChart data={chartData} margin={marginConfig} layout={isHorizontal ? "vertical" : "horizontal"}>
           <CartesianGrid strokeDasharray="3 3" horizontal={!isHorizontal} vertical={isHorizontal} stroke="hsl(var(--border))" opacity={0.5} />
-          <XAxis
-            type={isHorizontal ? "number" : "category"}
-            dataKey={isHorizontal ? undefined : widget.xAxisCol}
-            tick={isHorizontal ? { fontSize: 10 } : <CustomXAxisTick />}
-            height={isHorizontal ? 30 : 80}
-            axisLine={false} tickLine={false} interval={0}
-          />
-          <YAxis
-            type={isHorizontal ? "category" : "number"}
-            dataKey={isHorizontal ? widget.xAxisCol : undefined}
-            tick={{ fontSize: 10 }}
-            width={isHorizontal ? 250 : 70}
-            axisLine={false} tickLine={false}
-            tickFormatter={(val) => isHorizontal ? truncateText(val, 40) : val}
-          />
+          <XAxis type={isHorizontal ? "number" : "category"} dataKey={isHorizontal ? undefined : widget.xAxisCol} tick={isHorizontal ? { fontSize: 10 } : <CustomXAxisTick />} height={isHorizontal ? 30 : 80} axisLine={false} tickLine={false} interval={0} />
+          <YAxis type={isHorizontal ? "category" : "number"} dataKey={isHorizontal ? widget.xAxisCol : undefined} tick={{ fontSize: 10 }} width={isHorizontal ? 250 : 70} axisLine={false} tickLine={false} tickFormatter={(val) => isHorizontal ? truncateText(val, 40) : val} />
           <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
           {renderLegend()}
           {widget.series.map(s => (
-            <Bar
-              key={`bar-${s.id}`} dataKey={s.id} name={getSeriesName(s)} fill={s.color}
-              radius={isHorizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]}
-              label={widget.showLabels !== false ? { position: isHorizontal ? 'right' : 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false}
-            />
+            <Bar key={`bar-${s.id}`} dataKey={s.id} name={getSeriesName(s)} fill={s.color} radius={isHorizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]} label={widget.showLabels !== false ? { position: isHorizontal ? 'right' : 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
           ))}
         </BarChart>
       ) : (
         <AreaChart data={chartData} margin={marginConfig}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" opacity={0.5} />
-          <XAxis
-            dataKey={widget.xAxisCol}
-            tick={<CustomXAxisTick />}
-            height={80}
-            axisLine={false} tickLine={false} interval={0}
-          />
+          <XAxis dataKey={widget.xAxisCol} tick={<CustomXAxisTick />} height={80} axisLine={false} tickLine={false} interval={0} />
           <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={50} />
           <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
           {renderLegend()}
           {widget.series.map(s => (
-            <Area
-              key={s.id} type="monotone" dataKey={s.id} name={getSeriesName(s)} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2}
-              label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false}
-            />
+            <Area key={s.id} type="monotone" dataKey={s.id} name={getSeriesName(s)} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2} label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
           ))}
         </AreaChart>
       )}
@@ -520,11 +562,19 @@ export default function RisksView() {
   const [risks, setRisks] = useState<TrackedRisk[]>([]);
   const [isInitialized, setIsInitialized] = useState(false);
 
-  // ETAT POUR RÉDUIRE/AGRANDIR LE RUBAN
   const [isRibbonCollapsed, setIsRibbonCollapsed] = useState(false);
   const [activeRibbonTab, setActiveRibbonTab] = useState<string>('Accueil');
 
-  // ÉTATS UI
+  // ETATS DE L'EDITEUR POWER QUERY
+  const [isPowerQueryOpen, setIsPowerQueryOpen] = useState(false);
+  const [pqRibbonTab, setPqRibbonTab] = useState<string>('Transformer');
+  const [pqSelectedDatasetId, setPqSelectedDatasetId] = useState<string>("");
+  const [pqSelectedColumn, setPqSelectedColumn] = useState<string | null>(null);
+
+  const [isReplaceModalOpen, setIsReplaceModalOpen] = useState(false);
+  const [replaceSearchValue, setReplaceSearchValue] = useState("");
+  const [replaceNewValue, setReplaceNewValue] = useState("");
+
   const [collapsedDatasets, setCollapsedDatasets] = useState<Set<string>>(new Set());
   const [showHiddenDatasets, setShowHiddenDatasets] = useState(false);
 
@@ -532,7 +582,6 @@ export default function RisksView() {
   const [isVisOpen, setIsVisOpen] = useState(false);
   const [isDataOpen, setIsDataOpen] = useState(false);
 
-  // ONGLETS
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [editingTabName, setEditingTabName] = useState("");
@@ -626,10 +675,7 @@ export default function RisksView() {
           toast.error("Volume de données trop important pour le Cloud.");
         }
         try {
-          const safeBackup = risks.map(r => ({
-            ...r,
-            datasets: r.datasets.map(d => ({ ...d, data: d.data.slice(0, 100) }))
-          }));
+          const safeBackup = risks.map(r => ({ ...r, datasets: r.datasets.map(d => ({ ...d, data: d.data.slice(0, 100) })) }));
           localStorage.setItem("pbi_risks_backup", JSON.stringify(safeBackup));
         } catch(e) {}
       }
@@ -638,6 +684,7 @@ export default function RisksView() {
     return () => clearTimeout(timer);
   }, [risks, isInitialized]);
 
+  // FONCTIONS DE BASE
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -679,7 +726,7 @@ export default function RisksView() {
               });
 
               if (cleanData.length > MAX_ROWS_PER_DATASET) {
-                toast.warning(`⚠️ La feuille "${sheetName}" contient trop de lignes avec des dates valides. Seules les ${MAX_ROWS_PER_DATASET} premières ont été conservées.`);
+                toast.warning(`⚠️ La feuille "${sheetName}" contient trop de lignes. Seules les ${MAX_ROWS_PER_DATASET} premières ont été conservées.`);
                 cleanData = cleanData.slice(0, MAX_ROWS_PER_DATASET);
               }
 
@@ -690,7 +737,8 @@ export default function RisksView() {
                 name: sheetName,
                 columns: validColumns,
                 data: cleanData,
-                isHidden: false
+                isHidden: false,
+                transformations: [] // Initialisation des étapes Power Query
               });
             }
           });
@@ -779,6 +827,72 @@ export default function RisksView() {
     setRiskToDelete(null);
   };
 
+  // ============================================================================
+  // LOGIQUE POWER QUERY
+  // ============================================================================
+  const pqSelectedDatasetObj = activeRisk?.datasets.find(d => d.id === pqSelectedDatasetId);
+
+  // Utilisation de notre moteur pour générer l'aperçu en direct
+  const pqPreview = useMemo(() => {
+    return computeDatasetPreview(pqSelectedDatasetObj);
+  }, [pqSelectedDatasetObj, pqSelectedDatasetObj?.transformations]);
+
+  const handleAddTransformation = (step: PQTransformStep) => {
+    if (!activeRisk || !pqSelectedDatasetId) return;
+    const updatedDatasets = activeRisk.datasets.map(d => {
+      if (d.id === pqSelectedDatasetId) {
+        return { ...d, transformations: [...(d.transformations || []), step] };
+      }
+      return d;
+    });
+    updateActiveRisk({ datasets: updatedDatasets });
+  };
+
+  const handleRemoveTransformation = (stepId: string) => {
+    if (!activeRisk || !pqSelectedDatasetId) return;
+    const updatedDatasets = activeRisk.datasets.map(d => {
+      if (d.id === pqSelectedDatasetId) {
+        return { ...d, transformations: (d.transformations || []).filter(s => s.id !== stepId) };
+      }
+      return d;
+    });
+    updateActiveRisk({ datasets: updatedDatasets });
+  };
+
+  // Action : Promouvoir les en-têtes
+  const executePromoteHeaders = () => {
+    if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
+    handleAddTransformation({
+      id: `step_${Date.now()}`,
+      type: 'PROMOTE_HEADERS',
+      name: 'En-têtes promus',
+      params: {}
+    });
+    toast.success("En-têtes promus avec succès.");
+  };
+
+  // Action : Remplacer les valeurs
+  const openReplaceValues = () => {
+    if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
+    if (!pqSelectedColumn) return toast.error("Cliquez sur l'en-tête d'une colonne d'abord.");
+    setIsReplaceModalOpen(true);
+  };
+
+  const executeReplaceValues = () => {
+    if (!pqSelectedColumn) return;
+    handleAddTransformation({
+      id: `step_${Date.now()}`,
+      type: 'REPLACE_VALUE',
+      name: `Valeur remplacée (${pqSelectedColumn})`,
+      params: { column: pqSelectedColumn, search: replaceSearchValue, replace: replaceNewValue }
+    });
+    setIsReplaceModalOpen(false);
+    setReplaceSearchValue("");
+    setReplaceNewValue("");
+    toast.success(`Les valeurs "${replaceSearchValue}" ont été remplacées par "${replaceNewValue}".`);
+  };
+
+  // ONGLETS ET WIDGETS
   const handleAddNewTab = () => {
     if (!activeRisk) return;
     const newTab = { id: `tab_${Date.now()}`, name: `Page ${(activeRisk.tabs?.length || 0) + 1}` };
@@ -799,7 +913,6 @@ export default function RisksView() {
     }
     const updatedTabs = activeRisk.tabs!.filter(t => t.id !== tabId);
     const updatedWidgets = activeRisk.widgets.filter(w => w.tabId !== tabId);
-
     updateActiveRisk({ tabs: updatedTabs, widgets: updatedWidgets });
 
     if (activeTabId === tabId) {
@@ -854,8 +967,12 @@ export default function RisksView() {
   };
 
   const addWidgetToStudio = () => {
-    if (!activeRisk || activeRisk.datasets.length === 0) return toast.error("Veuillez charger des données.");
+    if (!activeRisk || activeRisk.datasets.length === 0) {
+      return toast.error("Veuillez charger des données.");
+    }
+
     const defaultDataset = activeRisk.datasets.find(d => !d.isHidden) || activeRisk.datasets[0];
+
     const newWidget: WidgetConfig = {
       id: `w_${Date.now()}`,
       title: "Nouvel Indicateur",
@@ -870,6 +987,7 @@ export default function RisksView() {
       tabId: activeTabId!,
       orientation: 'vertical'
     };
+
     updateActiveRisk({ widgets: [...activeRisk.widgets, newWidget] });
     setActiveWidgetId(newWidget.id);
     setIsVisOpen(true);
@@ -897,8 +1015,11 @@ export default function RisksView() {
   const toggleDatasetCollapse = (datasetId: string) => {
     setCollapsedDatasets(prev => {
       const next = new Set(prev);
-      if (next.has(datasetId)) next.delete(datasetId);
-      else next.add(datasetId);
+      if (next.has(datasetId)) {
+        next.delete(datasetId);
+      } else {
+        next.add(datasetId);
+      }
       return next;
     });
   };
@@ -921,8 +1042,10 @@ export default function RisksView() {
     if (!activeRisk || !appendSource1 || !appendSource2 || !appendNewName) {
       return toast.error("Complétez le formulaire de fusion.");
     }
+
     const ds1 = activeRisk.datasets.find(d => d.id === appendSource1);
     const ds2 = activeRisk.datasets.find(d => d.id === appendSource2);
+
     if (!ds1 || !ds2) return;
 
     let combinedData = [...ds1.data, ...ds2.data];
@@ -935,11 +1058,15 @@ export default function RisksView() {
       name: appendNewName,
       columns: Array.from(new Set([...ds1.columns, ...ds2.columns])),
       data: combinedData,
-      isHidden: false
+      isHidden: false,
+      transformations: []
     };
 
     updateActiveRisk({ datasets: [...activeRisk.datasets, newDataset] });
-    setIsAppendOpen(false); setAppendSource1(""); setAppendSource2(""); setAppendNewName("");
+    setIsAppendOpen(false);
+    setAppendSource1("");
+    setAppendSource2("");
+    setAppendNewName("");
     toast.success(`Table "${appendNewName}" créée.`);
   };
 
@@ -1023,75 +1150,82 @@ export default function RisksView() {
     return 'md:col-span-2';
   };
 
-  const renderDatasetItem = (ds: Dataset, isHiddenList: boolean = false) => (
-    <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
-      <div
-        className={`flex items-center justify-between p-2 rounded font-bold cursor-pointer transition-colors ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`}
-        onClick={() => toggleDatasetCollapse(ds.id)}
-      >
-        <div className="flex items-center gap-2 truncate">
-           {collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
-           <Database className={`w-3.5 h-3.5 shrink-0 ${isHiddenList ? 'opacity-40' : 'text-muted-foreground'}`}/>
-           <span className="truncate">{ds.name}</span>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-           <button
-             onClick={(e) => toggleDatasetVisibility(e, ds.id)}
-             className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1"
-             title={isHiddenList ? "Restaurer la table" : "Masquer la table"}
-           >
-             {isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}
-           </button>
-           {!isHiddenList && (
-             <button
-               onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }}
-               className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity p-1"
-               title="Supprimer"
-             >
-               <Trash2 className="w-3 h-3"/>
-             </button>
-           )}
-        </div>
-      </div>
+  const renderDatasetItem = (ds: Dataset, isHiddenList: boolean = false) => {
+    // Calcul des colonnes APRES transformation pour le panneau de droite
+    const previewCols = computeDatasetPreview(ds).columns;
 
-      {(!collapsedDatasets.has(ds.id)) && (
-        <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1">
-          {activeRisk?.measures.filter(m => m.datasetId === ds.id).map(m => {
-            const isChecked = activeWidget?.datasetId === ds.id && activeWidget?.series.some(s => s.yAxisCol === m.name);
-            return (
-              <div
-                key={m.id}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: m.name, isMeasure: true, datasetId: ds.id }))}
-                className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}
-              >
-                <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
-                <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(m.name, true, ds.id)} className="accent-primary shrink-0" />
-                <Calculator className="w-3 h-3 text-primary shrink-0"/>
-                <span className="text-primary font-medium truncate">{m.name}</span>
-              </div>
-            );
-          })}
-          {ds.columns.map(col => {
-            const isChecked = activeWidget?.datasetId === ds.id && (activeWidget?.xAxisCol === col || activeWidget?.series.some(s => s.yAxisCol === col));
-            return (
-              <div
-                key={col}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: col, isMeasure: false, datasetId: ds.id }))}
-                className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}
-              >
-                <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
-                <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(col, false, ds.id)} className="accent-primary shrink-0" />
-                <Sigma className="w-3 h-3 text-muted-foreground shrink-0"/>
-                <span className="text-muted-foreground truncate" title={col}>{col}</span>
-              </div>
-            );
-          })}
+    return (
+      <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
+        <div
+          className={`flex items-center justify-between p-2 rounded font-bold cursor-pointer transition-colors ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`}
+          onClick={() => toggleDatasetCollapse(ds.id)}
+        >
+          <div className="flex items-center gap-2 truncate">
+             {collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
+             <Database className={`w-3.5 h-3.5 shrink-0 ${isHiddenList ? 'opacity-40' : 'text-muted-foreground'}`}/>
+             <span className="truncate">{ds.name}</span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+             <button
+               onClick={(e) => toggleDatasetVisibility(e, ds.id)}
+               className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1"
+               title={isHiddenList ? "Restaurer la table" : "Masquer la table"}
+             >
+               {isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}
+             </button>
+             {!isHiddenList && (
+               <button
+                 onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }}
+                 className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity p-1"
+                 title="Supprimer"
+               >
+                 <Trash2 className="w-3 h-3"/>
+               </button>
+             )}
+          </div>
         </div>
-      )}
-    </div>
-  );
+
+        {(!collapsedDatasets.has(ds.id)) && (
+          <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1">
+            {activeRisk?.measures.filter(m => m.datasetId === ds.id).map(m => {
+              const isChecked = activeWidget?.datasetId === ds.id && activeWidget?.series.some(s => s.yAxisCol === m.name);
+              return (
+                <div
+                  key={m.id}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: m.name, isMeasure: true, datasetId: ds.id }))}
+                  className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}
+                >
+                  <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
+                  <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(m.name, true, ds.id)} className="accent-primary shrink-0" />
+                  <Calculator className="w-3 h-3 text-primary shrink-0"/>
+                  <span className="text-primary font-medium truncate">{m.name}</span>
+                </div>
+              );
+            })}
+
+            {/* On utilise previewCols pour afficher les colonnes dynamiquement après PQ */}
+            {previewCols.map(col => {
+              const isChecked = activeWidget?.datasetId === ds.id && (activeWidget?.xAxisCol === col || activeWidget?.series.some(s => s.yAxisCol === col));
+              return (
+                <div
+                  key={col}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: col, isMeasure: false, datasetId: ds.id }))}
+                  className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}
+                >
+                  <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
+                  <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(col, false, ds.id)} className="accent-primary shrink-0" />
+                  <Sigma className="w-3 h-3 text-muted-foreground shrink-0"/>
+                  <span className="text-muted-foreground truncate" title={col}>{col}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   if (!isInitialized) {
     return (
@@ -1239,7 +1373,7 @@ export default function RisksView() {
   }
 
   // ============================================================================
-  // VUE 2 : STUDIO BI
+  // VUE 2 : STUDIO BI (LAYOUT FAÇON POWER BI AVEC RUBAN RÉTRACTABLE)
   // ============================================================================
   return (
     <div className="flex flex-col h-[calc(100vh-6rem)] animate-in fade-in duration-300 -m-4 bg-slate-50 dark:bg-slate-900/50">
@@ -1260,7 +1394,7 @@ export default function RisksView() {
             </div>
 
             <div className="flex gap-1">
-              {['Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
+              {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
                 <button
                   key={tab}
                   onClick={() => {
@@ -1295,8 +1429,34 @@ export default function RisksView() {
         <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
           <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
 
+            {activeRibbonTab === 'Fichier' && (
+              <div className="flex items-center text-xs text-muted-foreground px-4 italic">
+                Menu fichier (Enregistrer, Exporter, Imprimer...)
+              </div>
+            )}
+
             {activeRibbonTab === 'Accueil' && (
               <>
+                {/* Groupe : Presse-papiers */}
+                <div className="flex gap-1 border-r pr-4">
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[50px] opacity-40 cursor-not-allowed">
+                    <Clipboard className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Coller</span>
+                  </button>
+                  <div className="flex flex-col justify-center gap-1">
+                    <button className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+                      <Scissors className="w-3 h-3" /> Couper
+                    </button>
+                    <button className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+                      <Copy className="w-3 h-3" /> Copier
+                    </button>
+                    <button className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+                      <Paintbrush className="w-3 h-3" /> Reproduire
+                    </button>
+                  </div>
+                </div>
+
+                {/* Groupe : Données */}
                 <div className="flex gap-1 border-r pr-4">
                   <button onClick={() => setIsAddDataOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
                     <DatabaseZap className="w-6 h-6 text-yellow-600" />
@@ -1316,13 +1476,19 @@ export default function RisksView() {
                   </button>
                 </div>
 
+                {/* Groupe : Requêtes */}
                 <div className="flex gap-1 border-r pr-4">
+                  <button onClick={() => setIsPowerQueryOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-orange-50 hover:bg-orange-100 border border-orange-200">
+                    <FileEdit className="w-6 h-6 text-orange-600" />
+                    <span className="text-[10px] leading-tight text-center text-orange-700 font-bold">Transformer<br/>les données</span>
+                  </button>
                   <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
                     <RefreshCw className="w-6 h-6 text-muted-foreground" />
                     <span className="text-[10px] leading-tight text-center text-muted-foreground">Actualiser</span>
                   </button>
                 </div>
 
+                {/* Groupe : Insérer */}
                 <div className="flex gap-1 border-r pr-4">
                   <button onClick={addWidgetToStudio} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
                     <BarChart3 className="w-6 h-6 text-blue-600" />
@@ -1331,6 +1497,22 @@ export default function RisksView() {
                   <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
                     <Type className="w-6 h-6 text-muted-foreground" />
                     <span className="text-[10px] leading-tight text-center text-muted-foreground">Zone de<br/>texte</span>
+                  </button>
+                </div>
+
+                {/* Groupe : Calculs */}
+                <div className="flex gap-1 border-r pr-4">
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <Calculator className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>mesure</span>
+                  </button>
+                </div>
+
+                {/* Groupe : Partager */}
+                <div className="flex gap-1 pr-4">
+                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                    <UploadCloud className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[10px] leading-tight text-center text-muted-foreground">Publier</span>
                   </button>
                 </div>
               </>
@@ -1843,7 +2025,263 @@ export default function RisksView() {
           </div>
         </div>
 
-        {/* MODALES */}
+        {/* =================================================================== */}
+        {/* ÉDITEUR POWER QUERY (POP-UP PLEIN ÉCRAN)                            */}
+        {/* =================================================================== */}
+        <Dialog open={isPowerQueryOpen} onOpenChange={setIsPowerQueryOpen}>
+          <DialogContent className="max-w-[98vw] h-[95vh] p-0 overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-900 rounded-lg">
+
+            {/* CORRECTION ACCESSIBILITÉ : DialogTitle masqué nativement avec Tailwind "sr-only" */}
+            <DialogTitle className="sr-only">Éditeur Power Query</DialogTitle>
+
+            {/* Header de la fenêtre */}
+            <div className="bg-[#f3f2f1] dark:bg-slate-800 border-b flex items-center justify-between px-3 py-1.5 shrink-0">
+              <div className="flex items-center gap-2">
+                <FileEdit className="w-4 h-4 text-orange-600" />
+                <span className="text-sm font-semibold">Éditeur Power Query</span>
+              </div>
+              <button onClick={() => setIsPowerQueryOpen(false)} className="p-1 hover:bg-rose-500 hover:text-white rounded transition-colors text-muted-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Ruban Power Query */}
+            <div className="flex flex-col bg-background shadow-sm border-b shrink-0">
+              <div className="flex items-end px-2 pt-2 text-sm bg-muted/20">
+                <div className="flex gap-1">
+                  {['Accueil', 'Transformer', 'Ajouter une colonne', 'Affichage'].map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setPqRibbonTab(tab)}
+                      className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] ${
+                        pqRibbonTab === tab
+                          ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]'
+                          : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                      }`}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
+                {pqRibbonTab === 'Accueil' && (
+                  <div className="flex gap-1 border-r pr-4">
+                    <button onClick={() => setIsPowerQueryOpen(false)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
+                      {/* CORRECTION ICÔNE : On utilise bien l'icône Save importée */}
+                      <Save className="w-6 h-6 text-emerald-600" />
+                      <span className="text-[10px] leading-tight text-center text-foreground font-medium">Fermer et<br/>appliquer</span>
+                    </button>
+                  </div>
+                )}
+
+                {pqRibbonTab === 'Transformer' && (
+                  <>
+                    <div className="flex gap-1 border-r pr-4">
+                      <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                        <Columns className="w-6 h-6 text-blue-600" />
+                        <span className="text-[10px] leading-tight text-center text-foreground font-medium">Fractionner<br/>la colonne</span>
+                      </button>
+                      <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                        <Table2 className="w-6 h-6 text-emerald-600" />
+                        <span className="text-[10px] leading-tight text-center text-foreground font-medium">Regrouper<br/>par</span>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-col gap-1 border-r pr-4 justify-center">
+                      <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+                        <Type className="w-4 h-4 text-blue-500" /> Type de données : Texte
+                      </button>
+
+                      {/* BOUTON ACTIF : Promouvoir les en-têtes */}
+                      <button
+                        onClick={executePromoteHeaders}
+                        className="flex items-center gap-2 px-2 py-1 hover:bg-emerald-50 text-emerald-700 font-medium rounded text-[10px] transition-colors"
+                      >
+                        <ArrowUpToLine className="w-4 h-4 text-emerald-500" /> Utiliser la première ligne pour les en-têtes
+                      </button>
+
+                      {/* BOUTON ACTIF : Remplacer les valeurs */}
+                      <button
+                        onClick={openReplaceValues}
+                        className="flex items-center gap-2 px-2 py-1 hover:bg-yellow-50 text-yellow-700 font-medium rounded text-[10px] transition-colors"
+                      >
+                        <Replace className="w-4 h-4 text-yellow-600" /> Remplacer les valeurs
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {pqRibbonTab === 'Ajouter une colonne' && (
+                  <>
+                    <div className="flex gap-1 border-r pr-4">
+                      <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                        <Wand2 className="w-6 h-6 text-yellow-600" />
+                        <span className="text-[10px] leading-tight text-center text-foreground font-medium">Colonne à partir<br/>d'exemples</span>
+                      </button>
+                      <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                        <Braces className="w-6 h-6 text-yellow-600" />
+                        <span className="text-[10px] leading-tight text-center text-foreground font-medium">Colonne<br/>personnalisée</span>
+                      </button>
+                      <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+                        <FunctionSquare className="w-6 h-6 text-blue-600" />
+                        <span className="text-[10px] leading-tight text-center text-foreground font-medium">Appeler une fonction<br/>personnalisée</span>
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-1 border-r pr-4 justify-center">
+                      <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+                        <Waypoints className="w-4 h-4 text-emerald-500" /> Colonne conditionnelle
+                      </button>
+                      <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+                        <ListOrdered className="w-4 h-4 text-blue-500" /> Colonne d'index
+                      </button>
+                      <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+                        <Copy className="w-4 h-4 text-muted-foreground" /> Duplication de la colonne
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {pqRibbonTab === 'Affichage' && (
+                  <div className="flex items-center text-xs text-muted-foreground px-4 italic">
+                    Paramètres d'affichage (Qualité des colonnes, Distribution, Profil...)
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Corps de l'éditeur */}
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+
+              {/* Barre latérale gauche (Requêtes) */}
+              <div className="w-48 border-r bg-background flex flex-col">
+                <div className="bg-secondary/30 p-2 border-b text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Requêtes</div>
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {activeRisk?.datasets.map(d => (
+                    <div
+                      key={d.id}
+                      onClick={() => { setPqSelectedDatasetId(d.id); setPqSelectedColumn(null); }}
+                      className={`text-xs p-2 rounded cursor-pointer truncate flex items-center gap-2 ${pqSelectedDatasetId === d.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-muted-foreground'}`}
+                    >
+                      <Table2 className="w-3.5 h-3.5 shrink-0" />
+                      {d.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Zone principale (Aperçu des données calculé en direct) */}
+              <div className="flex-1 flex flex-col bg-white overflow-hidden relative">
+                <div className="bg-muted/10 p-2 border-b text-xs flex items-center justify-between text-muted-foreground">
+                  <div className="flex items-center gap-2"><DatabaseZap className="w-3.5 h-3.5" /> Aperçu des données transformées</div>
+                  {pqSelectedColumn && <Badge variant="secondary" className="bg-primary/10 text-primary">Colonne sélectionnée : {pqSelectedColumn}</Badge>}
+                </div>
+
+                <div className="flex-1 overflow-auto bg-[#f3f2f1] dark:bg-slate-900 p-4">
+                  {pqSelectedDatasetId && pqSelectedDatasetObj ? (
+                    <div className="bg-white border rounded shadow-sm overflow-auto max-h-full">
+                      <table className="w-full text-xs text-left border-collapse whitespace-nowrap">
+                        <thead className="bg-muted/50 sticky top-0 z-10 shadow-sm">
+                          <tr>
+                            <th className="p-2 border-b border-r bg-muted/50 w-8 text-center text-muted-foreground">#</th>
+                            {pqPreview.columns.map(col => (
+                              <th
+                                key={col}
+                                onClick={() => setPqSelectedColumn(col)}
+                                className={`p-2 border-b border-r font-semibold cursor-pointer transition-colors ${pqSelectedColumn === col ? 'bg-primary/20 text-primary' : 'text-foreground hover:bg-muted/80'}`}
+                              >
+                                <div className="flex items-center gap-1"><Type className="w-3 h-3 text-muted-foreground" /> {col}</div>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pqPreview.data.slice(0, 100).map((row, i) => (
+                            <tr key={i} className="hover:bg-muted/30">
+                              <td className="p-2 border-b border-r bg-muted/10 text-center text-muted-foreground font-mono">{i + 1}</td>
+                              {pqPreview.columns.map(col => (
+                                <td
+                                  key={col}
+                                  onClick={() => setPqSelectedColumn(col)}
+                                  className={`p-2 border-b border-r truncate max-w-[200px] cursor-pointer ${pqSelectedColumn === col ? 'bg-primary/5 text-primary font-medium' : 'text-muted-foreground'}`}
+                                  title={String(row[col] || '')}
+                                >
+                                  {String(row[col] || '')}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
+                      <FileJson className="w-12 h-12 mb-2" />
+                      <p>Sélectionnez une requête à gauche pour l'analyser.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Barre latérale droite (Étapes Appliquées Dynamiques) */}
+              <div className="w-64 border-l bg-background flex flex-col">
+                <div className="bg-secondary/30 p-2 border-b text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Paramètres d'une requête</div>
+
+                <div className="p-3 border-b">
+                  <Label className="text-[10px] uppercase font-bold text-muted-foreground">Nom</Label>
+                  <Input value={pqSelectedDatasetObj?.name || ""} disabled className="h-7 text-xs font-bold mt-1 bg-muted/30" />
+                </div>
+
+                <div className="bg-secondary/10 p-2 border-b text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Étapes appliquées</div>
+
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  <div className="text-xs p-2 bg-muted/20 rounded border flex items-center justify-between text-muted-foreground">
+                    <span>Source initiale</span>
+                  </div>
+
+                  {pqSelectedDatasetObj?.transformations?.map((step, idx) => (
+                    <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm">
+                      <span className="truncate pr-2 font-medium">{step.name}</span>
+                      <button onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal de remplacement de valeurs imbriqué */}
+            {isReplaceModalOpen && (
+              <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center backdrop-blur-sm">
+                <div className="bg-background rounded-xl shadow-2xl w-[400px] border overflow-hidden animate-in zoom-in-95 duration-200">
+                  <div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2">
+                    <Replace className="w-4 h-4 text-yellow-600" />
+                    <h3 className="font-bold text-sm">Remplacer les valeurs</h3>
+                  </div>
+                  <div className="p-4 space-y-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Valeur à rechercher</Label>
+                      <Input value={replaceSearchValue} onChange={e => setReplaceSearchValue(e.target.value)} autoFocus placeholder="Ex: NULL, vide, ou texte spécifique..." className="text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Remplacer par</Label>
+                      <Input value={replaceNewValue} onChange={e => setReplaceNewValue(e.target.value)} placeholder="Nouvelle valeur..." className="text-sm" />
+                    </div>
+                  </div>
+                  <div className="px-4 py-3 bg-muted/30 border-t flex justify-end gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setIsReplaceModalOpen(false)}>Annuler</Button>
+                    <Button size="sm" className="bg-yellow-600 hover:bg-yellow-700 text-white" onClick={executeReplaceValues}>OK</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </DialogContent>
+        </Dialog>
+
+        {/* MODALES D'IMPORT DE DONNÉES */}
         <Dialog open={isAddDataOpen} onOpenChange={(o) => { setIsAddDataOpen(o); if(!o) resetWizard(); }}>
           <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
             <DialogHeader><DialogTitle>Ajouter des sources au modèle</DialogTitle></DialogHeader>
