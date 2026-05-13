@@ -57,8 +57,8 @@ type ChartOrientation = 'vertical' | 'horizontal';
 
 interface FilterConfig { id: string; column: string; operator: FilterOperator; value: string; }
 
-// Type pour les étapes Power Query
-type PQStepType = 'PROMOTE_HEADERS' | 'REPLACE_VALUE' | 'DROP_COLUMN';
+// Type pour les étapes Power Query (NOUVELLES ETAPES AJOUTEES)
+type PQStepType = 'PROMOTE_HEADERS' | 'REPLACE_VALUE' | 'DROP_COLUMN' | 'DUPLICATE_COLUMN' | 'ADD_INDEX_COLUMN' | 'ADD_CUSTOM_COLUMN';
 interface PQTransformStep {
   id: string;
   type: PQStepType;
@@ -176,7 +176,7 @@ const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
 };
 
 // ============================================================================
-// MOTEUR POWER QUERY (Transformations à la volée)
+// MOTEUR POWER QUERY (Transformations à la volée enrichies)
 // ============================================================================
 const computeDatasetPreview = (dataset: Dataset | undefined) => {
   if (!dataset) return { columns: [], data: [] };
@@ -208,7 +208,6 @@ const computeDatasetPreview = (dataset: Dataset | undefined) => {
         let newVal = val;
         if (val !== undefined && val !== null) {
           const strVal = String(val);
-          // Remplacement exact ou partiel
           if (strVal === search) {
             newVal = replace;
           } else if (strVal.includes(search)) {
@@ -216,6 +215,48 @@ const computeDatasetPreview = (dataset: Dataset | undefined) => {
           }
         }
         return { ...row, [column]: newVal };
+      });
+    }
+    else if (step.type === 'DUPLICATE_COLUMN') {
+      const { sourceColumn, newColumnName } = step.params;
+      if (!currentColumns.includes(newColumnName)) currentColumns.push(newColumnName);
+      currentData = currentData.map(row => ({
+        ...row,
+        [newColumnName]: row[sourceColumn]
+      }));
+    }
+    else if (step.type === 'ADD_INDEX_COLUMN') {
+      const { columnName, startAt } = step.params;
+      if (!currentColumns.includes(columnName)) currentColumns.push(columnName);
+      currentData = currentData.map((row, index) => ({
+        ...row,
+        [columnName]: index + startAt
+      }));
+    }
+    else if (step.type === 'ADD_CUSTOM_COLUMN') {
+      const { columnName, value } = step.params;
+      if (!currentColumns.includes(columnName)) currentColumns.push(columnName);
+
+      currentData = currentData.map(row => {
+        let finalVal = value;
+        // Remplacement dynamique des balises [NomColonne] par la valeur de la ligne
+        currentColumns.forEach(col => {
+           if (typeof finalVal === 'string' && finalVal.includes(`[${col}]`)) {
+               finalVal = finalVal.replaceAll(`[${col}]`, row[col] !== undefined ? String(row[col]) : '');
+           }
+        });
+
+        // Tentative d'évaluation si c'est une formule mathématique simple (ex: 10 + 5)
+        try {
+           if (/^[0-9+\-*/().\s]+$/.test(finalVal)) {
+               finalVal = new Function(`'use strict'; return (${finalVal})`)();
+           }
+        } catch(e) {}
+
+        return {
+          ...row,
+          [columnName]: finalVal
+        };
       });
     }
   });
@@ -571,9 +612,15 @@ export default function RisksView() {
   const [pqSelectedDatasetId, setPqSelectedDatasetId] = useState<string>("");
   const [pqSelectedColumn, setPqSelectedColumn] = useState<string | null>(null);
 
+  // Modale Remplacer
   const [isReplaceModalOpen, setIsReplaceModalOpen] = useState(false);
   const [replaceSearchValue, setReplaceSearchValue] = useState("");
   const [replaceNewValue, setReplaceNewValue] = useState("");
+
+  // NOUVEAU: Modale Colonne Personnalisée
+  const [isCustomColumnModalOpen, setIsCustomColumnModalOpen] = useState(false);
+  const [customColName, setCustomColName] = useState("Personnalisée");
+  const [customColValue, setCustomColValue] = useState("");
 
   const [collapsedDatasets, setCollapsedDatasets] = useState<Set<string>>(new Set());
   const [showHiddenDatasets, setShowHiddenDatasets] = useState(false);
@@ -832,7 +879,6 @@ export default function RisksView() {
   // ============================================================================
   const pqSelectedDatasetObj = activeRisk?.datasets.find(d => d.id === pqSelectedDatasetId);
 
-  // Utilisation de notre moteur pour générer l'aperçu en direct
   const pqPreview = useMemo(() => {
     return computeDatasetPreview(pqSelectedDatasetObj);
   }, [pqSelectedDatasetObj, pqSelectedDatasetObj?.transformations]);
@@ -859,7 +905,6 @@ export default function RisksView() {
     updateActiveRisk({ datasets: updatedDatasets });
   };
 
-  // Action : Promouvoir les en-têtes
   const executePromoteHeaders = () => {
     if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
     handleAddTransformation({
@@ -871,7 +916,6 @@ export default function RisksView() {
     toast.success("En-têtes promus avec succès.");
   };
 
-  // Action : Remplacer les valeurs
   const openReplaceValues = () => {
     if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
     if (!pqSelectedColumn) return toast.error("Cliquez sur l'en-tête d'une colonne d'abord.");
@@ -890,6 +934,45 @@ export default function RisksView() {
     setReplaceSearchValue("");
     setReplaceNewValue("");
     toast.success(`Les valeurs "${replaceSearchValue}" ont été remplacées par "${replaceNewValue}".`);
+  };
+
+  // NOUVEAU: ACTIONS ONGLETS "AJOUTER UNE COLONNE"
+  const executeDuplicateColumn = () => {
+    if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
+    if (!pqSelectedColumn) return toast.error("Cliquez sur l'en-tête d'une colonne d'abord.");
+    handleAddTransformation({
+      id: `step_${Date.now()}`,
+      type: 'DUPLICATE_COLUMN',
+      name: `Colonne dupliquée (${pqSelectedColumn})`,
+      params: { sourceColumn: pqSelectedColumn, newColumnName: `${pqSelectedColumn} - Copie` }
+    });
+    toast.success(`La colonne ${pqSelectedColumn} a été dupliquée.`);
+  };
+
+  const executeAddIndexColumn = (startAt: number) => {
+    if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
+    handleAddTransformation({
+      id: `step_${Date.now()}`,
+      type: 'ADD_INDEX_COLUMN',
+      name: `Index ajouté (à partir de ${startAt})`,
+      params: { columnName: 'Index', startAt }
+    });
+    toast.success("Colonne d'index ajoutée.");
+  };
+
+  const executeAddCustomColumn = () => {
+    if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
+    if (!customColName.trim()) return toast.error("Le nom de la colonne est requis.");
+    handleAddTransformation({
+      id: `step_${Date.now()}`,
+      type: 'ADD_CUSTOM_COLUMN',
+      name: `Personnalisée ajoutée (${customColName})`,
+      params: { columnName: customColName, value: customColValue }
+    });
+    setIsCustomColumnModalOpen(false);
+    setCustomColName("Personnalisée");
+    setCustomColValue("");
+    toast.success("Colonne personnalisée ajoutée avec succès.");
   };
 
   // ONGLETS ET WIDGETS
@@ -1605,12 +1688,9 @@ export default function RisksView() {
 
       <div className="flex flex-1 overflow-hidden">
 
-        {/* =================================================================== */}
-        {/* ZONE GAUCHE : LE CANVAS ET LES ONGLETS EN BAS                       */}
-        {/* =================================================================== */}
+        {/* ZONE GAUCHE : LE CANVAS ET LES ONGLETS EN BAS */}
         <div className="flex-1 flex flex-col min-w-0 bg-[#f3f2f1] dark:bg-slate-900/50">
 
-          {/* PANNEAU 1 : CANVAS DES WIDGETS */}
           <div className="flex-1 overflow-auto p-6 transition-all" onClick={() => setActiveWidgetId(null)}>
             {visibleWidgets.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
@@ -1724,11 +1804,7 @@ export default function RisksView() {
           </div>
         </div>
 
-        {/* =================================================================== */}
-        {/* ZONE DROITE : PANNEAUX LATÉRAUX                                     */}
-        {/* =================================================================== */}
-
-        {/* PANNEAU 2 : FILTRES */}
+        {/* ZONE DROITE : PANNEAUX LATÉRAUX */}
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-lg transition-all duration-300 overflow-hidden ${isFiltersOpen ? 'w-64' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
             <div onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1">
@@ -1793,7 +1869,6 @@ export default function RisksView() {
           </div>
         </div>
 
-        {/* PANNEAU 3 : VISUALISATIONS */}
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-xl transition-all duration-300 overflow-hidden ${isVisOpen ? 'w-72' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
             <div onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1">
@@ -1976,7 +2051,6 @@ export default function RisksView() {
           </div>
         </div>
 
-        {/* PANNEAU 4 : DONNÉES ET CORBEILLE */}
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 overflow-hidden ${isDataOpen ? 'w-64' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
             <div onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1">
@@ -2001,11 +2075,7 @@ export default function RisksView() {
           </div>
 
           <div className={`flex-1 overflow-y-auto p-2 ${!isDataOpen && 'hidden'}`}>
-
-            {/* 1. LISTE DES TABLES VISIBLES */}
             {activeRisk?.datasets.filter(ds => !ds.isHidden).map(ds => renderDatasetItem(ds, false))}
-
-            {/* 2. BOUTON CORBEILLE */}
             {activeRisk && activeRisk.datasets.some(ds => ds.isHidden) && (
               <div className="mt-4 pt-2 border-t border-dashed">
                 <Button variant="ghost" className="w-full h-8 text-[10px] uppercase font-bold tracking-wider text-muted-foreground hover:bg-muted/50" onClick={() => setShowHiddenDatasets(!showHiddenDatasets)}>
@@ -2014,14 +2084,11 @@ export default function RisksView() {
                 </Button>
               </div>
             )}
-
-            {/* 3. LISTE DES TABLES MASQUÉES */}
             {showHiddenDatasets && (
               <div className="mt-2 pl-2 border-l-2 border-muted">
                 {activeRisk?.datasets.filter(ds => ds.isHidden).map(ds => renderDatasetItem(ds, true))}
               </div>
             )}
-
           </div>
         </div>
 
@@ -2031,7 +2098,6 @@ export default function RisksView() {
         <Dialog open={isPowerQueryOpen} onOpenChange={setIsPowerQueryOpen}>
           <DialogContent className="max-w-[98vw] h-[95vh] p-0 overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-900 rounded-lg">
 
-            {/* CORRECTION ACCESSIBILITÉ : DialogTitle masqué nativement avec Tailwind "sr-only" */}
             <DialogTitle className="sr-only">Éditeur Power Query</DialogTitle>
 
             {/* Header de la fenêtre */}
@@ -2069,7 +2135,6 @@ export default function RisksView() {
                 {pqRibbonTab === 'Accueil' && (
                   <div className="flex gap-1 border-r pr-4">
                     <button onClick={() => setIsPowerQueryOpen(false)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
-                      {/* CORRECTION ICÔNE : On utilise bien l'icône Save importée */}
                       <Save className="w-6 h-6 text-emerald-600" />
                       <span className="text-[10px] leading-tight text-center text-foreground font-medium">Fermer et<br/>appliquer</span>
                     </button>
@@ -2093,20 +2158,10 @@ export default function RisksView() {
                       <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
                         <Type className="w-4 h-4 text-blue-500" /> Type de données : Texte
                       </button>
-
-                      {/* BOUTON ACTIF : Promouvoir les en-têtes */}
-                      <button
-                        onClick={executePromoteHeaders}
-                        className="flex items-center gap-2 px-2 py-1 hover:bg-emerald-50 text-emerald-700 font-medium rounded text-[10px] transition-colors"
-                      >
+                      <button onClick={executePromoteHeaders} className="flex items-center gap-2 px-2 py-1 hover:bg-emerald-50 text-emerald-700 font-medium rounded text-[10px] transition-colors">
                         <ArrowUpToLine className="w-4 h-4 text-emerald-500" /> Utiliser la première ligne pour les en-têtes
                       </button>
-
-                      {/* BOUTON ACTIF : Remplacer les valeurs */}
-                      <button
-                        onClick={openReplaceValues}
-                        className="flex items-center gap-2 px-2 py-1 hover:bg-yellow-50 text-yellow-700 font-medium rounded text-[10px] transition-colors"
-                      >
+                      <button onClick={openReplaceValues} className="flex items-center gap-2 px-2 py-1 hover:bg-yellow-50 text-yellow-700 font-medium rounded text-[10px] transition-colors">
                         <Replace className="w-4 h-4 text-yellow-600" /> Remplacer les valeurs
                       </button>
                     </div>
@@ -2120,10 +2175,13 @@ export default function RisksView() {
                         <Wand2 className="w-6 h-6 text-yellow-600" />
                         <span className="text-[10px] leading-tight text-center text-foreground font-medium">Colonne à partir<br/>d'exemples</span>
                       </button>
-                      <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
+
+                      {/* BOUTON ACTIF : Colonne Personnalisée */}
+                      <button onClick={() => setIsCustomColumnModalOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]">
                         <Braces className="w-6 h-6 text-yellow-600" />
                         <span className="text-[10px] leading-tight text-center text-foreground font-medium">Colonne<br/>personnalisée</span>
                       </button>
+
                       <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed">
                         <FunctionSquare className="w-6 h-6 text-blue-600" />
                         <span className="text-[10px] leading-tight text-center text-foreground font-medium">Appeler une fonction<br/>personnalisée</span>
@@ -2133,10 +2191,22 @@ export default function RisksView() {
                       <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
                         <Waypoints className="w-4 h-4 text-emerald-500" /> Colonne conditionnelle
                       </button>
-                      <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
-                        <ListOrdered className="w-4 h-4 text-blue-500" /> Colonne d'index
-                      </button>
-                      <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]">
+
+                      {/* BOUTON ACTIF : Colonne d'index avec Dropdown */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button className="flex items-center gap-2 px-2 py-1 hover:bg-blue-50 text-blue-700 font-medium rounded text-[10px] transition-colors outline-none">
+                            <ListOrdered className="w-4 h-4 text-blue-500" /> Colonne d'index <ChevronDown className="w-3 h-3" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent>
+                          <DropdownMenuItem className="text-xs cursor-pointer" onClick={() => executeAddIndexColumn(0)}>À partir de 0</DropdownMenuItem>
+                          <DropdownMenuItem className="text-xs cursor-pointer" onClick={() => executeAddIndexColumn(1)}>À partir de 1</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+
+                      {/* BOUTON ACTIF : Dupliquer la colonne */}
+                      <button onClick={executeDuplicateColumn} className="flex items-center gap-2 px-2 py-1 hover:bg-muted font-medium rounded text-[10px] transition-colors">
                         <Copy className="w-4 h-4 text-muted-foreground" /> Duplication de la colonne
                       </button>
                     </div>
@@ -2242,7 +2312,7 @@ export default function RisksView() {
 
                   {pqSelectedDatasetObj?.transformations?.map((step, idx) => (
                     <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm">
-                      <span className="truncate pr-2 font-medium">{step.name}</span>
+                      <span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span>
                       <button onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all">
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -2252,7 +2322,11 @@ export default function RisksView() {
               </div>
             </div>
 
-            {/* Modal de remplacement de valeurs imbriqué */}
+            {/* =================================================================== */}
+            {/* SOUS-MODALES DE L'ÉDITEUR POWER QUERY                               */}
+            {/* =================================================================== */}
+
+            {/* 1. Modal Remplacer les valeurs */}
             {isReplaceModalOpen && (
               <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center backdrop-blur-sm">
                 <div className="bg-background rounded-xl shadow-2xl w-[400px] border overflow-hidden animate-in zoom-in-95 duration-200">
@@ -2278,82 +2352,55 @@ export default function RisksView() {
               </div>
             )}
 
+            {/* 2. Modal Colonne Personnalisée */}
+            {isCustomColumnModalOpen && (
+              <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center backdrop-blur-sm">
+                <div className="bg-background rounded-xl shadow-2xl w-[500px] border overflow-hidden animate-in zoom-in-95 duration-200">
+                  <div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2">
+                    <Braces className="w-4 h-4 text-yellow-600" />
+                    <h3 className="font-bold text-sm">Ajouter une colonne personnalisée</h3>
+                  </div>
+                  <div className="p-4 space-y-4">
+                    <div className="space-y-1">
+                      <Label className="text-xs font-bold">Nouveau nom de colonne</Label>
+                      <Input value={customColName} onChange={e => setCustomColName(e.target.value)} autoFocus className="text-sm font-bold" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs font-bold">Formule de colonne personnalisée</Label>
+                      <div className="text-[10px] text-muted-foreground mb-2 italic">Astuce : Utilisez [NomColonne] pour inclure une valeur de la ligne, ou tapez une formule (ex: [Prix] * 1.2).</div>
+                      <textarea
+                        value={customColValue}
+                        onChange={e => setCustomColValue(e.target.value)}
+                        placeholder="="
+                        className="w-full h-32 rounded-md border p-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      />
+                    </div>
+                  </div>
+                  <div className="px-4 py-3 bg-muted/30 border-t flex justify-end gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setIsCustomColumnModalOpen(false)}>Annuler</Button>
+                    <Button size="sm" className="bg-yellow-600 hover:bg-yellow-700 text-white" onClick={executeAddCustomColumn}>OK</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
           </DialogContent>
         </Dialog>
 
-        {/* MODALES D'IMPORT DE DONNÉES */}
+        {/* AUTRES MODALES RESTANTES INCHANGÉES */}
         <Dialog open={isAddDataOpen} onOpenChange={(o) => { setIsAddDataOpen(o); if(!o) resetWizard(); }}>
           <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
             <DialogHeader><DialogTitle>Ajouter des sources au modèle</DialogTitle></DialogHeader>
-            {wizardStep === 1 && (
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <Label className="text-primary font-bold">Fichier source (.xlsx, .csv)</Label>
-                  {isImporting ? (
-                    <div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10">
-                      <Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" />
-                    </div>
-                  ) : (
-                    <div className="relative">
-                      <input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
-                      <Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2">
-                        <FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span>
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            {wizardStep === 2 && (
-              <div className="space-y-6 py-4">
-                <div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">
-                  {availableSheets.map(sheet => (
-                    <div key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}>
-                      <div className="flex items-center gap-3">
-                        <CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} />
-                        <p className="font-bold text-sm">{sheet.name}</p>
-                      </div>
-                      <Badge variant="secondary">{sheet.data.length} entrées</Badge>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex gap-2 pt-4">
-                  <Button variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button>
-                  <Button onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button>
-                </div>
-              </div>
-            )}
+            {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label className="text-primary font-bold">Fichier source (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" /><Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2"><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
+            {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button></div></div>)}
           </DialogContent>
         </Dialog>
 
         <Dialog open={isAppendOpen} onOpenChange={(o) => { setIsAppendOpen(o); if(!o) { setAppendSource1(""); setAppendSource2(""); setAppendNewName(""); }}}>
           <DialogContent className="sm:max-w-[500px]">
             <DialogHeader><DialogTitle className="flex items-center gap-2"><Combine className="w-5 h-5 text-primary" /> Fusionner des tables</DialogTitle></DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>Première table</Label>
-                <select value={appendSource1} onChange={e => setAppendSource1(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background">
-                  <option value="">Sélectionner...</option>
-                  {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
-                </select>
-              </div>
-              <div className="flex justify-center"><Plus className="w-4 h-4 text-muted-foreground" /></div>
-              <div className="space-y-2">
-                <Label>Table à empiler</Label>
-                <select value={appendSource2} onChange={e => setAppendSource2(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background">
-                  <option value="">Sélectionner...</option>
-                  {activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}
-                </select>
-              </div>
-              <div className="space-y-2 pt-4 border-t">
-                <Label className="text-primary font-bold">Nom de la table fusionnée</Label>
-                <Input value={appendNewName} onChange={e => setAppendNewName(e.target.value)} />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsAppendOpen(false)}>Annuler</Button>
-              <Button onClick={handleAppendDatasets} disabled={!appendSource1 || !appendSource2 || !appendNewName}>Fusionner</Button>
-            </DialogFooter>
+            <div className="space-y-4 py-4"><div className="space-y-2"><Label>Première table</Label><select value={appendSource1} onChange={e => setAppendSource1(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background"><option value="">Sélectionner...</option>{activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}</select></div><div className="flex justify-center"><Plus className="w-4 h-4 text-muted-foreground" /></div><div className="space-y-2"><Label>Table à empiler</Label><select value={appendSource2} onChange={e => setAppendSource2(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background"><option value="">Sélectionner...</option>{activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}</select></div><div className="space-y-2 pt-4 border-t"><Label className="text-primary font-bold">Nom de la table fusionnée</Label><Input value={appendNewName} onChange={e => setAppendNewName(e.target.value)} /></div></div>
+            <DialogFooter><Button variant="outline" onClick={() => setIsAppendOpen(false)}>Annuler</Button><Button onClick={handleAppendDatasets} disabled={!appendSource1 || !appendSource2 || !appendNewName}>Fusionner</Button></DialogFooter>
           </DialogContent>
         </Dialog>
 
