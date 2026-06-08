@@ -1,31 +1,35 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { Toaster as Sonner } from "@/components/ui/sonner";
-import { Toaster } from "@/components/ui/toaster";
-import { TooltipProvider } from "@/components/ui/tooltip";
 import { KpiProvider } from "@/context/KpiContext";
+import { AuthProvider } from "@/context/AuthContext";
+import Login from "./pages/Login";
 import Index from "./pages/Index";
 import DataEntry from "./pages/DataEntry";
 import Alerts from "./pages/Alerts";
 import Connectors from "./pages/Connectors";
-import NotFound from "./pages/NotFound";
 import Governance from "./pages/Governance";
 import SecurityOps from "./pages/SecurityOps";
 import Awareness from "./pages/Awareness";
-import Settings from "./pages/Settings";
 import Messagerie from "./pages/Messagerie";
-import Risks from "./pages/Risks"; // <-- IMPORT DE LA NOUVELLE PAGE
+import Risks from "./pages/Risks";
+import Settings from "./pages/Settings";
+import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
+    {/* AuthProvider doit être à la racine pour englober tout le reste */}
+    <AuthProvider>
       <KpiProvider>
-        <Toaster />
-        <Sonner />
         <BrowserRouter>
           <Routes>
+            {/* Route publique */}
+            <Route path="/login" element={<Login />} />
+
+            {/* Routes privées - Pas besoin de AuthGuard complexe ici,
+                si tu veux rediriger, on le gère directement dans tes pages
+                ou via une simple vérification dans chaque page */}
             <Route path="/" element={<Index />} />
             <Route path="/saisie" element={<DataEntry />} />
             <Route path="/alertes" element={<Alerts />} />
@@ -40,7 +44,7 @@ const App = () => (
           </Routes>
         </BrowserRouter>
       </KpiProvider>
-    </TooltipProvider>
+    </AuthProvider>
   </QueryClientProvider>
 );
 
