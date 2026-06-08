@@ -2,7 +2,7 @@ import { ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen,
-  ShieldAlert, Users, Mail, Radar, LogOut, ChevronLeft, ChevronRight
+  ShieldAlert, Users, Mail, Radar, ChevronLeft, ChevronRight, LogOut
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -23,27 +23,38 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const { user, signOut } = useAuth();
 
-  // État pour savoir si la sidebar est "verrouillée" ouverte ou si on est en survol
-  const [isPinned, setIsPinned] = useState(false);
+  // On initialise l'état en lisant la mémoire du navigateur
+  const [isPinned, setIsPinned] = useState(() => {
+    return localStorage.getItem("sidebarPinned") === "true";
+  });
   const [isHovered, setIsHovered] = useState(false);
 
+  // Fonction pour gérer le clic et sauvegarder en mémoire
+  const togglePin = () => {
+    const newState = !isPinned;
+    setIsPinned(newState);
+    localStorage.setItem("sidebarPinned", String(newState));
+  };
+
+  // La barre est déployée si elle est épinglée OU survolée
   const isExpanded = isPinned || isHovered;
 
   return (
     <div className="flex min-h-screen">
-      {/* SIDEBAR */}
+
+      {/* BARRE LATÉRALE */}
       <aside
-        className={`border-r border-border flex flex-col bg-sidebar shrink-0 sticky top-0 h-screen transition-all duration-300 ease-in-out ${isExpanded ? "w-64" : "w-20"}`}
+        className={`border-r border-border flex flex-col bg-sidebar shrink-0 sticky top-0 h-screen z-50 transition-all duration-300 ease-in-out ${isExpanded ? "w-64" : "w-20"}`}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-        <div className="p-6 border-b border-border flex items-center justify-between">
-          <div className="flex items-center gap-3 overflow-hidden">
+        <div className="p-6 border-b border-border overflow-hidden h-[85px] flex items-center">
+          <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
               <Shield className="w-5 h-5 text-primary" />
             </div>
             {isExpanded && (
-              <div className="animate-in fade-in duration-300 whitespace-nowrap">
+              <div className="whitespace-nowrap animate-in fade-in duration-300">
                 <h1 className="text-sm font-bold text-foreground tracking-tight">KPI SSI</h1>
                 <p className="text-xs text-muted-foreground">Indicateurs SSI</p>
               </div>
@@ -51,40 +62,58 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        <nav className="flex-1 p-3 space-y-1">
+        <nav className="flex-1 p-3 space-y-1 overflow-y-auto overflow-x-hidden">
           {NAV_ITEMS.map((item) => (
             <Link
               key={item.path}
               to={item.path}
-              className={`nav-link flex items-center gap-3 px-3 py-2 rounded-md transition-colors ${location.pathname === item.path ? "active bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted"}`}
+              className={`nav-link flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${location.pathname === item.path ? "active bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+              title={!isExpanded ? item.label : undefined}
             >
               <item.icon className="w-5 h-5 shrink-0" />
-              {isExpanded && <span className="text-sm animate-in fade-in duration-300">{item.label}</span>}
+              {isExpanded && (
+                <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">
+                  {item.label}
+                </span>
+              )}
             </Link>
           ))}
         </nav>
 
-        <div className="p-3 border-t border-border flex flex-col gap-2">
-          <Link to="/parametres" className="nav-link flex items-center gap-3 px-3 py-2 rounded-md text-muted-foreground hover:bg-muted transition-colors">
+        <div className="p-3 border-t border-border flex flex-col gap-2 overflow-hidden">
+          <Link
+            to="/parametres"
+            className={`nav-link flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${location.pathname === "/parametres" ? "active bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+            title={!isExpanded ? "Paramètres" : undefined}
+          >
             <Settings className="w-5 h-5 shrink-0" />
-            {isExpanded && <span className="text-sm">Paramètres</span>}
+            {isExpanded && (
+              <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">
+                Paramètres
+              </span>
+            )}
           </Link>
 
-          {/* Bouton pour pinner la sidebar */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-3"
-            onClick={() => setIsPinned(!isPinned)}
+          {/* Bouton Épingler / Réduire */}
+          <button
+            onClick={togglePin}
+            className="flex items-center gap-3 px-3 py-2.5 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors w-full text-left"
+            title={!isExpanded ? (isPinned ? "Réduire" : "Épingler") : undefined}
           >
-            {isPinned ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-            {isExpanded && <span className="text-sm">{isPinned ? "Réduire" : "Épingler"}</span>}
-          </Button>
+            {isPinned ? <ChevronLeft className="w-5 h-5 shrink-0" /> : <ChevronRight className="w-5 h-5 shrink-0" />}
+            {isExpanded && (
+              <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">
+                {isPinned ? "Réduire" : "Épingler"}
+              </span>
+            )}
+          </button>
         </div>
       </aside>
 
-      {/* ZONE CONTENU */}
+      {/* ZONE PRINCIPALE AVEC HEADER */}
       <div className="flex-1 flex flex-col h-screen overflow-hidden">
+
+        {/* HEADER */}
         <header className="h-16 border-b border-border flex items-center justify-between px-8 bg-background shrink-0">
           <div className="text-sm font-medium text-muted-foreground">
             Bonjour, <span className="text-foreground">{user?.email}</span>
@@ -98,12 +127,14 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </header>
 
+        {/* CONTENU DE LA PAGE */}
         <main className="flex-1 overflow-auto">
           <div className="p-8 max-w-[1600px] mx-auto">
             {children}
           </div>
         </main>
       </div>
+
     </div>
   );
 }
