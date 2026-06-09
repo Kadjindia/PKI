@@ -16,7 +16,6 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage"
 import Index from "./pages/Index";
-import DataEntry from "./pages/DataEntry";
 import Alerts from "./pages/Alerts";
 import Connectors from "./pages/Connectors";
 import Governance from "./pages/Governance";
@@ -48,7 +47,6 @@ const App = () => (
                   <AppLayout>
                     <Routes>
                       <Route path="/" element={<Index />} />
-                      <Route path="/saisie" element={<DataEntry />} />
                       <Route path="/alertes" element={<Alerts />} />
                       <Route path="/connecteurs" element={<Connectors />} />
                       <Route path="/gouvernance" element={<Governance />} />
