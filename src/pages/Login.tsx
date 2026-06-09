@@ -1,81 +1,111 @@
-import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Shield, Loader2 } from "lucide-react";
-import { toast } from "sonner";
+import { useState, useEffect } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { useAuth } from '@/context/AuthContext';
+import { User, Lock, Loader2, ShieldCheck } from 'lucide-react';
 
 export default function Login() {
-  const navigate = useNavigate();
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
 
-  const handleAuth = async (e: React.FormEvent) => {
+  const { signIn, user, loading } = useAuth();
+  const navigate = useNavigate();
+
+  // Redirection automatique si déjà connecté
+  useEffect(() => {
+    if (user) navigate('/');
+  }, [user, navigate]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true);
+    setError('');
+
+    // Vérification de sécurité simple
+    const domaineAutorise = "@gmail.com";
+    if (!email.toLowerCase().endsWith(domaineAutorise)) {
+      setError("Adresse non autorisée");
+      return;
+    }
 
     try {
-      if (isSignUp) {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        toast.success("Vérifiez vos emails pour confirmer votre compte !");
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        toast.success("Connexion réussie !");
-        navigate("/");
-      }
-    } catch (error: any) {
-      toast.error(error.message === "Invalid login credentials" ? "Identifiants incorrects" : error.message);
-    } finally {
-      setIsLoading(false);
+      await signIn(email, password);
+    } catch (err: any) {
+      setError("Identifiants incorrects ou erreur serveur");
     }
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-900 p-4">
-      <Card className="w-full max-w-md shadow-lg border-t-4 border-t-primary">
-        <CardHeader className="space-y-1 items-center text-center">
-          <div className="bg-primary/10 p-3 rounded-full mb-2">
-            <Shield className="w-8 h-8 text-primary" />
+    <div className="relative min-h-screen flex items-center justify-center p-6 bg-slate-50 overflow-hidden">
+
+      {/* BACKGROUND ANIMATED BLOBS (Formes organiques) */}
+      <div className="absolute top-[-5%] left-[-5%] w-[500px] h-[500px] bg-indigo-200 rounded-full mix-blend-multiply filter blur-[70px] opacity-70 animate-blob"></div>
+      <div className="absolute top-[15%] right-[-5%] w-[450px] h-[450px] bg-purple-200 rounded-full mix-blend-multiply filter blur-[70px] opacity-70 animate-blob animation-delay-2000"></div>
+      <div className="absolute bottom-[-10%] left-[10%] w-[500px] h-[500px] bg-blue-200 rounded-full mix-blend-multiply filter blur-[70px] opacity-70 animate-blob animation-delay-4000"></div>
+
+      {/* CARTE GLASS (Effet verre dépoli) */}
+      <div className="relative w-full max-w-[420px] bg-white/70 backdrop-blur-2xl p-10 rounded-[2.5rem] border border-white/50 shadow-[0_20px_50px_rgba(0,0,0,0.08)] z-10">
+
+        {/* En-tête */}
+        <div className="flex flex-col items-center mb-10">
+          <div className="w-16 h-16 bg-white/80 flex items-center justify-center rounded-2xl mb-4 shadow-sm border border-slate-100">
+            <ShieldCheck className="w-8 h-8 text-indigo-600" />
           </div>
-          <CardTitle className="text-2xl font-bold tracking-tight">
-            {isSignUp ? "Créer un accès" : "Connexion au PKI"}
-          </CardTitle>
-          <CardDescription>
-            {isSignUp ? "Créez votre compte pour accéder au tableau de bord." : "Entrez vos identifiants pour continuer."}
-          </CardDescription>
-        </CardHeader>
+          <h1 className="text-3xl font-bold text-slate-800 tracking-tight">Connexion</h1>
+        </div>
 
-        <form onSubmit={handleAuth}>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">Adresse Email</Label>
-              <Input id="email" type="email" placeholder="prenom.nom@entreprise.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Mot de passe</Label>
-              <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </div>
-          </CardContent>
+        {/* Message d'erreur */}
+        {error && (
+          <div className="mb-6 px-4 py-3 rounded-2xl bg-red-50 border border-red-100 text-red-600 text-sm text-center">
+            {error}
+          </div>
+        )}
 
-          <CardFooter className="flex flex-col space-y-4">
-            <Button className="w-full" type="submit" disabled={isLoading}>
-              {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isSignUp ? "S'inscrire" : "Se connecter"}
-            </Button>
+        {/* Formulaire */}
+        <form className="space-y-5" onSubmit={handleSubmit}>
 
-            <button type="button" onClick={() => setIsSignUp(!isSignUp)} className="text-sm text-muted-foreground hover:text-primary transition-colors">
-              {isSignUp ? "Déjà un compte ? Se connecter" : "Pas encore de compte ? Demander un accès"}
-            </button>
-          </CardFooter>
+          {/* Email */}
+          <div className="relative">
+            <User className="absolute left-5 top-4 w-5 h-5 text-slate-400" />
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full pl-14 pr-6 py-4 rounded-2xl bg-white border border-slate-200 text-slate-800 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 transition-all placeholder:text-slate-400"
+              placeholder="Nom d'utilisateur"
+              required
+            />
+          </div>
+
+          {/* Mot de passe */}
+          <div className="relative">
+            <Lock className="absolute left-5 top-4 w-5 h-5 text-slate-400" />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full pl-14 pr-6 py-4 rounded-2xl bg-white border border-slate-200 text-slate-800 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 transition-all placeholder:text-slate-400"
+              placeholder="Mot de passe"
+              required
+            />
+          </div>
+
+          {/* Lien mot de passe oublié */}
+          <div className="flex justify-end">
+            <Link to="/forgot-password" className="text-xs font-medium text-slate-500 hover:text-indigo-600 transition-colors">
+              Mot de passe oublié ?
+            </Link>
+          </div>
+
+          {/* Bouton Connexion */}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-all duration-300 hover:shadow-lg hover:shadow-indigo-500/20 disabled:opacity-50 flex justify-center items-center gap-2"
+          >
+            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "Se connecter"}
+          </button>
         </form>
-      </Card>
+      </div>
     </div>
   );
 }

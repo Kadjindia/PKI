@@ -3,8 +3,6 @@ import ConnectorRegistry from "@/components/connectors/ConnectorRegistry";
 
 export default function Connectors() {
   return (
-    <AppLayout>
       <ConnectorRegistry />
-    </AppLayout>
   );
 }

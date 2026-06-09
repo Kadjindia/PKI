@@ -18,7 +18,6 @@ export default function Settings() {
   };
 
   return (
-    <AppLayout>
       <div className="space-y-8">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Paramètres</h1>
@@ -46,6 +45,5 @@ export default function Settings() {
           </div>
         </div>
       </div>
-    </AppLayout>
   );
 }
