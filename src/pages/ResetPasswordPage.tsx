@@ -1,7 +1,7 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { FaLock } from 'react-icons/fa';
+import { Lock, Loader2, ShieldCheck } from 'lucide-react';
 
 export default function ResetPasswordPage() {
   const [newPassword, setNewPassword] = useState<string>('');
@@ -50,27 +50,60 @@ export default function ResetPasswordPage() {
   };
 
   return (
-    <div className="login-container">
-      <div className="login-card">
-        <h1 className="login-title">Nouveau mot de passe</h1>
+    <div className="relative min-h-screen flex items-center justify-center p-6 bg-slate-50 overflow-hidden">
 
-        {error && <div className="error-message" style={{color: 'red', marginBottom: '1rem'}}>{error}</div>}
-        {message && <div className="success-message" style={{color: 'green', marginBottom: '1rem'}}>{message}</div>}
+      {/* BACKGROUND ANIMATED BLOBS */}
+      <div className="absolute top-[-5%] left-[-5%] w-[500px] h-[500px] bg-indigo-200 rounded-full mix-blend-multiply filter blur-[70px] opacity-70 animate-blob"></div>
+      <div className="absolute top-[15%] right-[-5%] w-[450px] h-[450px] bg-purple-200 rounded-full mix-blend-multiply filter blur-[70px] opacity-70 animate-blob animation-delay-2000"></div>
+      <div className="absolute bottom-[-10%] left-[10%] w-[500px] h-[500px] bg-blue-200 rounded-full mix-blend-multiply filter blur-[70px] opacity-70 animate-blob animation-delay-4000"></div>
 
-        <form className="login-form" onSubmit={handlePasswordReset}>
-          <div className="form-group">
-            <FaLock className="input-icon" />
+      {/* CARTE GLASS */}
+      <div className="relative w-full max-w-[420px] bg-white/70 backdrop-blur-2xl p-10 rounded-[2.5rem] border border-white/50 shadow-[0_20px_50px_rgba(0,0,0,0.08)] z-10">
+
+        {/* En-tête */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-16 h-16 bg-white/80 flex items-center justify-center rounded-2xl mb-4 shadow-sm border border-slate-100">
+            <ShieldCheck className="w-8 h-8 text-indigo-600" />
+          </div>
+          <h1 className="text-3xl font-bold text-slate-800 tracking-tight text-center">Nouveau accès</h1>
+          <p className="text-slate-500 text-sm mt-3 text-center leading-relaxed">
+            Créez un nouveau mot de passe sécurisé pour votre compte.
+          </p>
+        </div>
+
+        {/* Messages d'erreur ou de succès */}
+        {error && (
+          <div className="mb-6 px-4 py-3 rounded-2xl bg-red-50 border border-red-100 text-red-600 text-sm text-center">
+            {error}
+          </div>
+        )}
+        {message && (
+          <div className="mb-6 px-4 py-3 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-600 text-sm text-center font-medium">
+            {message}
+          </div>
+        )}
+
+        {/* Formulaire */}
+        <form className="space-y-5" onSubmit={handlePasswordReset}>
+          <div className="relative">
+            <Lock className="absolute left-5 top-4 w-5 h-5 text-slate-400" />
             <input
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              className="pl-10 p-2 w-full rounded-full bg-gray-800 text-gray-200 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full pl-14 pr-6 py-4 rounded-2xl bg-white border border-slate-200 text-slate-800 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 transition-all placeholder:text-slate-400"
               placeholder="Nouveau mot de passe"
               required
+              disabled={loading || message !== ''} // Désactive l'input si le succès est validé
             />
           </div>
-          <button type="submit" className="login-button" disabled={loading}>
-            {loading ? 'Mise à jour...' : 'Confirmer'}
+
+          <button
+            type="submit"
+            disabled={loading || message !== '' || error.includes("invalide")}
+            className="w-full py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-all duration-300 hover:shadow-lg hover:shadow-indigo-500/20 disabled:opacity-50 flex justify-center items-center gap-2"
+          >
+            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Confirmer'}
           </button>
         </form>
       </div>
