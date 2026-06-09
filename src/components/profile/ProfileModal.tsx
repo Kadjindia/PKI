@@ -112,18 +112,6 @@ const handleSubmit = async (e: React.FormEvent) => {
           ) : activeTab === 'info' ? (
             <form id="profile-form" onSubmit={handleSubmit} className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pb-6 border-b border-slate-100 dark:border-slate-800">
-                <div>
-                  <label className="block text-sm font-bold text-slate-800 dark:text-slate-200 mb-2">Rôles</label>
-                  <span className="inline-block px-2 py-1 bg-[#3a8b79] text-white text-xs font-semibold rounded-sm capitalize">{role}</span>
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-slate-800 dark:text-slate-200 mb-2">Périmètre/groupement</label>
-                  <div className="text-sm text-slate-500 italic">Non défini</div>
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-slate-800 dark:text-slate-200 mb-2">Groupes</label>
-                  <div className="text-sm text-slate-500 italic">Non défini</div>
-                </div>
                 <div className="md:col-span-3 mt-2">
                   <label className="block text-sm font-bold text-slate-800 dark:text-slate-200 mb-2">Email</label>
                   <div className="text-sm text-slate-600 dark:text-slate-400">{userEmail}</div>
