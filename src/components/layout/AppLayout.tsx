@@ -11,7 +11,6 @@ import { supabase } from "@/integrations/supabase/client";
 
 const NAV_ITEMS = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/saisie", label: "Saisie des données", icon: PenLine },
   { path: "/gouvernance", label: "Revue des Politiques", icon: BookOpen },
   { path: "/security-ops", label: "PAS & Audits", icon: ShieldAlert },
   { path: "/sensibilisation", label: "Sensibilisation", icon: Users },
