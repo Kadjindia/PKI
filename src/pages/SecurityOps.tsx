@@ -3,7 +3,6 @@ import SecurityOpsView from "@/components/security/SecurityOpsView";
 
 export default function SecurityOps() {
   return (
-    <AppLayout>
       <div className="space-y-6">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Plans d'Assurance Sécurité & Audits</h1>
@@ -13,6 +12,5 @@ export default function SecurityOps() {
         </div>
         <SecurityOpsView />
       </div>
-    </AppLayout>
   );
 }

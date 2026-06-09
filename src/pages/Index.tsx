@@ -1,10 +1,6 @@
-import AppLayout from "@/components/layout/AppLayout";
+// src/pages/Index.tsx
 import Dashboard from "@/components/dashboard/DashboardView";
 
 export default function Index() {
-  return (
-    <AppLayout>
-      <Dashboard />
-    </AppLayout>
-  );
+  return <Dashboard />;
 }

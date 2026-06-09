@@ -1,45 +1,113 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, ReactNode } from 'react';
+import { supabase } from '@/integrations/supabase/client';
+import { getCSRFToken } from '@/utils/csrf';
 
 interface AuthContextType {
-  session: Session | null;
   user: User | null;
+  role: string | null;
+  loading: boolean;
+  signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
-  isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  const [session, setSession] = useState<Session | null>(null);
+export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [role, setRole] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    // Récupérer la session actuelle au chargement
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setIsLoading(false);
-    });
+    getCSRFToken();
 
-    // Écouter les changements (connexion, déconnexion)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setIsLoading(false);
-    });
+    const checkSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
+
+        if (currentUser) {
+          try {
+            const { data } = await supabase
+              .from('users')
+              .select('role')
+              .eq('id', currentUser.id)
+              .maybeSingle();
+
+            setRole(data?.role || 'saisisseur');
+          } catch (err) {
+            console.error("Erreur lors de la récupération du rôle:", err);
+            setRole('saisisseur');
+          }
+        } else {
+          setRole(null);
+        }
+      } catch (err) {
+        console.error("Erreur lors de la récupération de la session:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
+        setLoading(false);
+      }
+    );
 
     return () => subscription.unsubscribe();
   }, []);
 
-  const signOut = async () => {
-    await supabase.auth.signOut();
-  };
+  const signIn = useCallback(async (email: string, password: string) => {
+    try {
+      setLoading(true);
+      const csrfToken = getCSRFToken();
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      }, {
+        headers: {
+          'X-CSRF-Token': csrfToken,
+        } as any, // Cast nécessaire car le SDK attend un objet standard
+      });
+      if (error) throw error;
+      setLoading(false);
+    } catch (err: any) {
+      setLoading(false);
+      throw new Error('Erreur de connexion: ' + err.message);
+    }
+  }, []);
+
+  const signOut = useCallback(async () => {
+    try {
+      const csrfToken = getCSRFToken();
+      const { error } = await supabase.auth.signOut({
+        headers: {
+          'X-CSRF-Token': csrfToken,
+        } as any,
+      });
+      if (error) throw error;
+      setUser(null);
+      setRole(null);
+    } catch (err: any) {
+      throw new Error('Erreur lors de la déconnexion: ' + err.message);
+    }
+  }, []);
+
+  const contextValue = useMemo(() => ({
+    user,
+    role,
+    loading,
+    signIn,
+    signOut,
+  }), [user, role, loading, signIn, signOut]);
 
   return (
-    <AuthContext.Provider value={{ session, user, signOut, isLoading }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );
@@ -47,8 +115,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth doit être utilisé à l'intérieur d'un AuthProvider");
+  if (!context) {
+    throw new Error('useAuth doit être utilisé dans un AuthProvider');
   }
   return context;
 };
