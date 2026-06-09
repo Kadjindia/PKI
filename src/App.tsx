@@ -14,6 +14,7 @@ import AppLayout from "@/components/layout/AppLayout";
 import Login from "./pages/Login";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
+import ChangePasswordPage from "./pages/ChangePasswordPage"
 import Index from "./pages/Index";
 import DataEntry from "./pages/DataEntry";
 import Alerts from "./pages/Alerts";
@@ -39,6 +40,7 @@ const App = () => (
               <Route path="/login" element={<Login />} />
               <Route path="/forgot-password" element={<ForgotPasswordPage />} />
               <Route path="/reset-password" element={<ResetPasswordPage />} />
+              <Route path="/change-password" element={<ChangePasswordPage />} />
 
               {/* Routes Privées enveloppées par AppLayout */}
               <Route path="/*" element={
