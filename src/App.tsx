@@ -7,8 +7,9 @@ import { AuthProvider } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 
 // Layout & Security
-import PrivateRoute from "@/components/PrivateRoute"; // Ton composant PrivateRoute
+import PrivateRoute from "@/components/PrivateRoute";
 import AppLayout from "@/components/layout/AppLayout";
+import IdleTimeout from './components/IdleTimeout';
 
 // Pages
 import Login from "./pages/Login";
@@ -34,6 +35,9 @@ const App = () => (
       <AuthProvider>
         <KpiProvider>
           <BrowserRouter>
+            {/* Le minuteur d'inactivité est placé ici, il surveillera toutes les routes */}
+            <IdleTimeout timeoutInMinutes={15} />
+
             <Routes>
               {/* Routes Publiques */}
               <Route path="/login" element={<Login />} />
