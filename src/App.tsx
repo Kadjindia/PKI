@@ -17,8 +17,6 @@ import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage"
 import Index from "./pages/Index";
-import Alerts from "./pages/Alerts";
-import Connectors from "./pages/Connectors";
 import Governance from "./pages/Governance";
 import SecurityOps from "./pages/SecurityOps";
 import Awareness from "./pages/Awareness";
@@ -51,8 +49,6 @@ const App = () => (
                   <AppLayout>
                     <Routes>
                       <Route path="/" element={<Index />} />
-                      <Route path="/alertes" element={<Alerts />} />
-                      <Route path="/connecteurs" element={<Connectors />} />
                       <Route path="/gouvernance" element={<Governance />} />
                       <Route path="/security-ops" element={<SecurityOps />} />
                       <Route path="/sensibilisation" element={<Awareness />} />

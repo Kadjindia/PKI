@@ -28,7 +28,7 @@ const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualSta
 };
 
 export default function ExecutiveSummary() {
-  const { selectedPeriod, getFilteredValue } = useKpi();
+  const { selectedPeriod } = useKpi();
 
   // 1. FETCH DE TOUTES LES DONNÉES OPÉRATIONNELLES
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
@@ -107,22 +107,8 @@ export default function ExecutiveSummary() {
 
     health.push({ cat: "sensibilisation", score: Math.round(sensiScore), label: CATEGORY_LABELS["sensibilisation"], color: CATEGORY_COLORS["sensibilisation"] });
 
-    // ---------------------------------------------------------
-    // D. MESSAGERIE SSI
-    // ---------------------------------------------------------
-    let msgScore = 100;
-    const fraude = getFilteredValue('msg-fraude') || 0;
-    const total = getFilteredValue('msg-total') || 0;
-    if (total > 0) {
-      const fraudeRate = (fraude / total) * 100;
-      if (fraudeRate > 20) msgScore -= 30;
-      else if (fraudeRate > 10) msgScore -= 10;
-    }
-
-    health.push({ cat: "messagerie", score: Math.round(msgScore), label: CATEGORY_LABELS["messagerie"], color: CATEGORY_COLORS["messagerie"] });
-
     return health;
-  }, [projects, apps, vulns, policies, gaps, campaigns, profiles, modules, selectedPeriod, getFilteredValue]);
+  }, [projects, apps, vulns, policies, gaps, campaigns, profiles, modules, selectedPeriod]);
 
   // 3. LE SCORE GLOBAL DE LA CONSOLE
   const securityScore = categoryHealth.length > 0

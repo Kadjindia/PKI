@@ -16,8 +16,6 @@ const NAV_ITEMS = [
   { path: "/sensibilisation", label: "Sensibilisation", icon: Users },
   { path: "/messagerie", label: "Messagerie SSI", icon: Mail },
   { path: "/risques", label: "Suivi des Risques", icon: Radar },
-  { path: "/alertes", label: "Alertes", icon: Bell },
-  { path: "/connecteurs", label: "Connecteurs", icon: Plug },
 ];
 
 export default function AppLayout({ children }: { children: ReactNode }) {
