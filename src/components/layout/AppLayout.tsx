@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen,
   ShieldAlert, Users, Mail, Radar, ChevronLeft, ChevronRight, LogOut,
-  User, Lock, FileText, ChevronDown
+  User, Lock, FileText, ChevronDown, Activity
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import ProfileModal from "@/components/profile/ProfileModal";
@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { path: "/sensibilisation", label: "Sensibilisation", icon: Users },
   { path: "/messagerie", label: "Messagerie SSI", icon: Mail },
   { path: "/risques", label: "Suivi des Risques", icon: Radar },
+  { path: "/monitoring", label: "Monitoring SI", icon: Activity },
 ];
 
 export default function AppLayout({ children }: { children: ReactNode }) {

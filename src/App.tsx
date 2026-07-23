@@ -22,6 +22,7 @@ import SecurityOps from "./pages/SecurityOps";
 import Awareness from "./pages/Awareness";
 import Messagerie from "./pages/Messagerie";
 import Risks from "./pages/Risks";
+import Monitoring from "./pages/Monitoring";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -54,6 +55,7 @@ const App = () => (
                       <Route path="/sensibilisation" element={<Awareness />} />
                       <Route path="/messagerie" element={<Messagerie />} />
                       <Route path="/risques" element={<Risks />} />
+                      <Route path="/monitoring" element={<Monitoring />} />
                       <Route path="/parametres" element={<Settings />} />
                       <Route path="*" element={<NotFound />} />
                     </Routes>
