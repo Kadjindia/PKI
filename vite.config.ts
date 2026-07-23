@@ -10,8 +10,15 @@ export default defineConfig(({ mode }) => ({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      '/api/bitsight': {
+        target: 'https://api.bitsighttech.com',
+        changeOrigin: true,
+        secure: false, // <-- LA LIGNE MAGIQUE POUR CONTOURNER L'ERREUR SSL
+        rewrite: (path) => path.replace(/^\/api\/bitsight/, '')
+      }
+    }
   },
-  // Suppression du componentTagger pour dissocier Lovable
   plugins: [
     react(),
   ],

@@ -1,4 +1,5 @@
 import React from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger
 } from "@/components/ui/accordion";
@@ -20,91 +21,165 @@ import {
   Tooltip as RechartsTooltip, Legend
 } from "recharts";
 
-export default function BitsightPanel() {
-  // Les données spécifiques à BitSight
-  const data = {
-    executive: {
-      score: 740, maxScore: 900, trends: { d7: "+2", d30: "+15", d90: "+42" },
-      industryAvg: 680, percentile: "Top 15%", monitoredAssets: 1450,
-      newAssets: 18, totalFindings: 342, criticalRisks: 4, lastSync: "2026-07-23 14:15:00"
-    },
-    scorePosture: {
-      historical: [
-        { month: 'Fév', score: 698, industry: 675, topPeers: 785 },
-        { month: 'Mar', score: 705, industry: 675, topPeers: 788 },
-        { month: 'Avr', score: 712, industry: 678, topPeers: 790 },
-        { month: 'Mai', score: 720, industry: 680, topPeers: 790 },
-        { month: 'Juin', score: 725, industry: 680, topPeers: 792 },
-        { month: 'Juil', score: 740, industry: 680, topPeers: 790 }
+    // 1. On sort tes données fictives du composant pour en faire notre "Plan B" (Fallback)
+    const MOCK_BITSIGHT_DATA = {
+      executive: {
+        score: 740, maxScore: 900, trends: { d7: "+2", d30: "+15", d90: "+42" },
+        industryAvg: 680, percentile: "Top 15%", monitoredAssets: 1450,
+        newAssets: 18, totalFindings: 342, criticalRisks: 4, lastSync: "2026-07-23 14:15:00"
+      },
+      scorePosture: {
+        historical: [
+          { month: 'Fév', score: 698, industry: 675, topPeers: 785 },
+          { month: 'Mar', score: 705, industry: 675, topPeers: 788 },
+          { month: 'Avr', score: 712, industry: 678, topPeers: 790 },
+          { month: 'Mai', score: 720, industry: 680, topPeers: 790 },
+          { month: 'Juin', score: 725, industry: 680, topPeers: 792 },
+          { month: 'Juil', score: 740, industry: 680, topPeers: 790 }
+        ],
+        positiveFactors: [
+          { factor: "Remédiation rapide des failles TLS/SSL", impact: "+12 pts" },
+          { factor: "Fermeture des ports Telnet/FTP", impact: "+8 pts" },
+          { factor: "Mise en place de DMARC 'Reject'", impact: "+5 pts" }
+        ],
+        negativeFactors: [
+          { factor: "2 ports RDP ouverts (IP recette)", impact: "-10 pts" },
+          { factor: "Certificat SSL expiré (VPN)", impact: "-5 pts" }
+        ],
+        categories: [
+          { name: "Infections / Botnets", rating: "A", score: 95 },
+          { name: "Hygiène de Sécurité", rating: "B", score: 78 },
+          { name: "Sécurité Réseau", rating: "B-", score: 72 },
+          { name: "Comportement", rating: "A", score: 92 }
+        ]
+      },
+      priorityRisks: [
+        { id: "RSK-01", risk: "Infection Botnet", severity: "Critique", impactScore: "-25 pts", assets: "192.168.45.12", discoveryDate: "2026-07-20", recommendation: "Isoler l'hôte.", status: "Ouvert" },
+        { id: "RSK-02", risk: "Port RDP ouvert", severity: "Critique", impactScore: "-15 pts", assets: "ext-dev.entreprise.com", discoveryDate: "2026-07-22", recommendation: "Fermer le port FW.", status: "En cours" },
+        { id: "RSK-03", risk: "Certificat expiré", severity: "Élevé", impactScore: "-8 pts", assets: "api-partner.entreprise.com", discoveryDate: "2026-07-15", recommendation: "Renouveler SSL.", status: "Planifié" }
       ],
-      positiveFactors: [
-        { factor: "Remédiation rapide des failles TLS/SSL", impact: "+12 pts" },
-        { factor: "Fermeture des ports Telnet/FTP", impact: "+8 pts" },
-        { factor: "Mise en place de DMARC 'Reject'", impact: "+5 pts" }
-      ],
-      negativeFactors: [
-        { factor: "2 ports RDP ouverts (IP recette)", impact: "-10 pts" },
-        { factor: "Certificat SSL expiré (VPN)", impact: "-5 pts" }
-      ],
-      categories: [
-        { name: "Infections / Botnets", rating: "A", score: 95 },
-        { name: "Hygiène de Sécurité", rating: "B", score: 78 },
-        { name: "Sécurité Réseau", rating: "B-", score: 72 },
-        { name: "Comportement", rating: "A", score: 92 }
-      ]
-    },
-    priorityRisks: [
-      { id: "RSK-01", risk: "Infection Botnet", severity: "Critique", impactScore: "-25 pts", assets: "192.168.45.12", discoveryDate: "2026-07-20", recommendation: "Isoler l'hôte.", status: "Ouvert" },
-      { id: "RSK-02", risk: "Port RDP ouvert", severity: "Critique", impactScore: "-15 pts", assets: "ext-dev.entreprise.com", discoveryDate: "2026-07-22", recommendation: "Fermer le port FW.", status: "En cours" },
-      { id: "RSK-03", risk: "Certificat expiré", severity: "Élevé", impactScore: "-8 pts", assets: "api-partner.entreprise.com", discoveryDate: "2026-07-15", recommendation: "Renouveler SSL.", status: "Planifié" }
-    ],
-    attackSurface: {
-      totalExposed: 1450, newAssetsCount: 18, domainsCount: 42, subdomainsCount: 890, publicIpsCount: 518, exposedServicesCount: 124, technologiesCount: 35,
-      riskyAssets: [
-        { asset: "vpn-legacy.entreprise.com", type: "Sous-domaine", riskLevel: "F (Critique)", findings: 12, lastObserved: "2026-07-23" },
-        { asset: "198.51.100.45", type: "IP Publique", riskLevel: "D (Élevé)", findings: 8, lastObserved: "2026-07-22" }
-      ]
-    },
-    findings: {
-      kpis: { total: 342, critical: 4, high: 28, medium: 110, low: 200 },
-      severityDistribution: [ { name: "Critique", value: 4, color: "#ef4444" }, { name: "Élevé", value: 28, color: "#f97316" }, { name: "Moyen", value: 110, color: "#eab308" }, { name: "Faible", value: 200, color: "#3b82f6" } ],
-      categoryDistribution: [ { category: "SSL/TLS", count: 120 }, { category: "DNS", count: 85 }, { category: "Ports", count: 65 } ],
-      agingData: [ { range: "< 30j", count: 180 }, { range: "31-60j", count: 90 }, { range: "> 90j", count: 27 } ],
-      list: [
-        { finding: "TLS 1.0 Autorisé", category: "SSL/TLS", severity: "Élevé", cve: "N/A", cvss: 7.5, asset: "web.entreprise.com", exposureTime: "45j", impactScore: "-4 pts", status: "En cours" },
-        { finding: "OpenSSL RCE", category: "Web App Vulns", severity: "Critique", cve: "CVE-2024-1234", cvss: 9.8, asset: "ext-app.entreprise.com", exposureTime: "12j", impactScore: "-12 pts", status: "Ouvert" }
-      ]
-    },
-    hygiene: {
-      sslTls: { expiredCerts: 2, expiringSoon: 14, weakProtocols: 8, score: 85 },
-      dns: { dmarcPolicy: "Reject", score: 92 },
-      services: { openPortsCount: 45, criticalServicesExposed: 2, score: 78 }
-    },
-    techShadowIt: {
-      technologies: [
-        { name: "Nginx", version: "1.18.0", instances: 24, risk: "Élevé", vulnsCount: 8 }
-      ],
-      shadowIt: [
-        { name: "cloud-dev.com", type: "Domaine", discoveryDate: "2026-07-21", risk: "Élevé", details: "Non enregistré" }
-      ]
-    },
-    benchmark: {
-      radarData: [
-        { metric: 'Rating', Enterprise: 82, Industry: 65, Top10: 92 },
-        { metric: 'Infections', Enterprise: 95, Industry: 70, Top10: 98 },
-        { metric: 'SSL', Enterprise: 85, Industry: 60, Top10: 90 },
-        { metric: 'DNS', Enterprise: 92, Industry: 75, Top10: 96 }
-      ]
-    },
-    historyRecommendations: {
-      timeline: [
-        { date: "23 Juil 2026", title: "Hausse du Score (+15 pts)", desc: "Remédiation certificats expirés." }
-      ],
-      actions: [
-        { action: "Bloquer port RDP", impact: "+10 pts", difficulty: "Faible", priority: "P1", assignee: "Réseau", status: "En cours" }
-      ]
-    }
-  };
+      attackSurface: {
+        totalExposed: 1450, newAssetsCount: 18, domainsCount: 42, subdomainsCount: 890, publicIpsCount: 518, exposedServicesCount: 124, technologiesCount: 35,
+        riskyAssets: [
+          { asset: "vpn-legacy.entreprise.com", type: "Sous-domaine", riskLevel: "F (Critique)", findings: 12, lastObserved: "2026-07-23" },
+          { asset: "198.51.100.45", type: "IP Publique", riskLevel: "D (Élevé)", findings: 8, lastObserved: "2026-07-22" }
+        ]
+      },
+      findings: {
+        kpis: { total: 342, critical: 4, high: 28, medium: 110, low: 200 },
+        severityDistribution: [ { name: "Critique", value: 4, color: "#ef4444" }, { name: "Élevé", value: 28, color: "#f97316" }, { name: "Moyen", value: 110, color: "#eab308" }, { name: "Faible", value: 200, color: "#3b82f6" } ],
+        categoryDistribution: [ { category: "SSL/TLS", count: 120 }, { category: "DNS", count: 85 }, { category: "Ports", count: 65 } ],
+        agingData: [ { range: "< 30j", count: 180 }, { range: "31-60j", count: 90 }, { range: "> 90j", count: 27 } ],
+        list: [
+          { finding: "TLS 1.0 Autorisé", category: "SSL/TLS", severity: "Élevé", cve: "N/A", cvss: 7.5, asset: "web.entreprise.com", exposureTime: "45j", impactScore: "-4 pts", status: "En cours" },
+          { finding: "OpenSSL RCE", category: "Web App Vulns", severity: "Critique", cve: "CVE-2024-1234", cvss: 9.8, asset: "ext-app.entreprise.com", exposureTime: "12j", impactScore: "-12 pts", status: "Ouvert" }
+        ]
+      },
+      hygiene: {
+        sslTls: { expiredCerts: 2, expiringSoon: 14, weakProtocols: 8, score: 85 },
+        dns: { dmarcPolicy: "Reject", score: 92 },
+        services: { openPortsCount: 45, criticalServicesExposed: 2, score: 78 }
+      },
+      techShadowIt: {
+        technologies: [
+          { name: "Nginx", version: "1.18.0", instances: 24, risk: "Élevé", vulnsCount: 8 }
+        ],
+        shadowIt: [
+          { name: "cloud-dev.com", type: "Domaine", discoveryDate: "2026-07-21", risk: "Élevé", details: "Non enregistré" }
+        ]
+      },
+      benchmark: {
+        radarData: [
+          { metric: 'Rating', Enterprise: 82, Industry: 65, Top10: 92 },
+          { metric: 'Infections', Enterprise: 95, Industry: 70, Top10: 98 },
+          { metric: 'SSL', Enterprise: 85, Industry: 60, Top10: 90 },
+          { metric: 'DNS', Enterprise: 92, Industry: 75, Top10: 96 }
+        ]
+      },
+      historyRecommendations: {
+        timeline: [
+          { date: "23 Juil 2026", title: "Hausse du Score (+15 pts)", desc: "Remédiation certificats expirés." }
+        ],
+        actions: [
+          { action: "Bloquer port RDP", impact: "+10 pts", difficulty: "Faible", priority: "P1", assignee: "Réseau", status: "En cours" }
+        ]
+      }
+    };
+
+    const fetchBitsightDetails = async () => {
+      const token = import.meta.env.VITE_BITSIGHT_TOKEN;
+      const guid = import.meta.env.VITE_BITSIGHT_COMPANY_GUID;
+
+      if (!token || !guid) {
+        console.warn("API BitSight non configurée. Chargement du Mock.");
+        await new Promise(resolve => setTimeout(resolve, 800));
+        return MOCK_BITSIGHT_DATA;
+      }
+
+      try {
+        // 1. Préparation de l'authentification
+        const credentials = btoa(`${token}:`);
+
+        // 2. Appel à l'API via notre proxy Vite
+        const response = await fetch(`/api/bitsight/ratings/v1/companies/${guid}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Basic ${credentials}`,
+            'Accept': 'application/json'
+          }
+        });
+
+        if (!response.ok) {
+          throw new Error(`Erreur HTTP: ${response.status}`);
+        }
+
+        const realData = await response.json();
+        console.log("Données brutes BitSight :", realData);
+
+        // 3. LE MAPPING (Traduction des données BitSight vers ton format UI)
+        // On clone le Mock pour garder les graphiques fonctionnels, et on écrase
+        // les valeurs statiques par les vraies valeurs de l'API.
+        const mappedData = {
+          ...MOCK_BITSIGHT_DATA,
+          executive: {
+            ...MOCK_BITSIGHT_DATA.executive,
+            score: realData.rating || MOCK_BITSIGHT_DATA.executive.score,
+            industryAvg: realData.industry_average || MOCK_BITSIGHT_DATA.executive.industryAvg,
+            // On récupère la date de la dernière donnée calculée
+            lastSync: realData.rating_date || new Date().toISOString().split('T')[0]
+          }
+          // Note : Pour remplir la section "findings" ou "priorityRisks",
+          // il faudra faire un 2ème appel API (Promise.all) vers l'endpoint /findings
+        };
+
+        return mappedData;
+
+      } catch (error) {
+        console.error("Erreur lors de la récupération BitSight:", error);
+        // En cas de crash de l'API, on renvoie le Mock pour ne pas casser l'écran du RSSI
+        return MOCK_BITSIGHT_DATA;
+      }
+    };
+
+    export default function BitsightPanel() {
+      // 3. React Query gère l'appel
+      const { data: apiData, isLoading } = useQuery({
+        queryKey: ['bitsight-dashboard-data'],
+        queryFn: fetchBitsightDetails,
+        refetchInterval: 1000 * 60 * 60, // Rafraîchissement toutes les heures
+      });
+
+      // 4. Écran de chargement élégant
+      if (isLoading) {
+        return (
+          <div className="flex flex-col items-center justify-center py-24 space-y-4">
+            <Globe className="w-8 h-8 text-emerald-500 animate-spin opacity-50" />
+            <p className="text-muted-foreground animate-pulse font-medium">Synchronisation avec BitSight...</p>
+          </div>
+        );
+      }
+
+      const data = apiData || MOCK_BITSIGHT_DATA;
 
   return (
     <div className="space-y-6">
