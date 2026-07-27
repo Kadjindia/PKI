@@ -1,22 +1,32 @@
 import React, { useEffect, useState } from "react";
-import { Activity, Cpu, AlertOctagon, CheckCircle2, XCircle, Loader2, Calendar } from "lucide-react";
+import { Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function CortexPanel() {
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
-  const [message, setMessage] = useState<string>("Synchronisation des KPIs via l&apos;API REST...");
-  const [kpis, setKpis] = useState({ coverageTotal: 0, coverageConnected: 0, totalAlerts: 0 });
+  const [message, setMessage] = useState<string>("Synchronisation des KPIs via l'API REST...");
 
-  // États pour le filtre temporel dynamique
+  const [kpis, setKpis] = useState<{ coverageTotal: number; coverageConnected: number; totalAlerts: number; impactedEndpoints: number | null }>({
+    coverageTotal: 0,
+    coverageConnected: 0,
+    totalAlerts: 0,
+    impactedEndpoints: null
+  });
+
   const [timePrefix, setTimePrefix] = useState<"last" | "this" | "next">("last");
   const [timeValue, setTimeValue] = useState<number>(30);
   const [timeUnit, setTimeUnit] = useState<"days" | "months" | "years">("days");
 
   useEffect(() => {
-    const fetchGlobalKPIs = async () => {
-      console.log("=== 🔌 [CORTEX REST API] Démarrage de la synchronisation temporelle ===");
+    let isCancelled = false;
 
-      // 1. CALCUL DYNAMIQUE DES TIMESTAMPS
+    const fetchGlobalKPIs = async () => {
+      console.log("=== 🔌 [CORTEX DUAL API] Démarrage de la synchronisation (REST + XQL) ===");
+
+      setKpis(prev => ({ ...prev, impactedEndpoints: null }));
+      setStatus("loading");
+
+      // 1. CALCUL DYNAMIQUE DES TIMESTAMPS (Epoch en millisecondes)
       const now = new Date();
       let fromTimestamp = 0;
       let toTimestamp = 0;
@@ -48,9 +58,6 @@ export default function CortexPanel() {
         toTimestamp = toDate.getTime();
       }
 
-      console.log(`⏱️ Filtre temporel appliqué : ${timePrefix} ${timePrefix !== 'this' ? timeValue : ''} ${timeUnit}`);
-      console.log(`🕒 Bornes calculées : DE [${new Date(fromTimestamp).toLocaleString()}] À [${new Date(toTimestamp).toLocaleString()}]`);
-
       const fqdn = import.meta.env.VITE_CORTEX_FQDN;
       const apiKeyId = import.meta.env.VITE_CORTEX_API_KEY_ID;
       const apiKey = import.meta.env.VITE_CORTEX_API_KEY;
@@ -68,7 +75,6 @@ export default function CortexPanel() {
       };
 
       try {
-        setStatus("loading");
         const nonce = generateNonce(64);
         const timestamp = Date.now().toString();
         const hashedAuthKey = await computeSHA256(String(apiKey) + nonce + timestamp);
@@ -84,78 +90,93 @@ export default function CortexPanel() {
         let currentKpis = { coverageTotal: 0, coverageConnected: 0, totalAlerts: 0 };
 
         // =========================================================================
-        // 1. TOTAL ENDPOINTS (Snapshot actuel)
+        // PARTIE 1 : APPELS REST (Instantanés)
         // =========================================================================
+
         const totalEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
           method: 'POST', headers, body: JSON.stringify({ request_data: { search_from: 0, search_to: 1 } })
         });
-        if (totalEndpointsRes.ok) {
-          currentKpis.coverageTotal = (await totalEndpointsRes.json()).reply?.total_count || 0;
-        }
+        if (totalEndpointsRes.ok) currentKpis.coverageTotal = (await totalEndpointsRes.json()).reply?.total_count || 0;
 
-        // =========================================================================
-        // 2. ENDPOINTS CONNECTÉS (Snapshot actuel)
-        // =========================================================================
         const connectedEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
           method: 'POST', headers, body: JSON.stringify({
             request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
           })
         });
-        if (connectedEndpointsRes.ok) {
-          currentKpis.coverageConnected = (await connectedEndpointsRes.json()).reply?.total_count || 0;
-        }
+        if (connectedEndpointsRes.ok) currentKpis.coverageConnected = (await connectedEndpointsRes.json()).reply?.total_count || 0;
+
+        const alertsRes = await fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
+          method: 'POST', headers, body: JSON.stringify({
+            request_data: { search_from: 0, search_to: 1, filters: [{ field: "creation_time", operator: "gte", value: fromTimestamp }, { field: "creation_time", operator: "lte", value: toTimestamp }] }
+          })
+        });
+        if (alertsRes.ok) currentKpis.totalAlerts = (await alertsRes.json()).reply?.total_count || 0;
+
+        if (isCancelled) return;
+        setKpis(prev => ({ ...prev, ...currentKpis }));
+        setStatus("success");
 
         // =========================================================================
-        // 3. VOLUME TOTAL DES ALERTES (Avec filtrage temporel strict DE/À)
+        // PARTIE 2 : APPEL XQL CONFORME (Utilisation de l'objet timeframe natif)
         // =========================================================================
-        const req3Payload = {
+        const xqlQuery = `dataset = alerts | filter host_name != null and host_name != "" | comp count_distinct(host_name) as unique_hosts`;
+
+        const xqlPayload = {
           request_data: {
-            search_from: 0,
-            search_to: 1,
-            filters: [
-              {
-                field: "creation_time",
-                operator: "gte",
-                value: fromTimestamp
-              },
-              {
-                field: "creation_time",
-                operator: "lte",
-                value: toTimestamp
-              }
-            ]
+            query: xqlQuery,
+            timeframe: {
+              from: fromTimestamp,
+              to: toTimestamp
+            }
           }
         };
 
-        console.log("▶️ [API 3/3] Requête Volume Alertes (Dynamique) :", JSON.stringify(req3Payload));
+        console.log("▶️ [API XQL] Payload officiel avec timeframe :", JSON.stringify(xqlPayload));
 
-        const alertsRes = await fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(req3Payload)
+        const startXqlRes = await fetch(`/api/cortex/public_api/v1/xql/start_xql_query/`, {
+          method: 'POST', headers, body: JSON.stringify(xqlPayload)
         });
 
-        if (alertsRes.ok) {
-          const alData = await alertsRes.json();
-          currentKpis.totalAlerts = alData.reply?.total_count || 0;
-          console.log(`✅ [API 3/3] Total Alertes trouvé pour la période : ${currentKpis.totalAlerts}`);
-        } else {
-           console.error(`❌ [API 3/3] Erreur HTTP ${alertsRes.status}`);
+        if (startXqlRes.ok) {
+          const queryId = (await startXqlRes.json()).reply;
+
+          for (let i = 0; i < 15; i++) {
+            if (isCancelled) break;
+
+            await new Promise(res => setTimeout(res, 2000));
+            const pollRes = await fetch(`/api/cortex/public_api/v1/xql/get_query_results/`, {
+              method: 'POST', headers, body: JSON.stringify({ request_data: { query_id: queryId } })
+            });
+
+            if (!pollRes.ok) continue;
+            const pollData = await pollRes.json();
+
+            if (pollData.reply?.status === "SUCCESS") {
+              const results = pollData.reply.results?.data || [];
+              const distinctHosts = results.length > 0 ? (Number(results[0].unique_hosts) || 0) : 0;
+
+              console.log(`✅ [API XQL] Succès ! Endpoints distincts impactés : ${distinctHosts}`);
+              if (!isCancelled) {
+                setKpis(prev => ({ ...prev, impactedEndpoints: distinctHosts }));
+              }
+              break;
+            } else if (pollData.reply?.status === "FAIL" || pollData.reply?.status === "FAILED") {
+              console.error("❌ [API XQL] Échec de la requête. Réponse Cortex :", pollData);
+              if (!isCancelled) setKpis(prev => ({ ...prev, impactedEndpoints: 0 }));
+              break;
+            }
+          }
         }
 
-        setKpis(currentKpis);
-        setStatus("success");
-        setMessage("Métriques globales synchronisées avec succès.");
-
       } catch (err: any) {
-        console.error("❌ Exception critique capturée :", err);
+        console.error("❌ Exception critique :", err);
         setStatus("error");
         setMessage(`Erreur technique : ${err.message}`);
       }
     };
 
     fetchGlobalKPIs();
-  // Le useEffect se redéclenche automatiquement si timePrefix, timeValue ou timeUnit changent !
+    return () => { isCancelled = true; };
   }, [timePrefix, timeValue, timeUnit]);
 
   return (
@@ -167,7 +188,7 @@ export default function CortexPanel() {
           <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
             <Activity className="w-7 h-7 text-purple-500" /> Évaluation des Risques
           </h2>
-          <p className="text-muted-foreground font-medium mt-1">Architecture REST - Filtres dynamiques en temps réel</p>
+          <p className="text-muted-foreground font-medium mt-1">Architecture Duale : REST (Instantané) & XQL (Asynchrone)</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 bg-secondary/20 p-2 rounded-xl border border-border">
@@ -223,8 +244,9 @@ export default function CortexPanel() {
       )}
 
       {status === "success" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
+          {/* CARTE 1 : COUVERTURE (REST) */}
           <Card className="bg-card shadow-sm border-l-4 border-l-blue-500">
             <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Couverture Endpoints</CardTitle>
@@ -241,16 +263,40 @@ export default function CortexPanel() {
             </CardContent>
           </Card>
 
+          {/* CARTE 2 : VOLUME ALERTES (REST) */}
           <Card className="bg-card shadow-sm border-l-4 border-l-purple-500">
             <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
-                Volume d&apos;Alertes ({timePrefix === 'this' ? 'Ce(tte)' : timePrefix === 'last' ? 'Dernier(s)' : 'Suivant(s)'} {timePrefix !== 'this' ? timeValue : ''} {timeUnit === 'days' ? 'Jour(s)' : timeUnit === 'months' ? 'Mois' : 'Année(s)'})
+                Volume d&apos;Alertes
               </CardTitle>
               <div className="p-1.5 bg-purple-500/10 rounded-md"><AlertOctagon className="w-4 h-4 text-purple-600" /></div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-black text-foreground">{kpis.totalAlerts.toLocaleString()}</div>
-              <p className="text-[11px] font-medium text-muted-foreground mt-1">Total généré sur la période sélectionnée</p>
+              <p className="text-[11px] font-medium text-muted-foreground mt-1">Total généré sur la période</p>
+            </CardContent>
+          </Card>
+
+          {/* CARTE 3 : ENDPOINTS IMPACTÉS (XQL Asynchrone) */}
+          <Card className="bg-card shadow-sm border-l-4 border-l-orange-500">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                Endpoints Impactés
+              </CardTitle>
+              <div className="p-1.5 bg-orange-500/10 rounded-md"><Target className="w-4 h-4 text-orange-600" /></div>
+            </CardHeader>
+            <CardContent>
+              {kpis.impactedEndpoints === null ? (
+                <div className="flex items-center gap-2 text-muted-foreground mt-1">
+                  <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
+                  <span className="text-xs font-medium">Calcul XQL...</span>
+                </div>
+              ) : (
+                <>
+                  <div className="text-3xl font-black text-foreground">{kpis.impactedEndpoints.toLocaleString()}</div>
+                  <p className="text-[11px] font-medium text-muted-foreground mt-1">Hôtes distincts générant des alertes</p>
+                </>
+              )}
             </CardContent>
           </Card>
 
