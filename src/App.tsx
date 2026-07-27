@@ -33,7 +33,12 @@ const App = () => (
     <ThemeProvider>
       <AuthProvider>
         <KpiProvider>
-          <BrowserRouter>
+          <BrowserRouter
+            future={{
+              v7_startTransition: true,
+              v7_relativeSplatPath: true,
+            }}
+          >
             {/* Le minuteur d'inactivité est placé ici, il surveillera toutes les routes */}
             <IdleTimeout timeoutInMinutes={15} />
 

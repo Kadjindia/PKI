@@ -22,7 +22,7 @@ export default function MonitoringView() {
           <Briefcase className="w-8 h-8 text-blue-500" /> Pilotage Stratégique des Risques SI
         </h1>
         <p className="text-sm text-muted-foreground mt-2">
-          Tableaux de bord d'aide à la décision RSSI (Scale : 4000 collaborateurs, données à 30 jours).
+          Tableaux de bord d'aide à la décision RSSI.
         </p>
       </div>
 
@@ -31,7 +31,7 @@ export default function MonitoringView() {
         <div className="w-full overflow-x-auto pb-2 scrollbar-hide">
           <TabsList className="inline-flex h-auto p-1 bg-secondary/30 min-w-max border border-border">
             <TabsTrigger value="executive" className="py-2.5 px-6 text-sm font-bold data-[state=active]:bg-blue-600 data-[state=active]:text-white transition-all shadow-sm">Vue Globale (Executive)</TabsTrigger>
-            <TabsTrigger value="bitsight" className="py-2.5 px-4 text-sm">BitSight (Tiers)</TabsTrigger>
+            <TabsTrigger value="bitsight" className="py-2.5 px-4 text-sm">BitSight</TabsTrigger>
             <TabsTrigger value="qradar" className="py-2.5 px-4 text-sm">QRadar (SIEM)</TabsTrigger>
             <TabsTrigger value="qualys" className="py-2.5 px-4 text-sm">Qualys (Vuln)</TabsTrigger>
             <TabsTrigger value="netskope" className="py-2.5 px-4 text-sm">Netskope (Cloud)</TabsTrigger>

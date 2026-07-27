@@ -1,102 +1,261 @@
-import React from "react";
-import {
-  Accordion, AccordionContent, AccordionItem, AccordionTrigger
-} from "@/components/ui/accordion";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import React, { useEffect, useState } from "react";
+import { Activity, Cpu, AlertOctagon, CheckCircle2, XCircle, Loader2, Calendar } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Cpu, Activity, Zap, CheckCircle2, ShieldAlert, Clock, PlayCircle
-} from "lucide-react";
 
 export default function CortexPanel() {
-  const data = {
-    kpis: {
-      mttd: "4 minutes",
-      mttr: "1.2 heures",
-      automationRate: "82%",
-      savedHours: "450h / mois",
-      activePlaybooks: 64
-    },
-    incidentsQueue: [
-      { id: "INC-8842", title: "Campagne Phishing -> Exfiltration ciblée", severity: "Critique", playbook: "PB_Ransomware_Auto_Isolate", status: "Résolu (Auto)" },
-      { id: "INC-8841", title: "Anomalie comportementale OAuth Token", severity: "Élevé", playbook: "PB_Revoke_Cloud_Session", status: "En cours (Analyste L2)" },
-      { id: "INC-8840", title: "Tentative de contournement EDR", severity: "Critique", playbook: "PB_Forensic_Snapshot", status: "Assigné" }
-    ],
-    playbookMetrics: [
-      { name: "Isolation d'endpoint compromise", executions: 124, successRate: "99.2%", avgTime: "12 sec" },
-      { name: "Blocage automatique IP C2 (Threat Intel)", executions: 1450, successRate: "100%", avgTime: "2 sec" },
-      { name: "Réinitialisation mot de passe compromise AD", executions: 85, successRate: "95.0%", avgTime: "45 sec" }
-    ]
-  };
+  const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
+  const [message, setMessage] = useState<string>("Synchronisation des KPIs via l&apos;API REST...");
+  const [kpis, setKpis] = useState({ coverageTotal: 0, coverageConnected: 0, totalAlerts: 0 });
+
+  // États pour le filtre temporel dynamique
+  const [timePrefix, setTimePrefix] = useState<"last" | "this" | "next">("last");
+  const [timeValue, setTimeValue] = useState<number>(30);
+  const [timeUnit, setTimeUnit] = useState<"days" | "months" | "years">("days");
+
+  useEffect(() => {
+    const fetchGlobalKPIs = async () => {
+      console.log("=== 🔌 [CORTEX REST API] Démarrage de la synchronisation temporelle ===");
+
+      // 1. CALCUL DYNAMIQUE DES TIMESTAMPS
+      const now = new Date();
+      let fromTimestamp = 0;
+      let toTimestamp = 0;
+
+      if (timePrefix === "this") {
+        if (timeUnit === "days") {
+          fromTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+          toTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
+        } else if (timeUnit === "months") {
+          fromTimestamp = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+          toTimestamp = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
+        } else if (timeUnit === "years") {
+          fromTimestamp = new Date(now.getFullYear(), 0, 1).getTime();
+          toTimestamp = new Date(now.getFullYear() + 1, 0, 1).getTime() - 1;
+        }
+      } else if (timePrefix === "last") {
+        toTimestamp = now.getTime();
+        const fromDate = new Date(now);
+        if (timeUnit === "days") fromDate.setDate(fromDate.getDate() - timeValue);
+        else if (timeUnit === "months") fromDate.setMonth(fromDate.getMonth() - timeValue);
+        else if (timeUnit === "years") fromDate.setFullYear(fromDate.getFullYear() - timeValue);
+        fromTimestamp = fromDate.getTime();
+      } else if (timePrefix === "next") {
+        fromTimestamp = now.getTime();
+        const toDate = new Date(now);
+        if (timeUnit === "days") toDate.setDate(toDate.getDate() + timeValue);
+        else if (timeUnit === "months") toDate.setMonth(toDate.getMonth() + timeValue);
+        else if (timeUnit === "years") toDate.setFullYear(toDate.getFullYear() + timeValue);
+        toTimestamp = toDate.getTime();
+      }
+
+      console.log(`⏱️ Filtre temporel appliqué : ${timePrefix} ${timePrefix !== 'this' ? timeValue : ''} ${timeUnit}`);
+      console.log(`🕒 Bornes calculées : DE [${new Date(fromTimestamp).toLocaleString()}] À [${new Date(toTimestamp).toLocaleString()}]`);
+
+      const fqdn = import.meta.env.VITE_CORTEX_FQDN;
+      const apiKeyId = import.meta.env.VITE_CORTEX_API_KEY_ID;
+      const apiKey = import.meta.env.VITE_CORTEX_API_KEY;
+
+      if (!fqdn || !apiKeyId || !apiKey) {
+        setStatus("error");
+        setMessage("Paramètres d'API manquants.");
+        return;
+      }
+
+      const generateNonce = (length = 64) => Array.from({length}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
+      const computeSHA256 = async (text: string) => {
+        const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+      };
+
+      try {
+        setStatus("loading");
+        const nonce = generateNonce(64);
+        const timestamp = Date.now().toString();
+        const hashedAuthKey = await computeSHA256(String(apiKey) + nonce + timestamp);
+
+        const headers = {
+          "x-xdr-timestamp": timestamp,
+          "x-xdr-nonce": nonce,
+          "x-xdr-auth-id": String(apiKeyId),
+          "Authorization": hashedAuthKey,
+          "Content-Type": "application/json"
+        };
+
+        let currentKpis = { coverageTotal: 0, coverageConnected: 0, totalAlerts: 0 };
+
+        // =========================================================================
+        // 1. TOTAL ENDPOINTS (Snapshot actuel)
+        // =========================================================================
+        const totalEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
+          method: 'POST', headers, body: JSON.stringify({ request_data: { search_from: 0, search_to: 1 } })
+        });
+        if (totalEndpointsRes.ok) {
+          currentKpis.coverageTotal = (await totalEndpointsRes.json()).reply?.total_count || 0;
+        }
+
+        // =========================================================================
+        // 2. ENDPOINTS CONNECTÉS (Snapshot actuel)
+        // =========================================================================
+        const connectedEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
+          method: 'POST', headers, body: JSON.stringify({
+            request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
+          })
+        });
+        if (connectedEndpointsRes.ok) {
+          currentKpis.coverageConnected = (await connectedEndpointsRes.json()).reply?.total_count || 0;
+        }
+
+        // =========================================================================
+        // 3. VOLUME TOTAL DES ALERTES (Avec filtrage temporel strict DE/À)
+        // =========================================================================
+        const req3Payload = {
+          request_data: {
+            search_from: 0,
+            search_to: 1,
+            filters: [
+              {
+                field: "creation_time",
+                operator: "gte",
+                value: fromTimestamp
+              },
+              {
+                field: "creation_time",
+                operator: "lte",
+                value: toTimestamp
+              }
+            ]
+          }
+        };
+
+        console.log("▶️ [API 3/3] Requête Volume Alertes (Dynamique) :", JSON.stringify(req3Payload));
+
+        const alertsRes = await fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(req3Payload)
+        });
+
+        if (alertsRes.ok) {
+          const alData = await alertsRes.json();
+          currentKpis.totalAlerts = alData.reply?.total_count || 0;
+          console.log(`✅ [API 3/3] Total Alertes trouvé pour la période : ${currentKpis.totalAlerts}`);
+        } else {
+           console.error(`❌ [API 3/3] Erreur HTTP ${alertsRes.status}`);
+        }
+
+        setKpis(currentKpis);
+        setStatus("success");
+        setMessage("Métriques globales synchronisées avec succès.");
+
+      } catch (err: any) {
+        console.error("❌ Exception critique capturée :", err);
+        setStatus("error");
+        setMessage(`Erreur technique : ${err.message}`);
+      }
+    };
+
+    fetchGlobalKPIs();
+  // Le useEffect se redéclenche automatiquement si timePrefix, timeValue ou timeUnit changent !
+  }, [timePrefix, timeValue, timeUnit]);
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="border-l-4 border-l-blue-500 bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase">MTTD XSIAM</CardTitle></CardHeader>
-          <CardContent><div className="text-3xl font-black text-blue-500">{data.kpis.mttd}</div><p className="text-[11px] text-muted-foreground mt-1">Détection par corrélation IA</p></CardContent>
-        </Card>
-        <Card className="bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase">Taux d'Automatisation (SOAR)</CardTitle></CardHeader>
-          <CardContent><div className="text-3xl font-black text-emerald-500">{data.kpis.automationRate}</div><p className="text-[11px] text-muted-foreground mt-1">{data.kpis.savedHours}</p></CardContent>
-        </Card>
-        <Card className="bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase">MTTR Opérationnel</CardTitle></CardHeader>
-          <CardContent><div className="text-3xl font-black text-foreground">{data.kpis.mttr}</div><p className="text-[11px] text-muted-foreground mt-1">Temps de remédiation global</p></CardContent>
-        </Card>
-        <Card className="bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase">Playbooks Actifs</CardTitle></CardHeader>
-          <CardContent><div className="text-3xl font-black text-purple-500">{data.kpis.activePlaybooks}</div><p className="text-[11px] text-muted-foreground mt-1">Scénarios d'orchestration</p></CardContent>
-        </Card>
+
+      {/* HEADER & FILTRES TEMPORELS */}
+      <div className="border-b border-border pb-4 flex flex-col md:flex-row md:items-end justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
+            <Activity className="w-7 h-7 text-purple-500" /> Évaluation des Risques
+          </h2>
+          <p className="text-muted-foreground font-medium mt-1">Architecture REST - Filtres dynamiques en temps réel</p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 bg-secondary/20 p-2 rounded-xl border border-border">
+          <Calendar className="w-4 h-4 text-muted-foreground ml-2" />
+
+          <select
+            value={timePrefix}
+            onChange={(e) => setTimePrefix(e.target.value as "last"|"this"|"next")}
+            className="bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-purple-500 outline-none cursor-pointer"
+          >
+            <option value="last">Dernier(s)</option>
+            <option value="this">Ce/Cette</option>
+            <option value="next">Suivant(s)</option>
+          </select>
+
+          {timePrefix !== "this" && (
+            <input
+              type="number"
+              min="1"
+              value={timeValue}
+              onChange={(e) => setTimeValue(Number(e.target.value))}
+              className="bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 w-20 focus:ring-2 focus:ring-purple-500 outline-none"
+            />
+          )}
+
+          <select
+            value={timeUnit}
+            onChange={(e) => setTimeUnit(e.target.value as "days"|"months"|"years")}
+            className="bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-purple-500 outline-none cursor-pointer"
+          >
+            <option value="days">Jour(s)</option>
+            <option value="months">Mois</option>
+            <option value="years">Année(s)</option>
+          </select>
+        </div>
       </div>
 
-      {/* File d'incidents */}
-      <Card className="border border-border shadow-sm">
-        <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">
-          <CardTitle className="text-base font-bold flex items-center gap-2"><Cpu className="w-5 h-5 text-blue-500" /> Queue des Incidents & Playbooks XSIAM</CardTitle>
-          <Badge variant="outline">Temps Réel</Badge>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader><TableRow><TableHead className="pl-6">ID / Titre de l'Incident</TableHead><TableHead>Sévérité</TableHead><TableHead>Playbook Déclenché</TableHead><TableHead>Statut</TableHead></TableRow></TableHeader>
-            <TableBody>
-              {data.incidentsQueue.map((inc, i) => (
-                <TableRow key={i}>
-                  <TableCell className="pl-6 font-bold text-sm"><span className="block">{inc.title}</span><span className="text-xs font-mono text-blue-500">{inc.id}</span></TableCell>
-                  <TableCell><Badge variant="destructive">{inc.severity}</Badge></TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{inc.playbook}</TableCell>
-                  <TableCell><Badge variant={inc.status.includes('Résolu') ? 'default' : 'secondary'} className={inc.status.includes('Résolu') ? 'bg-emerald-500' : ''}>{inc.status}</Badge></TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {status === "loading" && (
+        <div className="flex flex-col items-center justify-center py-20 space-y-4">
+          <Loader2 className="w-10 h-10 text-purple-500 animate-spin" />
+          <p className="text-muted-foreground font-medium">{message}</p>
+        </div>
+      )}
 
-      {/* Performance Playbooks */}
-      <Accordion type="multiple" className="w-full space-y-4">
-        <AccordionItem value="item-1" className="border border-border rounded-2xl bg-card overflow-hidden">
-          <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10"><div className="flex items-center gap-3 text-base font-bold"><Zap className="w-5 h-5 text-orange-500" /> Efficacité des Playbooks SOAR</div></AccordionTrigger>
-          <AccordionContent className="p-0">
-            <Table>
-              <TableHeader><TableRow><TableHead className="pl-6">Nom du Playbook</TableHead><TableHead>Exécutions (30j)</TableHead><TableHead>Taux de Succès</TableHead><TableHead>Temps Moyen</TableHead></TableRow></TableHeader>
-              <TableBody>
-                {data.playbookMetrics.map((p, i) => (
-                  <TableRow key={i}>
-                    <TableCell className="pl-6 font-bold text-sm">{p.name}</TableCell>
-                    <TableCell className="font-mono text-sm">{p.executions}</TableCell>
-                    <TableCell className="font-bold text-emerald-500">{p.successRate}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{p.avgTime}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </AccordionContent>
-        </AccordionItem>
-      </Accordion>
+      {status === "error" && (
+        <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-xl flex items-center gap-3 text-destructive">
+          <XCircle className="w-6 h-6 shrink-0" />
+          <div>
+            <h4 className="font-bold text-sm uppercase">Échec de synchronisation</h4>
+            <p className="text-xs opacity-90 mt-0.5">{message}</p>
+          </div>
+        </div>
+      )}
+
+      {status === "success" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+          <Card className="bg-card shadow-sm border-l-4 border-l-blue-500">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Couverture Endpoints</CardTitle>
+              <div className="p-1.5 bg-blue-500/10 rounded-md"><Cpu className="w-4 h-4 text-blue-600" /></div>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-baseline gap-2">
+                <span className="text-3xl font-black text-foreground">{kpis.coverageConnected.toLocaleString()}</span>
+                <span className="text-sm font-bold text-muted-foreground">/ {kpis.coverageTotal.toLocaleString()}</span>
+              </div>
+              <p className="text-[11px] font-medium text-muted-foreground mt-1">
+                Agents actuellement connectés
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card shadow-sm border-l-4 border-l-purple-500">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                Volume d&apos;Alertes ({timePrefix === 'this' ? 'Ce(tte)' : timePrefix === 'last' ? 'Dernier(s)' : 'Suivant(s)'} {timePrefix !== 'this' ? timeValue : ''} {timeUnit === 'days' ? 'Jour(s)' : timeUnit === 'months' ? 'Mois' : 'Année(s)'})
+              </CardTitle>
+              <div className="p-1.5 bg-purple-500/10 rounded-md"><AlertOctagon className="w-4 h-4 text-purple-600" /></div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-black text-foreground">{kpis.totalAlerts.toLocaleString()}</div>
+              <p className="text-[11px] font-medium text-muted-foreground mt-1">Total généré sur la période sélectionnée</p>
+            </CardContent>
+          </Card>
+
+        </div>
+      )}
     </div>
   );
 }

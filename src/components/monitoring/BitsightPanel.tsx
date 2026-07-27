@@ -99,7 +99,6 @@ const fetchBitsightDetails = async () => {
     const ratingResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}`, { headers });
     if (ratingResponse.ok) {
       const ratingData = await ratingResponse.json();
-      console.log("=== VRAIES DONNÉES SCORE (RATING) ===", ratingData);
 
       realData.executive.score = ratingData.current_rating || 0;
       realData.executive.industryName = ratingData.industry || "Secteur inconnu";
@@ -207,7 +206,6 @@ const fetchBitsightDetails = async () => {
     const allFindingsResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}/findings?limit=500`, { headers });
     if (allFindingsResponse.ok) {
       const allData = await allFindingsResponse.json();
-      console.log("=== VRAIES DONNÉES FINDINGS ===", allData);
 
       realData.executive.totalFindings = allData.count || 0;
       realData.findings.kpis.total = allData.count || 0;
@@ -268,7 +266,6 @@ const fetchBitsightDetails = async () => {
     const findingsResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}/findings?severity_category=severe&limit=10`, { headers });
     if (findingsResponse.ok) {
       const findingsData = await findingsResponse.json();
-      console.log("=== VRAIES DONNÉES FAILLES SÉVÈRES ===", findingsData);
 
       if (findingsData && Array.isArray(findingsData.results)) {
         realData.executive.criticalRisks = findingsData.count || 0;
@@ -343,34 +340,55 @@ const fetchBitsightDetails = async () => {
   // --- APPEL 3 : INVENTAIRE ET SURFACE D'ATTAQUE + TECHNOLOGIES ---
   try {
     const assetsResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}/assets?limit=1000`, { headers });
+
     if (assetsResponse.ok) {
       const assetsData = await assetsResponse.json();
-      console.log("=== VRAIES DONNÉES ASSETS (Surface d'Attaque) ===", assetsData);
 
       if (assetsData && typeof assetsData.count === 'number') {
         realData.executive.monitoredAssets = assetsData.count;
-
-        const ipCount = realData.attackSurface.publicIpsCount;
-        const domainCount = assetsData.count > ipCount ? assetsData.count - ipCount : 0;
-        realData.attackSurface.domainsCount = domainCount;
-        realData.attackSurface.subdomainsCount = 0;
       }
 
       if (assetsData && Array.isArray(assetsData.results)) {
+
+        // ==========================================
+
         let criticalCount = 0;
+        let ipCount = 0;
+        let domainCount = 0;
         const techList: any[] = [];
 
         realData.attackSurface.riskyAssets = assetsData.results.map((asset: any) => {
-          let riskLabel = "Normal";
-          if (asset.importance_category === "critical") { riskLabel = "Critique"; criticalCount++; }
-          else if (asset.importance_category === "high") { riskLabel = "Élevé"; }
-          else if (asset.importance_category === "medium") { riskLabel = "Moyen"; }
-          else if (asset.importance_category === "low") { riskLabel = "Faible"; }
 
-          let typeLabel = "Inconnu";
-          if (asset.asset_type === "IP" || asset.is_ip === true) typeLabel = "IP Publique";
-          else if (asset.asset_type === "Domain") typeLabel = "Domaine";
+          // 1. CORRECTION : Lecture propre de la criticité (1 = Critique)
+          const category = String(asset.importance_category || "").toLowerCase();
+          const importanceNum = Number(asset.importance);
 
+          const severeFindingsCount = asset.findings?.counts_by_severity?.severe || 0;
+          const materialFindingsCount = asset.findings?.counts_by_severity?.material || 0;
+
+          let riskLabel = "Faible";
+          // Un actif est critique s'il a le tag "critical", l'importance 1, ou des failles graves
+          if (category === "critical" || importanceNum === 1 || severeFindingsCount > 0 || materialFindingsCount > 0) {
+            riskLabel = "Critique";
+            criticalCount++;
+          } else if (category === "high" || importanceNum === 2) {
+            riskLabel = "Élevé";
+          } else if (category === "medium" || importanceNum === 3) {
+            riskLabel = "Moyen";
+          } else {
+            riskLabel = "Faible";
+          }
+
+          // 2. Détection dynamique IP vs Domaine
+          let typeLabel = "Domaine";
+          if (asset.is_ip === true || asset.asset_type === "IP" || asset.type === "ip") {
+            typeLabel = "IP Publique";
+            ipCount++;
+          } else {
+            domainCount++;
+          }
+
+          // 3. Extraction des technologies
           if (Array.isArray(asset.products)) {
             asset.products.forEach((prod: any) => {
               if (prod.vendor && prod.vendor !== "unknown") {
@@ -404,22 +422,26 @@ const fetchBitsightDetails = async () => {
           };
         });
 
+        // Mise à jour explicite des compteurs pour les cartes
+        realData.attackSurface.publicIpsCount = ipCount;
+        realData.attackSurface.domainsCount = domainCount;
         realData.attackSurface.criticalAssetsCount = criticalCount;
         realData.techShadowIt.technologies = techList;
       }
+    } else {
+      console.error("❌ Erreur API Assets:", await assetsResponse.text());
     }
   } catch (error) {
     console.error("Crash réseau sur la Surface d'Attaque :", error);
   }
 
-  console.log("🚀 Données 100% PURES envoyées à React :", realData);
   return realData;
 };
 
 // 2. COMPOSANT PRINCIPAL
 export default function BitsightPanel() {
   const { data, isLoading } = useQuery({
-    queryKey: ['bitsight-real-data-v40'], // Clé v40
+    queryKey: ['bitsight-real-data-v45'],
     queryFn: fetchBitsightDetails,
     refetchInterval: 1000 * 60 * 15,
   });
