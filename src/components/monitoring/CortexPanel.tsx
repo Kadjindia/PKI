@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users, ShieldCheck, Monitor, AlertTriangle } from "lucide-react";
+import {
+  Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users,
+  ShieldCheck, Monitor, AlertTriangle, Layers, ServerCrash
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend
@@ -30,6 +33,9 @@ const SEVERITY_CONFIG: Record<string, { label: string; color: string; order: num
 
 const getSeverityStyle = (sev: string) => SEVERITY_CONFIG[sev] || { label: sev, color: "#94a3b8", order: 99 };
 
+// Palette pour les catégories
+const CATEGORY_PALETTE = ["#8b5cf6", "#0ea5e9", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b", "#a855f7", "#3b82f6"];
+
 export default function CortexPanel() {
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [message, setMessage] = useState<string>("Synchronisation des KPIs via l'API REST...");
@@ -48,9 +54,16 @@ export default function CortexPanel() {
     impactedUsers: null
   });
 
-  // KPI Sévérité des Alertes
+  // KPI Sévérité
   const [severityDistribution, setSeverityDistribution] = useState<{ severity: string; count: number }[] | null>(null);
   const totalSeveritiesCount = severityDistribution ? severityDistribution.reduce((sum, s) => sum + s.count, 0) : 0;
+
+  // KPI Catégories
+  const [categoryDistribution, setCategoryDistribution] = useState<{ category: string; count: number }[] | null>(null);
+  const totalCategories = categoryDistribution ? categoryDistribution.reduce((sum, c) => sum + c.count, 0) : 0;
+
+  // KPI Top endpoints à risque
+  const [topEndpoints, setTopEndpoints] = useState<{ host: string; score: number; count: number }[] | null>(null);
 
   // KPI Versions d'agent
   const [agentVersions, setAgentVersions] = useState<{ version: string; count: number }[] | null>(null);
@@ -85,6 +98,8 @@ export default function CortexPanel() {
       setAgentVersions(null);
       setOsDistribution(null);
       setSeverityDistribution(null);
+      setCategoryDistribution(null);
+      setTopEndpoints(null);
       setStatus("loading");
 
       // 1. CALCUL DYNAMIQUE DES TIMESTAMPS
@@ -129,70 +144,60 @@ export default function CortexPanel() {
         return;
       }
 
-      const generateNonce = (length = 64) => Array.from({length}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
-      const computeSHA256 = async (text: string) => {
-        const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+      // 🛡️ API CALL SECURE : Génère un nonce unique par appel
+      const apiCall = async (endpoint: string, payload: any) => {
+        const nonce = Array.from({length: 64}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
+        const timestamp = Date.now().toString();
+        const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(apiKey) + nonce + timestamp));
+        const hashedAuthKey = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        return fetch(`/api/cortex${endpoint}`, {
+          method: 'POST',
+          headers: {
+            "x-xdr-timestamp": timestamp,
+            "x-xdr-nonce": nonce,
+            "x-xdr-auth-id": String(apiKeyId),
+            "Authorization": hashedAuthKey,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
       };
 
       try {
-        const nonce = generateNonce(64);
-        const timestamp = Date.now().toString();
-        const hashedAuthKey = await computeSHA256(String(apiKey) + nonce + timestamp);
-
-        const headers = {
-          "x-xdr-timestamp": timestamp,
-          "x-xdr-nonce": nonce,
-          "x-xdr-auth-id": String(apiKeyId),
-          "Authorization": hashedAuthKey,
-          "Content-Type": "application/json"
-        };
-
         let currentKpis = { coverageTotal: 0, coverageConnected: 0, totalAlerts: 0 };
 
         // =========================================================================
         // PARTIE 1 : APPELS REST (Instantanés)
         // =========================================================================
-        const totalEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
-          method: 'POST', headers, body: JSON.stringify({ request_data: { search_from: 0, search_to: 1 } })
-        });
+        const totalEndpointsRes = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, { request_data: { search_from: 0, search_to: 1 } });
         if (totalEndpointsRes.ok) currentKpis.coverageTotal = (await totalEndpointsRes.json()).reply?.total_count || 0;
 
-        const connectedEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
-          method: 'POST', headers, body: JSON.stringify({
-            request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
-          })
+        const connectedEndpointsRes = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, {
+          request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
         });
         if (connectedEndpointsRes.ok) currentKpis.coverageConnected = (await connectedEndpointsRes.json()).reply?.total_count || 0;
 
-        const alertsRes = await fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
-          method: 'POST', headers, body: JSON.stringify({
-            request_data: { search_from: 0, search_to: 1, filters: [{ field: "creation_time", operator: "gte", value: fromTimestamp }, { field: "creation_time", operator: "lte", value: toTimestamp }] }
-          })
+        const alertsRes = await apiCall(`/public_api/v1/alerts/get_alerts_multi_events/`, {
+          request_data: { search_from: 0, search_to: 1, filters: [{ field: "creation_time", operator: "gte", value: fromTimestamp }, { field: "creation_time", operator: "lte", value: toTimestamp }] }
         });
         if (alertsRes.ok) currentKpis.totalAlerts = (await alertsRes.json()).reply?.total_count || 0;
 
-        // Requêtes REST pour les sévérités en parallèle (Syntaxe sécurisée 'in' avec tableau)
         const severitiesToFetch = ["Critical", "High", "Medium", "Low", "Informational"];
         const severityPromises = severitiesToFetch.map(sev =>
-          fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
-            method: 'POST', headers, body: JSON.stringify({
-              request_data: {
-                search_from: 0, search_to: 1,
-                filters: [
-                  { field: "creation_time", operator: "gte", value: fromTimestamp },
-                  { field: "creation_time", operator: "lte", value: toTimestamp },
-                  { field: "severity", operator: "in", value: [sev] }
-                ]
-              }
-            })
+          apiCall(`/public_api/v1/alerts/get_alerts_multi_events/`, {
+            request_data: {
+              search_from: 0, search_to: 1,
+              filters: [
+                { field: "creation_time", operator: "gte", value: fromTimestamp },
+                { field: "creation_time", operator: "lte", value: toTimestamp },
+                { field: "severity", operator: "in", value: [sev] }
+              ]
+            }
           })
           .then(res => res.json())
           .then(data => ({ severity: sev, count: data?.reply?.total_count || 0 }))
-          .catch(err => {
-            console.warn(`[REST] Erreur de récupération pour la sévérité ${sev}:`, err);
-            return { severity: sev, count: 0 };
-          })
+          .catch(() => ({ severity: sev, count: 0 }))
         );
 
         const severityResults = await Promise.all(severityPromises);
@@ -208,17 +213,24 @@ export default function CortexPanel() {
         setStatus("success");
 
         // =========================================================================
-        // PARTIE 2 : APPELS XQL (Asynchrones lourds)
+        // PARTIE 2 : APPELS XQL
         // =========================================================================
         const executeXql = async (query: string, label: string, withTimeframe = true) => {
           const payload: any = { request_data: { query } };
-          if (withTimeframe) payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
 
-          const startRes = await fetch(`/api/cortex/public_api/v1/xql/start_xql_query/`, {
-            method: 'POST', headers, body: JSON.stringify(payload)
-          });
+          // La condition withTimeframe est cruciale : on ne l'injecte QUE si c'est true
+          // Car le dataset "endpoints" plantera en erreur 500 s'il reçoit ce bloc JSON.
+          if (withTimeframe) {
+            payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
+          }
 
-          if (!startRes.ok) return null;
+          const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload);
+
+          if (!startRes.ok) {
+            console.error(`❌ [API XQL - ${label}] Erreur HTTP au démarrage :`, startRes.status);
+            return null;
+          }
+
           const startData = await startRes.json();
           const queryId = startData?.reply;
           if (!queryId) return null;
@@ -226,15 +238,15 @@ export default function CortexPanel() {
           for (let i = 0; i < 15; i++) {
             if (isCancelled) break;
             await new Promise(res => setTimeout(res, 2000));
-            const pollRes = await fetch(`/api/cortex/public_api/v1/xql/get_query_results/`, {
-              method: 'POST', headers, body: JSON.stringify({ request_data: { query_id: queryId } })
-            });
+            const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
+
             if (!pollRes.ok) continue;
             const pollData = await pollRes.json();
 
             if (pollData.reply?.status === "SUCCESS") {
               return pollData.reply.results?.data || [];
             } else if (pollData.reply?.status === "FAIL" || pollData.reply?.status === "FAILED") {
+              console.warn(`[XQL] Échec de la requête "${label}"`);
               break;
             }
           }
@@ -243,31 +255,87 @@ export default function CortexPanel() {
 
         const hostsQuery = `dataset = alerts | filter host_name != null and host_name != "" | comp count_distinct(host_name) as unique_hosts`;
         const usersQuery = `dataset = alerts | filter user_name != null and to_string(user_name) != "" | comp count_distinct(to_string(user_name)) as unique_users`;
+        const categoryQuery = `dataset = alerts | filter category != null and category != "" | comp count() as cnt by category | sort desc cnt | limit 15`;
+        const topEndpointsQuery = `dataset = alerts | filter host_name != null and host_name != "" | comp count() as cnt by host_name, severity | limit 500`;
 
-        executeXql(hostsQuery, "Endpoints").then(rows => {
-          const distinctHosts = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
-          if (!isCancelled) setKpis(prev => ({ ...prev, impactedEndpoints: distinctHosts }));
-        });
-
-        executeXql(usersQuery, "Utilisateurs").then(rows => {
-          const distinctUsers = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
-          if (!isCancelled) setKpis(prev => ({ ...prev, impactedUsers: distinctUsers }));
-        });
-
+        // CORRECTION MAJEURE : On remet 'config timeframe' pour l'inventaire
+        // Ces deux requêtes sont exécutées avec withTimeframe = false !
         const osQuery = `config timeframe = 3650d | dataset = endpoints | filter operating_system != null and operating_system != "" | comp count_distinct(endpoint_id) as cnt by operating_system`;
-        executeXql(osQuery, "Répartition OS", false).then(rows => {
+        const versionsQuery = `config timeframe = 3650d | dataset = endpoints | filter agent_version != null and agent_version != "" | comp count_distinct(endpoint_id) as cnt by agent_version`;
+
+        executeXql(hostsQuery, "Endpoints", true).then(rows => {
           if (isCancelled || !rows) return;
+          const distinctHosts = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
+          setKpis(prev => ({ ...prev, impactedEndpoints: distinctHosts }));
+        });
+
+        executeXql(usersQuery, "Utilisateurs", true).then(rows => {
+          if (isCancelled || !rows) return;
+          const distinctUsers = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
+          setKpis(prev => ({ ...prev, impactedUsers: distinctUsers }));
+        });
+
+        executeXql(categoryQuery, "Catégories", true).then(rows => {
+          if (isCancelled) return;
+          if (!rows) { setCategoryDistribution([]); return; }
           const parsed = rows
-            .map((r: any) => ({ os: String(r.operating_system), count: Number(r.cnt) || 0 }))
+            .map((r: any) => {
+              const catKey = Object.keys(r).find(k => k !== 'cnt');
+              const catName = catKey ? r[catKey] : "Inconnue";
+              return { category: String(catName), count: Number(r.cnt) || 0 };
+            })
+            .sort((a, b) => b.count - a.count);
+          setCategoryDistribution(parsed);
+        });
+
+        executeXql(topEndpointsQuery, "Top endpoints", true).then(rows => {
+          if (isCancelled) return;
+          if (!rows) { setTopEndpoints([]); return; }
+
+          const scores: Record<string, { host: string; score: number; count: number }> = {};
+
+          rows.forEach((r: any) => {
+            const host = String(r.host_name);
+            const sev = String(r.severity);
+            const count = Number(r.cnt) || 0;
+
+            let weight = 1;
+            if (sev === "Critical") weight = 4;
+            else if (sev === "High") weight = 3;
+            else if (sev === "Medium") weight = 2;
+
+            if (!scores[host]) scores[host] = { host, score: 0, count: 0 };
+            scores[host].score += (count * weight);
+            scores[host].count += count;
+          });
+
+          const parsed = Object.values(scores).sort((a, b) => b.score - a.score).slice(0, 10);
+          setTopEndpoints(parsed);
+        });
+
+        // ⚠️ Exécution avec FALSE pour ne pas envoyer le bloc timeframe
+        executeXql(osQuery, "Répartition OS", false).then(rows => {
+          if (isCancelled) return;
+          if (!rows) { setOsDistribution([]); return; }
+          const parsed = rows
+            .map((r: any) => {
+              const osKey = Object.keys(r).find(k => k !== 'cnt');
+              const osName = osKey ? r[osKey] : "Inconnu";
+              return { os: String(osName), count: Number(r.cnt) || 0 };
+            })
             .sort((a, b) => b.count - a.count);
           setOsDistribution(parsed);
         });
 
-        const versionsQuery = `config timeframe = 3650d | dataset = endpoints | filter agent_version != null and agent_version != "" | comp count_distinct(endpoint_id) as cnt by agent_version`;
         executeXql(versionsQuery, "Versions Agent", false).then(rows => {
-          if (isCancelled || !rows) return;
+          if (isCancelled) return;
+          if (!rows) { setAgentVersions([]); return; }
           const parsed = rows
-            .map((r: any) => ({ version: String(r.agent_version), count: Number(r.cnt) || 0 }))
+            .map((r: any) => {
+              const verKey = Object.keys(r).find(k => k !== 'cnt');
+              const verName = verKey ? r[verKey] : "Inconnue";
+              return { version: String(verName), count: Number(r.cnt) || 0 };
+            })
             .sort((a, b) => compareVersions(b.version, a.version));
           setAgentVersions(parsed);
         });
@@ -417,7 +485,7 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 2 : FOCUS SÉVÉRITÉ DES ALERTES (1/3 Camembert XXL - 2/3 Détails Jauges) */}
+          {/* LIGNE 2 : FOCUS SÉVÉRITÉ DES ALERTES */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-0">
@@ -505,7 +573,94 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 3 : INVENTAIRE DU PARC (3 Colonnes équilibrées) */}
+          {/* LIGNE 3 : CATÉGORIES + TOP ENDPOINTS À RISQUE */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-2">
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-violet-500" /> Répartition par catégorie
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow">
+                {!categoryDistribution ? (
+                  <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-violet-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : categoryDistribution.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic text-center py-8">Aucune catégorie sur la période.</p>
+                ) : (
+                  <div className="space-y-2.5 overflow-y-auto pr-2 max-h-[280px] custom-scrollbar">
+                    {categoryDistribution.map((c, index) => {
+                      const color = CATEGORY_PALETTE[index % CATEGORY_PALETTE.length];
+                      const percentage = totalCategories > 0 ? ((c.count / totalCategories) * 100).toFixed(1) : "0";
+
+                      return (
+                        <div key={c.category} className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden group hover:bg-secondary/20 transition-colors">
+                          <div
+                            className="absolute top-0 left-0 h-full opacity-15"
+                            style={{ width: `${percentage}%`, backgroundColor: color }}
+                          />
+                          <div className="relative z-10 flex items-center gap-2 overflow-hidden">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                            <span className="font-bold text-foreground text-xs truncate" title={c.category}>{c.category}</span>
+                          </div>
+                          <div className="relative z-10 flex items-center gap-4 shrink-0">
+                            <span className="font-bold text-muted-foreground text-[10px] w-10 text-right">{percentage}%</span>
+                            <span className="font-black text-foreground text-sm w-12 text-right">{c.count.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <ServerCrash className="w-4 h-4 text-rose-500" /> Top endpoints à risque
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow">
+                {!topEndpoints ? (
+                  <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-rose-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : topEndpoints.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic text-center py-8">Aucun endpoint impacté.</p>
+                ) : (
+                  <div className="space-y-2.5 overflow-y-auto pr-2 max-h-[280px] custom-scrollbar">
+                    {topEndpoints.map((e, index) => {
+                      const maxScore = topEndpoints[0]?.score || 1;
+                      const percentage = ((e.score / maxScore) * 100).toFixed(0);
+
+                      return (
+                        <div key={e.host} className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden group hover:bg-secondary/20 transition-colors">
+                          <div
+                            className="absolute top-0 left-0 h-full opacity-15 bg-rose-500"
+                            style={{ width: `${percentage}%` }}
+                          />
+                          <div className="relative z-10 flex items-center gap-2 overflow-hidden">
+                            <span className="font-black text-rose-500 text-[10px] w-4 shrink-0">#{index + 1}</span>
+                            <span className="font-bold text-foreground text-xs truncate" title={e.host}>{e.host}</span>
+                          </div>
+                          <div className="relative z-10 flex items-center gap-4 shrink-0">
+                            <span className="font-bold text-muted-foreground text-[10px]">{e.count} alerte{e.count > 1 ? "s" : ""}</span>
+                            <span className="font-black text-rose-500 text-sm w-10 text-right">{e.score.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 4 : INVENTAIRE DU PARC (3 Colonnes équilibrées) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
 
             {/* Colonne 1 : Camembert Statut Agents */}
