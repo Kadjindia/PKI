@@ -1,17 +1,75 @@
 import React, { useEffect, useState } from "react";
-import { Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target } from "lucide-react";
+import { Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users, ShieldCheck, Monitor, AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend
+} from "recharts";
+
+// ----------------------------------------------------------------------------
+// Comparaison de versions type "8.2.0.32000" -> compare partie par partie.
+// ----------------------------------------------------------------------------
+const compareVersions = (a: string, b: string): number => {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+};
+
+// Dictionnaire de traduction et couleurs pour les sévérités Cortex
+const SEVERITY_CONFIG: Record<string, { label: string; color: string; order: number }> = {
+  "Critical": { label: "Critique", color: "#9f1239", order: 1 },
+  "High": { label: "Élevé", color: "#ef4444", order: 2 },
+  "Medium": { label: "Moyen", color: "#f59e0b", order: 3 },
+  "Low": { label: "Faible", color: "#3b82f6", order: 4 },
+  "Informational": { label: "Info", color: "#64748b", order: 5 },
+};
+
+const getSeverityStyle = (sev: string) => SEVERITY_CONFIG[sev] || { label: sev, color: "#94a3b8", order: 99 };
 
 export default function CortexPanel() {
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [message, setMessage] = useState<string>("Synchronisation des KPIs via l'API REST...");
 
-  const [kpis, setKpis] = useState<{ coverageTotal: number; coverageConnected: number; totalAlerts: number; impactedEndpoints: number | null }>({
+  const [kpis, setKpis] = useState<{
+    coverageTotal: number;
+    coverageConnected: number;
+    totalAlerts: number;
+    impactedEndpoints: number | null;
+    impactedUsers: number | null;
+  }>({
     coverageTotal: 0,
     coverageConnected: 0,
     totalAlerts: 0,
-    impactedEndpoints: null
+    impactedEndpoints: null,
+    impactedUsers: null
   });
+
+  // KPI Sévérité des Alertes
+  const [severityDistribution, setSeverityDistribution] = useState<{ severity: string; count: number }[] | null>(null);
+  const totalSeveritiesCount = severityDistribution ? severityDistribution.reduce((sum, s) => sum + s.count, 0) : 0;
+
+  // KPI Versions d'agent
+  const [agentVersions, setAgentVersions] = useState<{ version: string; count: number }[] | null>(null);
+  const versionKey = (v: string) => v.split(".").slice(0, 3).join(".");
+  const referenceVersion = agentVersions?.length
+    ? agentVersions.reduce((max, v) => (compareVersions(v.version, max) > 0 ? v.version : max), agentVersions[0].version)
+    : null;
+  const referenceKey = referenceVersion ? versionKey(referenceVersion) : null;
+
+  const totalAgents = agentVersions ? agentVersions.reduce((sum, v) => sum + v.count, 0) : 0;
+  const upToDateCount = agentVersions
+    ? agentVersions.filter((v) => versionKey(v.version) === referenceKey).reduce((sum, v) => sum + v.count, 0)
+    : 0;
+  const outdatedCount = totalAgents - upToDateCount;
+
+  // KPI OS
+  const [osDistribution, setOsDistribution] = useState<{ os: string; count: number }[] | null>(null);
+  const totalOs = osDistribution ? osDistribution.reduce((sum, o) => sum + o.count, 0) : 0;
+  const OS_PALETTE = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b"];
 
   const [timePrefix, setTimePrefix] = useState<"last" | "this" | "next">("last");
   const [timeValue, setTimeValue] = useState<number>(30);
@@ -21,12 +79,15 @@ export default function CortexPanel() {
     let isCancelled = false;
 
     const fetchGlobalKPIs = async () => {
-      console.log("=== 🔌 [CORTEX DUAL API] Démarrage de la synchronisation (REST + XQL) ===");
+      console.log("=== 🔌 [CORTEX DUAL API] Démarrage de la synchronisation ===");
 
-      setKpis(prev => ({ ...prev, impactedEndpoints: null }));
+      setKpis(prev => ({ ...prev, impactedEndpoints: null, impactedUsers: null }));
+      setAgentVersions(null);
+      setOsDistribution(null);
+      setSeverityDistribution(null);
       setStatus("loading");
 
-      // 1. CALCUL DYNAMIQUE DES TIMESTAMPS (Epoch en millisecondes)
+      // 1. CALCUL DYNAMIQUE DES TIMESTAMPS
       const now = new Date();
       let fromTimestamp = 0;
       let toTimestamp = 0;
@@ -92,7 +153,6 @@ export default function CortexPanel() {
         // =========================================================================
         // PARTIE 1 : APPELS REST (Instantanés)
         // =========================================================================
-
         const totalEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
           method: 'POST', headers, body: JSON.stringify({ request_data: { search_from: 0, search_to: 1 } })
         });
@@ -112,61 +172,105 @@ export default function CortexPanel() {
         });
         if (alertsRes.ok) currentKpis.totalAlerts = (await alertsRes.json()).reply?.total_count || 0;
 
+        // Requêtes REST pour les sévérités en parallèle (Syntaxe sécurisée 'in' avec tableau)
+        const severitiesToFetch = ["Critical", "High", "Medium", "Low", "Informational"];
+        const severityPromises = severitiesToFetch.map(sev =>
+          fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
+            method: 'POST', headers, body: JSON.stringify({
+              request_data: {
+                search_from: 0, search_to: 1,
+                filters: [
+                  { field: "creation_time", operator: "gte", value: fromTimestamp },
+                  { field: "creation_time", operator: "lte", value: toTimestamp },
+                  { field: "severity", operator: "in", value: [sev] }
+                ]
+              }
+            })
+          })
+          .then(res => res.json())
+          .then(data => ({ severity: sev, count: data?.reply?.total_count || 0 }))
+          .catch(err => {
+            console.warn(`[REST] Erreur de récupération pour la sévérité ${sev}:`, err);
+            return { severity: sev, count: 0 };
+          })
+        );
+
+        const severityResults = await Promise.all(severityPromises);
+
         if (isCancelled) return;
         setKpis(prev => ({ ...prev, ...currentKpis }));
+
+        const validSeverities = severityResults
+          .filter(s => s.count > 0)
+          .sort((a, b) => getSeverityStyle(a.severity).order - getSeverityStyle(b.severity).order);
+        setSeverityDistribution(validSeverities);
+
         setStatus("success");
 
         // =========================================================================
-        // PARTIE 2 : APPEL XQL CONFORME (Utilisation de l'objet timeframe natif)
+        // PARTIE 2 : APPELS XQL (Asynchrones lourds)
         // =========================================================================
-        const xqlQuery = `dataset = alerts | filter host_name != null and host_name != "" | comp count_distinct(host_name) as unique_hosts`;
+        const executeXql = async (query: string, label: string, withTimeframe = true) => {
+          const payload: any = { request_data: { query } };
+          if (withTimeframe) payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
 
-        const xqlPayload = {
-          request_data: {
-            query: xqlQuery,
-            timeframe: {
-              from: fromTimestamp,
-              to: toTimestamp
-            }
-          }
-        };
+          const startRes = await fetch(`/api/cortex/public_api/v1/xql/start_xql_query/`, {
+            method: 'POST', headers, body: JSON.stringify(payload)
+          });
 
-        console.log("▶️ [API XQL] Payload officiel avec timeframe :", JSON.stringify(xqlPayload));
-
-        const startXqlRes = await fetch(`/api/cortex/public_api/v1/xql/start_xql_query/`, {
-          method: 'POST', headers, body: JSON.stringify(xqlPayload)
-        });
-
-        if (startXqlRes.ok) {
-          const queryId = (await startXqlRes.json()).reply;
+          if (!startRes.ok) return null;
+          const startData = await startRes.json();
+          const queryId = startData?.reply;
+          if (!queryId) return null;
 
           for (let i = 0; i < 15; i++) {
             if (isCancelled) break;
-
             await new Promise(res => setTimeout(res, 2000));
             const pollRes = await fetch(`/api/cortex/public_api/v1/xql/get_query_results/`, {
               method: 'POST', headers, body: JSON.stringify({ request_data: { query_id: queryId } })
             });
-
             if (!pollRes.ok) continue;
             const pollData = await pollRes.json();
 
             if (pollData.reply?.status === "SUCCESS") {
-              const results = pollData.reply.results?.data || [];
-              const distinctHosts = results.length > 0 ? (Number(results[0].unique_hosts) || 0) : 0;
-
-              console.log(`✅ [API XQL] Succès ! Endpoints distincts impactés : ${distinctHosts}`);
-              if (!isCancelled) {
-                setKpis(prev => ({ ...prev, impactedEndpoints: distinctHosts }));
-              }
-              break;
+              return pollData.reply.results?.data || [];
             } else if (pollData.reply?.status === "FAIL" || pollData.reply?.status === "FAILED") {
-              console.error("❌ [API XQL] Échec de la requête. Réponse Cortex :", pollData);
-              if (!isCancelled) setKpis(prev => ({ ...prev, impactedEndpoints: 0 }));
               break;
             }
           }
-        }
+          return null;
+        };
+
+        const hostsQuery = `dataset = alerts | filter host_name != null and host_name != "" | comp count_distinct(host_name) as unique_hosts`;
+        const usersQuery = `dataset = alerts | filter user_name != null and to_string(user_name) != "" | comp count_distinct(to_string(user_name)) as unique_users`;
+
+        executeXql(hostsQuery, "Endpoints").then(rows => {
+          const distinctHosts = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
+          if (!isCancelled) setKpis(prev => ({ ...prev, impactedEndpoints: distinctHosts }));
+        });
+
+        executeXql(usersQuery, "Utilisateurs").then(rows => {
+          const distinctUsers = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
+          if (!isCancelled) setKpis(prev => ({ ...prev, impactedUsers: distinctUsers }));
+        });
+
+        const osQuery = `config timeframe = 3650d | dataset = endpoints | filter operating_system != null and operating_system != "" | comp count_distinct(endpoint_id) as cnt by operating_system`;
+        executeXql(osQuery, "Répartition OS", false).then(rows => {
+          if (isCancelled || !rows) return;
+          const parsed = rows
+            .map((r: any) => ({ os: String(r.operating_system), count: Number(r.cnt) || 0 }))
+            .sort((a, b) => b.count - a.count);
+          setOsDistribution(parsed);
+        });
+
+        const versionsQuery = `config timeframe = 3650d | dataset = endpoints | filter agent_version != null and agent_version != "" | comp count_distinct(endpoint_id) as cnt by agent_version`;
+        executeXql(versionsQuery, "Versions Agent", false).then(rows => {
+          if (isCancelled || !rows) return;
+          const parsed = rows
+            .map((r: any) => ({ version: String(r.agent_version), count: Number(r.cnt) || 0 }))
+            .sort((a, b) => compareVersions(b.version, a.version));
+          setAgentVersions(parsed);
+        });
 
       } catch (err: any) {
         console.error("❌ Exception critique :", err);
@@ -244,63 +348,304 @@ export default function CortexPanel() {
       )}
 
       {status === "success" && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-
-          {/* CARTE 1 : COUVERTURE (REST) */}
-          <Card className="bg-card shadow-sm border-l-4 border-l-blue-500">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Couverture Endpoints</CardTitle>
-              <div className="p-1.5 bg-blue-500/10 rounded-md"><Cpu className="w-4 h-4 text-blue-600" /></div>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-baseline gap-2">
-                <span className="text-3xl font-black text-foreground">{kpis.coverageConnected.toLocaleString()}</span>
-                <span className="text-sm font-bold text-muted-foreground">/ {kpis.coverageTotal.toLocaleString()}</span>
-              </div>
-              <p className="text-[11px] font-medium text-muted-foreground mt-1">
-                Agents actuellement connectés
-              </p>
-            </CardContent>
-          </Card>
-
-          {/* CARTE 2 : VOLUME ALERTES (REST) */}
-          <Card className="bg-card shadow-sm border-l-4 border-l-purple-500">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
-                Volume d&apos;Alertes
-              </CardTitle>
-              <div className="p-1.5 bg-purple-500/10 rounded-md"><AlertOctagon className="w-4 h-4 text-purple-600" /></div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-3xl font-black text-foreground">{kpis.totalAlerts.toLocaleString()}</div>
-              <p className="text-[11px] font-medium text-muted-foreground mt-1">Total généré sur la période</p>
-            </CardContent>
-          </Card>
-
-          {/* CARTE 3 : ENDPOINTS IMPACTÉS (XQL Asynchrone) */}
-          <Card className="bg-card shadow-sm border-l-4 border-l-orange-500">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
-                Endpoints Impactés
-              </CardTitle>
-              <div className="p-1.5 bg-orange-500/10 rounded-md"><Target className="w-4 h-4 text-orange-600" /></div>
-            </CardHeader>
-            <CardContent>
-              {kpis.impactedEndpoints === null ? (
-                <div className="flex items-center gap-2 text-muted-foreground mt-1">
-                  <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
-                  <span className="text-xs font-medium">Calcul XQL...</span>
+        <>
+          {/* LIGNE 1 : KPIs GLOBAUX */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card className="bg-card shadow-sm border-l-4 border-l-blue-500">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Couverture Endpoints</CardTitle>
+                <div className="p-1.5 bg-blue-500/10 rounded-md"><Cpu className="w-4 h-4 text-blue-600" /></div>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-3xl font-black text-foreground">{kpis.coverageConnected.toLocaleString()}</span>
+                  <span className="text-sm font-bold text-muted-foreground">/ {kpis.coverageTotal.toLocaleString()}</span>
                 </div>
-              ) : (
-                <>
-                  <div className="text-3xl font-black text-foreground">{kpis.impactedEndpoints.toLocaleString()}</div>
-                  <p className="text-[11px] font-medium text-muted-foreground mt-1">Hôtes distincts générant des alertes</p>
-                </>
-              )}
-            </CardContent>
-          </Card>
+                <p className="text-[11px] font-medium text-muted-foreground mt-1">Agents actuellement connectés</p>
+              </CardContent>
+            </Card>
 
-        </div>
+            <Card className="bg-card shadow-sm border-l-4 border-l-purple-500">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Volume d&apos;Alertes</CardTitle>
+                <div className="p-1.5 bg-purple-500/10 rounded-md"><AlertOctagon className="w-4 h-4 text-purple-600" /></div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-black text-foreground">{kpis.totalAlerts.toLocaleString()}</div>
+                <p className="text-[11px] font-medium text-muted-foreground mt-1">Total généré sur la période</p>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card shadow-sm border-l-4 border-l-orange-500">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Endpoints Impactés</CardTitle>
+                <div className="p-1.5 bg-orange-500/10 rounded-md"><Target className="w-4 h-4 text-orange-600" /></div>
+              </CardHeader>
+              <CardContent>
+                {kpis.impactedEndpoints === null ? (
+                  <div className="flex items-center gap-2 text-muted-foreground mt-1">
+                    <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-3xl font-black text-foreground">{kpis.impactedEndpoints.toLocaleString()}</div>
+                    <p className="text-[11px] font-medium text-muted-foreground mt-1">Hôtes distincts impactés</p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card shadow-sm border-l-4 border-l-emerald-500">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Utilisateurs Impactés</CardTitle>
+                <div className="p-1.5 bg-emerald-500/10 rounded-md"><Users className="w-4 h-4 text-emerald-600" /></div>
+              </CardHeader>
+              <CardContent>
+                {kpis.impactedUsers === null ? (
+                  <div className="flex items-center gap-2 text-muted-foreground mt-1">
+                    <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-3xl font-black text-foreground">{kpis.impactedUsers.toLocaleString()}</div>
+                    <p className="text-[11px] font-medium text-muted-foreground mt-1">Comptes distincts impactés</p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 2 : FOCUS SÉVÉRITÉ DES ALERTES (1/3 Camembert XXL - 2/3 Détails Jauges) */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-500" /> Sévérité des alertes
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow flex flex-col items-center justify-center min-h-[280px]">
+                {!severityDistribution ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
+                    <span className="text-xs font-medium">Chargement REST...</span>
+                  </div>
+                ) : severityDistribution.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Aucune alerte sur la période.</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie
+                        data={severityDistribution.map(s => ({
+                          name: getSeverityStyle(s.severity).label,
+                          value: s.count,
+                          color: getSeverityStyle(s.severity).color
+                        }))}
+                        innerRadius={65}
+                        outerRadius={95}
+                        paddingAngle={3}
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {severityDistribution.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={getSeverityStyle(entry.severity).color} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip contentStyle={{ borderRadius: '8px', border: '1px solid var(--border)', fontSize: '12px', fontWeight: 'bold' }} itemStyle={{ color: 'var(--foreground)' }} />
+                      <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold' }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="lg:col-span-2 border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase">
+                  Détail par niveau de risque
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow flex flex-col justify-center">
+                {!severityDistribution ? (
+                  <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-orange-500" />
+                    <span className="text-xs font-medium">Chargement REST...</span>
+                  </div>
+                ) : severityDistribution.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic text-center py-8">Aucune alerte à afficher.</p>
+                ) : (
+                  <div className="space-y-3.5 overflow-y-auto pr-2 max-h-[240px] custom-scrollbar">
+                    {severityDistribution.map((s) => {
+                      const style = getSeverityStyle(s.severity);
+                      const percentage = totalSeveritiesCount > 0 ? ((s.count / totalSeveritiesCount) * 100).toFixed(1) : "0";
+
+                      return (
+                        <div key={s.severity} className="relative flex items-center justify-between p-3 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden group hover:bg-secondary/20 transition-colors">
+                          <div
+                            className="absolute top-0 left-0 h-full opacity-15 transition-all duration-500"
+                            style={{ width: `${percentage}%`, backgroundColor: style.color }}
+                          />
+                          <div className="relative z-10 flex items-center gap-3">
+                            <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: style.color }} />
+                            <span className="font-bold text-foreground text-sm uppercase tracking-wide" style={{ color: style.color }}>
+                              {style.label}
+                            </span>
+                          </div>
+                          <div className="relative z-10 flex items-center gap-6">
+                            <span className="font-bold text-muted-foreground text-xs w-12 text-right">{percentage}%</span>
+                            <span className="font-black text-foreground text-base w-16 text-right">{s.count.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 3 : INVENTAIRE DU PARC (3 Colonnes équilibrées) */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
+
+            {/* Colonne 1 : Camembert Statut Agents */}
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-teal-500" /> Statut global des agents
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow flex flex-col items-center justify-center min-h-[260px]">
+                {agentVersions === null ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-6 h-6 animate-spin text-teal-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : agentVersions.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Aucune donnée.</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <PieChart>
+                      <Pie
+                        data={[
+                          { name: "À jour", value: upToDateCount, color: "#14b8a6" },
+                          { name: "Obsolète", value: outdatedCount, color: "#64748b" }
+                        ].filter(s => s.value > 0)}
+                        innerRadius={60}
+                        outerRadius={85}
+                        paddingAngle={5}
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {[
+                          { name: "À jour", color: "#14b8a6" },
+                          { name: "Obsolète", color: "#64748b" }
+                        ].map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip contentStyle={{ borderRadius: '8px', border: '1px solid var(--border)', fontSize: '12px', fontWeight: 'bold' }} itemStyle={{ color: 'var(--foreground)' }} />
+                      <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px', fontWeight: 'bold' }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Colonne 2 : Liste Versions Agent */}
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
+                <div className="flex items-center justify-between w-full">
+                  <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-teal-500" /> Versions
+                  </CardTitle>
+                  {referenceVersion && (
+                    <span className="text-[10px] font-bold text-teal-600 bg-teal-500/10 px-2 py-1 rounded-md border border-teal-500/20">
+                      Ref: {referenceVersion}
+                    </span>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow">
+                {agentVersions === null ? (
+                  <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-teal-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 overflow-y-auto pr-2 max-h-[220px] custom-scrollbar">
+                    {agentVersions.map((v) => {
+                      const isRef = versionKey(v.version) === referenceKey;
+                      const percentage = totalAgents > 0 ? ((v.count / totalAgents) * 100).toFixed(1) : "0";
+
+                      return (
+                        <div key={v.version} className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/10 overflow-hidden group hover:bg-secondary/20 transition-colors">
+                          <div
+                            className={`absolute top-0 left-0 h-full opacity-10 ${isRef ? 'bg-teal-500' : 'bg-slate-500'}`}
+                            style={{ width: `${percentage}%` }}
+                          />
+                          <div className="relative z-10 flex items-center gap-2 overflow-hidden">
+                            <span className={`font-mono text-[11px] md:text-xs font-bold truncate ${isRef ? "text-teal-500" : "text-foreground"}`}>
+                              {v.version}
+                            </span>
+                          </div>
+                          <div className="relative z-10 flex items-center gap-2 shrink-0">
+                            <span className="font-bold text-muted-foreground text-[10px] w-8 text-right">{percentage}%</span>
+                            <span className="font-black text-foreground text-xs w-8 text-right">{v.count.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Colonne 3 : Liste OS */}
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Monitor className="w-4 h-4 text-sky-500" /> Parc OS
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow">
+                {osDistribution === null ? (
+                  <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-sky-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 overflow-y-auto pr-2 max-h-[220px] custom-scrollbar">
+                    {osDistribution.map((o, index) => {
+                      const color = OS_PALETTE[index % OS_PALETTE.length];
+                      const percentage = totalOs > 0 ? ((o.count / totalOs) * 100).toFixed(1) : "0";
+
+                      return (
+                        <div key={o.os} className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden group hover:bg-secondary/20 transition-colors">
+                          <div
+                            className="absolute top-0 left-0 h-full opacity-20"
+                            style={{ width: `${percentage}%`, backgroundColor: color }}
+                          />
+                          <div className="relative z-10 flex items-center gap-2 overflow-hidden">
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                            <span className="font-bold text-foreground text-[11px] md:text-xs truncate" title={o.os}>
+                              {o.os}
+                            </span>
+                          </div>
+                          <div className="relative z-10 flex items-center gap-2 shrink-0">
+                            <span className="font-bold text-muted-foreground text-[10px] w-8 text-right">{percentage}%</span>
+                            <span className="font-black text-foreground text-xs w-8 text-right">{o.count.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+          </div>
+        </>
       )}
     </div>
   );
