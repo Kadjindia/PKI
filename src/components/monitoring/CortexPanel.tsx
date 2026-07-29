@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import {
   Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users,
-  ShieldCheck, Monitor, AlertTriangle, Clock, TrendingUp, Layers, ServerCrash
+  ShieldCheck, Monitor, AlertTriangle, Clock, TrendingUp, Layers, ServerCrash, Search,
+  ChevronLeft, ChevronRight
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -34,11 +35,9 @@ const SEVERITY_CONFIG: Record<string, { label: string; color: string; order: num
 
 const getSeverityStyle = (sev: string) => SEVERITY_CONFIG[sev] || { label: sev, color: "#94a3b8", order: 99 };
 
-// Palette pour les catégories / endpoints (valeurs non bornées, on tourne dessus)
+// Palette pour les catégories / endpoints
 const CATEGORY_PALETTE = ["#8b5cf6", "#0ea5e9", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b", "#a855f7", "#3b82f6"];
 
-// Descriptions des catégories d'alertes : la plupart correspondent aux tactiques MITRE ATT&CK,
-// quelques-unes sont spécifiques à Cortex XSIAM (Restrictions, Other...).
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   "reconnaissance": "Collecte d'informations sur la cible avant l'attaque.",
   "resource development": "Mise en place par l'attaquant de ressources (infrastructure, comptes, outils) en vue de l'attaque.",
@@ -81,11 +80,9 @@ export default function CortexPanel() {
     impactedUsers: null
   });
 
-  // KPI Sévérité des Alertes
   const [severityDistribution, setSeverityDistribution] = useState<{ severity: string; count: number }[] | null>(null);
   const totalSeveritiesCount = severityDistribution ? severityDistribution.reduce((sum, s) => sum + s.count, 0) : 0;
 
-  // KPI Versions d'agent
   const [agentVersions, setAgentVersions] = useState<{ version: string; count: number }[] | null>(null);
   const versionKey = (v: string) => v.split(".").slice(0, 3).join(".");
   const referenceVersion = agentVersions?.length
@@ -99,31 +96,176 @@ export default function CortexPanel() {
     : 0;
   const outdatedCount = totalAgents - upToDateCount;
 
-  // KPI OS
   const [osDistribution, setOsDistribution] = useState<{ os: string; count: number }[] | null>(null);
   const totalOs = osDistribution ? osDistribution.reduce((sum, o) => sum + o.count, 0) : 0;
   const OS_PALETTE = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b"];
 
-  // KPI Catégories d'alertes
   const [categoryDistribution, setCategoryDistribution] = useState<{ category: string; count: number }[] | null>(null);
   const totalCategories = categoryDistribution ? categoryDistribution.reduce((sum, c) => sum + c.count, 0) : 0;
-  // Tooltip catégorie : positionné en `fixed` (pas dans le flux du conteneur scrollable) pour ne pas être clippé
   const [categoryTooltip, setCategoryTooltip] = useState<{ category: string; x: number; y: number } | null>(null);
 
-  // KPI Timeline (évolution du volume d'alertes)
   const [alertsTimeline, setAlertsTimeline] = useState<{ time: number; label: string; count: number }[] | null>(null);
   const [timelineGranularity, setTimelineGranularity] = useState<"hour" | "day" | "week" | "month" | "quarter" | null>(null);
   const GRANULARITY_LABEL: Record<string, string> = { hour: "par heure", day: "par jour", week: "par semaine", month: "par mois", quarter: "par trimestre" };
 
-  // KPI Répartition par tranche horaire
   const [hourlyDistribution, setHourlyDistribution] = useState<{ hour: number; label: string; count: number }[] | null>(null);
-
-  // KPI Top endpoints à risque
   const [topEndpoints, setTopEndpoints] = useState<{ host: string; score: number; count: number }[] | null>(null);
 
   const [timePrefix, setTimePrefix] = useState<"last" | "this" | "next">("last");
   const [timeValue, setTimeValue] = useState<number>(30);
   const [timeUnit, setTimeUnit] = useState<"days" | "months" | "years">("days");
+
+  // ETATS POUR L'INVENTAIRE ET LES FILTRES
+  const [isInventoryOpen, setIsInventoryOpen] = useState(false);
+  const [inventoryData, setInventoryData] = useState<any[] | null>(null);
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [osFilter, setOsFilter] = useState("ALL");
+
+  // ETAT POUR LA PAGINATION
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 50;
+
+  const fqdn = import.meta.env.VITE_CORTEX_FQDN;
+  const apiKeyId = import.meta.env.VITE_CORTEX_API_KEY_ID;
+  const apiKey = import.meta.env.VITE_CORTEX_API_KEY;
+
+  const apiCall = async (endpoint: string, payload: any) => {
+    const nonce = Array.from({length: 64}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
+    const timestamp = Date.now().toString();
+    const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(apiKey) + nonce + timestamp));
+    const hashedAuthKey = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    return fetch(`/api/cortex${endpoint}`, {
+      method: 'POST',
+      headers: {
+        "x-xdr-timestamp": timestamp,
+        "x-xdr-nonce": nonce,
+        "x-xdr-auth-id": String(apiKeyId),
+        "Authorization": hashedAuthKey,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+  };
+
+// 🛠️ CORRECTIF PAGINATION : Parallélisation contrôlée (Workers) pour un chargement ultra-rapide
+  const fetchInventory = async () => {
+    setInventoryLoading(true);
+    setInventoryData([]);
+    setInventoryError(null);
+    setCurrentPage(1);
+
+    try {
+      const BATCH_SIZE = 100;
+      // On se base sur le total connu, ou 0 si on n'a rien
+      const totalExpected = kpis.coverageTotal > 0 ? kpis.coverageTotal : 0;
+
+      if (totalExpected === 0) {
+        setInventoryData([]);
+        setInventoryLoading(false);
+        return;
+      }
+
+      // 1. On prépare la liste de tous les "offsets" (ex: [0, 100, 200, 300...])
+      const offsets: number[] = [];
+      for (let i = 0; i < totalExpected; i += BATCH_SIZE) {
+        offsets.push(i);
+      }
+
+      let allEndpoints: any[] = [];
+      let cursor = 0;
+      const CONCURRENCY_LIMIT = 3; // On lance 3 requêtes REST en même temps max
+
+      // 2. Fonction exécutée par chaque "Worker"
+      const runNext = async (): Promise<void> => {
+        while (cursor < offsets.length) {
+          const currentFrom = offsets[cursor];
+          cursor += 1; // On réserve cet offset pour ce worker
+
+          try {
+            const res = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, {
+              request_data: {
+                search_from: currentFrom,
+                search_to: currentFrom + BATCH_SIZE
+              }
+            });
+
+            if (!res.ok) {
+              console.warn(`[REST] Échec API inventaire offset ${currentFrom}`);
+              continue; // Si un batch échoue, on passe au suivant sans tout crasher
+            }
+
+            const data = await res.json();
+            const endpoints = data.reply?.endpoints || [];
+
+            // On ajoute les résultats au tableau global
+            allEndpoints = [...allEndpoints, ...endpoints];
+
+          } catch (err) {
+            console.error(`Erreur sur le batch ${currentFrom}:`, err);
+          }
+        }
+      };
+
+      // 3. Lancement des workers en parallèle
+      const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, offsets.length) }, () => runNext());
+      await Promise.all(workers);
+
+      // 4. On trie le résultat final par nom d'hôte pour que ce soit propre,
+      // car les requêtes asynchrones ne reviennent pas forcément dans l'ordre.
+      allEndpoints.sort((a, b) => {
+        const nameA = a.endpoint_name || "";
+        const nameB = b.endpoint_name || "";
+        return nameA.localeCompare(nameB);
+      });
+
+      setInventoryData(allEndpoints);
+
+    } catch (err: any) {
+      console.error("Exception inventaire:", err);
+      setInventoryError(err.message || "Erreur inconnue lors de la récupération de l'inventaire.");
+      setInventoryData(null);
+    } finally {
+      setInventoryLoading(false);
+    }
+  };
+
+  const uniqueOSList = useMemo(() => {
+    if (!inventoryData) return [];
+    const osSet = new Set(inventoryData.map(ep => ep.operating_system).filter(Boolean));
+    return Array.from(osSet).sort();
+  }, [inventoryData]);
+
+  const filteredInventory = useMemo(() => {
+    if (!inventoryData) return [];
+    return inventoryData.filter(ep => {
+      const searchLower = searchTerm.toLowerCase();
+      const usersStr = Array.isArray(ep.users) ? ep.users.join(" ") : (ep.users || "");
+
+      const matchesSearch = searchTerm === "" ||
+        (ep.endpoint_name && ep.endpoint_name.toLowerCase().includes(searchLower)) ||
+        (usersStr.toLowerCase().includes(searchLower));
+
+      const matchesStatus = statusFilter === "ALL" || (ep.endpoint_status && ep.endpoint_status.toLowerCase() === statusFilter);
+      const matchesOS = osFilter === "ALL" || ep.operating_system === osFilter;
+
+      return matchesSearch && matchesStatus && matchesOS;
+    });
+  }, [inventoryData, searchTerm, statusFilter, osFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, osFilter]);
+
+  const totalPages = Math.ceil(filteredInventory.length / ITEMS_PER_PAGE);
+  const paginatedInventory = filteredInventory.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
 
   useEffect(() => {
     let isCancelled = false;
@@ -142,7 +284,6 @@ export default function CortexPanel() {
       setTopEndpoints(null);
       setStatus("loading");
 
-      // 1. CALCUL DYNAMIQUE DES TIMESTAMPS
       const now = new Date();
       let fromTimestamp = 0;
       let toTimestamp = 0;
@@ -174,78 +315,44 @@ export default function CortexPanel() {
         toTimestamp = toDate.getTime();
       }
 
-      const fqdn = import.meta.env.VITE_CORTEX_FQDN;
-      const apiKeyId = import.meta.env.VITE_CORTEX_API_KEY_ID;
-      const apiKey = import.meta.env.VITE_CORTEX_API_KEY;
-
       if (!fqdn || !apiKeyId || !apiKey) {
         setStatus("error");
         setMessage("Paramètres d'API manquants.");
         return;
       }
 
-      const generateNonce = (length = 64) => Array.from({length}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
-      const computeSHA256 = async (text: string) => {
-        const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-      };
-
       try {
-        const nonce = generateNonce(64);
-        const timestamp = Date.now().toString();
-        const hashedAuthKey = await computeSHA256(String(apiKey) + nonce + timestamp);
-
-        const headers = {
-          "x-xdr-timestamp": timestamp,
-          "x-xdr-nonce": nonce,
-          "x-xdr-auth-id": String(apiKeyId),
-          "Authorization": hashedAuthKey,
-          "Content-Type": "application/json"
-        };
-
         let currentKpis = { coverageTotal: 0, coverageConnected: 0, totalAlerts: 0 };
 
-        // =========================================================================
-        // PARTIE 1 : APPELS REST (Instantanés)
-        // =========================================================================
-        const totalEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
-          method: 'POST', headers, body: JSON.stringify({ request_data: { search_from: 0, search_to: 1 } })
-        });
+        const totalEndpointsRes = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, { request_data: { search_from: 0, search_to: 1 } });
         if (totalEndpointsRes.ok) currentKpis.coverageTotal = (await totalEndpointsRes.json()).reply?.total_count || 0;
 
-        const connectedEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
-          method: 'POST', headers, body: JSON.stringify({
-            request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
-          })
+        const connectedEndpointsRes = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, {
+          request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
         });
         if (connectedEndpointsRes.ok) currentKpis.coverageConnected = (await connectedEndpointsRes.json()).reply?.total_count || 0;
 
-        const alertsRes = await fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
-          method: 'POST', headers, body: JSON.stringify({
-            request_data: { search_from: 0, search_to: 1, filters: [{ field: "creation_time", operator: "gte", value: fromTimestamp }, { field: "creation_time", operator: "lte", value: toTimestamp }] }
-          })
+        const alertsRes = await apiCall(`/public_api/v1/alerts/get_alerts_multi_events/`, {
+          request_data: { search_from: 0, search_to: 1, filters: [{ field: "creation_time", operator: "gte", value: fromTimestamp }, { field: "creation_time", operator: "lte", value: toTimestamp }] }
         });
         if (alertsRes.ok) currentKpis.totalAlerts = (await alertsRes.json()).reply?.total_count || 0;
 
-        // Requêtes REST pour les sévérités en parallèle (Syntaxe sécurisée 'in' avec tableau)
         const severitiesToFetch = ["Critical", "High", "Medium", "Low", "Informational"];
         const severityPromises = severitiesToFetch.map(sev =>
-          fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
-            method: 'POST', headers, body: JSON.stringify({
-              request_data: {
-                search_from: 0, search_to: 1,
-                filters: [
-                  { field: "creation_time", operator: "gte", value: fromTimestamp },
-                  { field: "creation_time", operator: "lte", value: toTimestamp },
-                  { field: "severity", operator: "in", value: [sev] }
-                ]
-              }
-            })
+          apiCall(`/public_api/v1/alerts/get_alerts_multi_events/`, {
+            request_data: {
+              search_from: 0, search_to: 1,
+              filters: [
+                { field: "creation_time", operator: "gte", value: fromTimestamp },
+                { field: "creation_time", operator: "lte", value: toTimestamp },
+                { field: "severity", operator: "in", value: [sev] }
+              ]
+            }
           })
           .then(res => res.json())
           .then(data => ({ severity: sev, count: data?.reply?.total_count || 0 }))
           .catch(err => {
-            console.warn(`[REST] Erreur de récupération pour la sévérité ${sev}:`, err);
+            console.warn(`[REST] Erreur sévérité ${sev}:`, err);
             return { severity: sev, count: 0 };
           })
         );
@@ -262,49 +369,65 @@ export default function CortexPanel() {
 
         setStatus("success");
 
-        // =========================================================================
-        // PARTIE 2 : APPELS XQL (Asynchrones lourds)
-        // =========================================================================
+        // 🛡️ REQUÊTES XQL AVEC SYSTÈME DE RETRY ANTI-QUOTA (Code 450)
         const executeXql = async (query: string, label: string, withTimeframe = true) => {
           const payload: any = { request_data: { query } };
           if (withTimeframe) payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
 
-          const startRes = await fetch(`/api/cortex/public_api/v1/xql/start_xql_query/`, {
-            method: 'POST', headers, body: JSON.stringify(payload)
-          });
+          let queryId = null;
+          let retryCount = 0;
 
-          if (!startRes.ok) return null;
-          const startData = await startRes.json();
-          const queryId = startData?.reply;
+          // ETAPE 1 : Démarrer la requête (Avec Retry si 450)
+          while (retryCount < 3) {
+            if (isCancelled) return null;
+            const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload);
+
+            if (startRes.status === 450 || startRes.status === 429 || startRes.status === 500) {
+              console.warn(`[XQL] Quota API atteint au démarrage de "${label}". Pause 3s...`);
+              await new Promise(r => setTimeout(r, 3000));
+              retryCount++;
+              continue;
+            }
+
+            if (!startRes.ok) {
+              console.error(`❌ [API XQL - ${label}] Erreur HTTP fatale :`, startRes.status);
+              return null;
+            }
+
+            const startData = await startRes.json();
+            queryId = startData?.reply;
+            break;
+          }
+
           if (!queryId) return null;
 
-          for (let i = 0; i < 15; i++) {
+          // ETAPE 2 : Poller les résultats (Avec Retry si 450)
+          for (let i = 0; i < 20; i++) {
             if (isCancelled) break;
-            await new Promise(res => setTimeout(res, 2000));
-            const pollRes = await fetch(`/api/cortex/public_api/v1/xql/get_query_results/`, {
-              method: 'POST', headers, body: JSON.stringify({ request_data: { query_id: queryId } })
-            });
+            await new Promise(res => setTimeout(res, 3000)); // Pause augmentée à 3s pour soulager Cortex
+
+            const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
+
+            if (pollRes.status === 450 || pollRes.status === 429 || pollRes.status === 500) {
+              console.warn(`[XQL] Quota API atteint en cours de Polling pour "${label}". Pause 3s...`);
+              await new Promise(r => setTimeout(r, 3000));
+              continue; // Ne grille pas l'itération, on retente la suivante
+            }
+
             if (!pollRes.ok) continue;
+
             const pollData = await pollRes.json();
 
             if (pollData.reply?.status === "SUCCESS") {
               return pollData.reply.results?.data || [];
             } else if (pollData.reply?.status === "FAIL" || pollData.reply?.status === "FAILED") {
-              console.warn(`[XQL] Échec de la requête "${label}"`);
+              console.warn(`[XQL] Échec de la requête "${label}" côté Cortex.`);
               break;
             }
           }
           return null;
         };
 
-        // NOTE IMPORTANTE : les requêtes XQL sont volontairement SÉQUENCÉES (une par une)
-        // et non lancées en parallèle. La plupart des tenants Cortex appliquent une limite
-        // de requêtes XQL asynchrones simultanées ; au-delà, l'API renvoie un 500 sur
-        // start_xql_query pour les requêtes en surplus. Avec 8 requêtes XQL à exécuter ici,
-        // le parallélisme total dépassait cette limite.
-        // Le grain du bin s'adapte à la DURÉE RÉELLE de la plage sélectionnée (et non à la
-        // seule unité choisie dans le filtre) : "derniers 3 jours" et "derniers 300 jours"
-        // utilisent tous les deux timeUnit = "days" mais doivent afficher des grains différents.
         const rangeMs = Math.max(toTimestamp - fromTimestamp, 0);
         const HOUR_MS = 3600 * 1000;
         const DAY_MS = 24 * HOUR_MS;
@@ -327,14 +450,10 @@ export default function CortexPanel() {
         const formatBinLabel = (t: number): string => {
           const d = new Date(t);
           switch (binGranularity) {
-            case "hour":
-              return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-            case "day":
-              return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
-            case "week":
-              return `Sem. du ${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}`;
-            case "month":
-              return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+            case "hour": return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+            case "day": return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+            case "week": return `Sem. du ${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}`;
+            case "month": return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
             case "quarter": {
               const quarter = Math.floor(d.getMonth() / 3) + 1;
               return `T${quarter} ${d.getFullYear()}`;
@@ -410,7 +529,6 @@ export default function CortexPanel() {
             }
           },
           {
-            // NB : si vos analystes ne sont pas en UTC, convertir _time avant extract_time.
             query: `dataset = alerts | alter hour_of_day = extract_time(_time, "HOUR") | comp count() as cnt by hour_of_day | sort asc hour_of_day`,
             label: "Tranches horaires",
             onResult: (rows) => {
@@ -436,11 +554,8 @@ export default function CortexPanel() {
           },
         ];
 
-        // Pool de concurrence limitée : on lance au maximum CONCURRENCY_LIMIT requêtes XQL
-        // en parallèle. Dès qu'une se termine, la suivante de la file démarre. Ça accélère
-        // le chargement par rapport à un séquencement strict, tout en restant sous la limite
-        // de requêtes asynchrones simultanées du tenant (qui semblait se situer autour de 4).
-        const CONCURRENCY_LIMIT = 3;
+        // Limite de concurrence très conservatrice (2 max) pour éviter le blocage API 450
+        const CONCURRENCY_LIMIT = 2;
         let cursor = 0;
 
         const runNext = async (): Promise<void> => {
@@ -602,7 +717,7 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 2 : FOCUS SÉVÉRITÉ DES ALERTES (1/3 Camembert XXL - 2/3 Détails Jauges) */}
+          {/* LIGNE 2 : FOCUS SÉVÉRITÉ DES ALERTES */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-0">
@@ -690,7 +805,7 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 3 (NOUVEAU) : TIMELINE + TRANCHES HORAIRES */}
+          {/* LIGNE 3 : TIMELINE + TRANCHES HORAIRES */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
             <Card className="lg:col-span-2 border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-0 flex flex-row items-center justify-between">
@@ -752,7 +867,7 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 4 (NOUVEAU) : CATÉGORIES + TOP ENDPOINTS À RISQUE */}
+          {/* LIGNE 4 : CATÉGORIES + TOP ENDPOINTS À RISQUE */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-2">
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
@@ -809,6 +924,16 @@ export default function CortexPanel() {
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
                   <ServerCrash className="w-4 h-4 text-rose-500" /> Top endpoints à risque
                 </CardTitle>
+                <button
+                  onClick={() => {
+                    setIsInventoryOpen(true);
+                    setInventoryError(null);
+                    fetchInventory();
+                  }}
+                  className="text-[10px] font-bold text-indigo-600 bg-indigo-500/10 px-2 py-1 rounded-md border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors flex items-center gap-1"
+                >
+                  <Monitor className="w-3 h-3" /> Inventaire complet
+                </button>
               </CardHeader>
               <CardContent className="pt-4 flex-grow">
                 {!topEndpoints ? (
@@ -847,10 +972,8 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 5 : INVENTAIRE DU PARC (3 Colonnes équilibrées) */}
+          {/* LIGNE 5 : INVENTAIRE DU PARC */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
-
-            {/* Colonne 1 : Camembert Statut Agents */}
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-0">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -894,7 +1017,6 @@ export default function CortexPanel() {
               </CardContent>
             </Card>
 
-            {/* Colonne 2 : Liste Versions Agent */}
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
                 <div className="flex items-center justify-between w-full">
@@ -943,7 +1065,6 @@ export default function CortexPanel() {
               </CardContent>
             </Card>
 
-            {/* Colonne 3 : Liste OS */}
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -990,8 +1111,7 @@ export default function CortexPanel() {
         </>
       )}
 
-      {/* Tooltip catégorie : rendu ici (racine du composant), en `position: fixed`,
-          pour ne jamais être clippé par un conteneur parent en overflow:auto */}
+      {/* Tooltip catégorie */}
       {categoryTooltip && (
         <div
           className="pointer-events-none fixed z-[100] w-64"
@@ -1004,6 +1124,153 @@ export default function CortexPanel() {
           <div className="bg-popover text-popover-foreground text-xs rounded-lg border border-border shadow-lg p-3">
             <p className="font-bold mb-1 text-foreground">{categoryTooltip.category}</p>
             <p className="text-muted-foreground leading-snug">{getCategoryDescription(categoryTooltip.category)}</p>
+          </div>
+        </div>
+      )}
+
+      {/* MODALE INVENTAIRE COMPLET (POP-UP) AVEC PAGINATION COTE CLIENT */}
+      {isInventoryOpen && (
+        <div className="fixed inset-0 z-[200] bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border shadow-2xl rounded-xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-border flex items-center justify-between bg-secondary/30 shrink-0">
+              <h3 className="text-lg font-black text-foreground flex items-center gap-2">
+                <Monitor className="w-5 h-5 text-indigo-500" /> Inventaire complet des Endpoints
+              </h3>
+              <button
+                onClick={() => {
+                  setIsInventoryOpen(false);
+                  setSearchTerm("");
+                  setStatusFilter("ALL");
+                  setOsFilter("ALL");
+                }}
+                className="p-1 hover:bg-destructive/10 hover:text-destructive rounded-md transition-colors"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* BARRE DE FILTRES FRONTEND */}
+            <div className="p-3 bg-secondary/10 border-b border-border flex flex-col sm:flex-row gap-3 items-center shrink-0">
+              <div className="relative flex-grow w-full sm:max-w-sm">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  placeholder="Rechercher (Endpoint ou Utilisateur)..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full bg-background border border-border text-foreground font-medium text-sm rounded-lg pl-9 pr-3 py-1.5 focus:ring-2 focus:ring-indigo-500 outline-none"
+                  disabled={inventoryLoading || !!inventoryError}
+                />
+              </div>
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="w-full sm:w-auto bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-50"
+                disabled={inventoryLoading || !!inventoryError}
+              >
+                <option value="ALL">Tous les statuts</option>
+                <option value="connected">Connecté</option>
+                <option value="disconnected">Déconnecté</option>
+              </select>
+
+              <select
+                value={osFilter}
+                onChange={(e) => setOsFilter(e.target.value)}
+                className="w-full sm:w-auto bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer disabled:opacity-50 max-w-[220px] truncate"
+                disabled={inventoryLoading || !!inventoryError}
+              >
+                <option value="ALL">Tous les OS</option>
+                {uniqueOSList.map(os => (
+                  <option key={os} value={os}>{os}</option>
+                ))}
+              </select>
+
+              {!inventoryLoading && !inventoryError && inventoryData && (
+                <div className="ml-auto text-xs font-bold text-muted-foreground bg-secondary/30 px-3 py-1.5 rounded-md border border-border whitespace-nowrap">
+                  {filteredInventory.length} {filteredInventory.length > 1 ? 'résultats' : 'résultat'} sur {inventoryData.length}
+                </div>
+              )}
+            </div>
+
+            <div className="flex-grow overflow-auto p-0 custom-scrollbar relative bg-background">
+              {inventoryError ? (
+                <div className="h-full flex flex-col items-center justify-center gap-3 text-destructive p-8">
+                  <XCircle className="w-8 h-8" />
+                  <p className="text-sm font-medium text-center">{inventoryError}</p>
+                </div>
+              ) : inventoryLoading ? (
+                <div className="h-full flex flex-col items-center justify-center space-y-4 p-8">
+                  <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+                  <p className="text-sm font-medium text-muted-foreground text-center">Récupération de l'inventaire complet en cours...</p>
+                </div>
+              ) : (
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead className="bg-secondary/95 sticky top-0 z-10 backdrop-blur-md shadow-sm">
+                    <tr>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Endpoint</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Statut</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">OS</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Version Agent</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Utilisateur(s)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {/* CARTOGRAPHIE DE LA PAGE ACTIVE SEULEMENT POUR LES PERFORMANCES DU DOM */}
+                    {paginatedInventory.map((ep, i) => {
+                      const isConnected = ep.endpoint_status?.toLowerCase() === 'connected';
+                      const users = Array.isArray(ep.users) ? ep.users.join(", ") : (ep.users || "N/A");
+
+                      return (
+                        <tr key={i} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                          <td className="p-3 font-bold text-foreground">{ep.endpoint_name || "N/A"}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${isConnected ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'}`}>
+                              {ep.endpoint_status || "N/A"}
+                            </span>
+                          </td>
+                          <td className="p-3 text-muted-foreground font-medium">{ep.operating_system || "N/A"}</td>
+                          <td className="p-3 font-mono text-xs">{ep.agent_version || "N/A"}</td>
+                          <td className="p-3 text-muted-foreground truncate max-w-[200px]" title={users}>{users}</td>
+                        </tr>
+                      );
+                    })}
+                    {filteredInventory.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="p-12 text-center text-muted-foreground italic">
+                          {inventoryData?.length === 0 ? "Aucun endpoint trouvé sur ce tenant." : "Aucun endpoint ne correspond à ces filtres."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* CONTROLES DE PAGINATION */}
+            {!inventoryLoading && !inventoryError && totalPages > 1 && (
+              <div className="p-3 border-t border-border bg-secondary/30 flex items-center justify-between shrink-0">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Page <span className="font-bold text-foreground">{currentPage}</span> sur <span className="font-bold text-foreground">{totalPages}</span>
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                    disabled={currentPage === 1}
+                    className="flex items-center gap-1 text-xs font-bold bg-background border border-border px-3 py-1.5 rounded-lg hover:bg-secondary disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-foreground"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Précédent
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                    disabled={currentPage === totalPages}
+                    className="flex items-center gap-1 text-xs font-bold bg-background border border-border px-3 py-1.5 rounded-lg hover:bg-secondary disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-foreground"
+                  >
+                    Suivant <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
