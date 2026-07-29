@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import {
   Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users,
-  ShieldCheck, Monitor, AlertTriangle, Layers, ServerCrash
+  ShieldCheck, Monitor, AlertTriangle, Clock, TrendingUp, Layers, ServerCrash
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend
+  ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line
 } from "recharts";
 
 // ----------------------------------------------------------------------------
@@ -33,8 +34,34 @@ const SEVERITY_CONFIG: Record<string, { label: string; color: string; order: num
 
 const getSeverityStyle = (sev: string) => SEVERITY_CONFIG[sev] || { label: sev, color: "#94a3b8", order: 99 };
 
-// Palette pour les catégories
+// Palette pour les catégories / endpoints (valeurs non bornées, on tourne dessus)
 const CATEGORY_PALETTE = ["#8b5cf6", "#0ea5e9", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b", "#a855f7", "#3b82f6"];
+
+// Descriptions des catégories d'alertes : la plupart correspondent aux tactiques MITRE ATT&CK,
+// quelques-unes sont spécifiques à Cortex XSIAM (Restrictions, Other...).
+const CATEGORY_DESCRIPTIONS: Record<string, string> = {
+  "reconnaissance": "Collecte d'informations sur la cible avant l'attaque.",
+  "resource development": "Mise en place par l'attaquant de ressources (infrastructure, comptes, outils) en vue de l'attaque.",
+  "initial access": "Techniques utilisées par l'attaquant pour obtenir un premier accès au réseau ou au système.",
+  "execution": "Exécution de code malveillant sur un système compromis.",
+  "persistence": "Techniques permettant à l'attaquant de conserver son accès après un redémarrage ou un changement d'identifiants.",
+  "privilege escalation": "Obtention par l'attaquant de privilèges plus élevés que ceux initialement accordés.",
+  "defense evasion": "Techniques visant à échapper à la détection par les outils de sécurité.",
+  "credential access": "Vol d'identifiants : mots de passe, jetons d'authentification, clés.",
+  "discovery": "Exploration de l'environnement compromis par l'attaquant (réseau, utilisateurs, systèmes).",
+  "lateral movement": "Déplacement de l'attaquant d'un système à un autre au sein du réseau.",
+  "collection": "Collecte de données par l'attaquant en vue d'une exfiltration.",
+  "command and control": "Canal de communication entre l'attaquant et les systèmes compromis (C2).",
+  "exfiltration": "Extraction de données depuis l'environnement compromis vers l'extérieur.",
+  "impact": "Actions visant à perturber, détruire ou manipuler des systèmes ou des données (ex : ransomware).",
+  "malware": "Détection d'un logiciel malveillant, par signature ou par analyse comportementale.",
+  "restrictions": "Application d'une politique de restriction (ex : périphérique USB bloqué, application interdite).",
+  "other": "Alertes ne correspondant à aucune tactique ou catégorie standard, regroupées par défaut.",
+  "unclassified": "Alertes non encore classifiées dans une catégorie spécifique.",
+};
+
+const getCategoryDescription = (category: string): string =>
+  CATEGORY_DESCRIPTIONS[category.trim().toLowerCase()] || "Catégorie d'alerte définie par Cortex XSIAM.";
 
 export default function CortexPanel() {
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
@@ -54,16 +81,9 @@ export default function CortexPanel() {
     impactedUsers: null
   });
 
-  // KPI Sévérité
+  // KPI Sévérité des Alertes
   const [severityDistribution, setSeverityDistribution] = useState<{ severity: string; count: number }[] | null>(null);
   const totalSeveritiesCount = severityDistribution ? severityDistribution.reduce((sum, s) => sum + s.count, 0) : 0;
-
-  // KPI Catégories
-  const [categoryDistribution, setCategoryDistribution] = useState<{ category: string; count: number }[] | null>(null);
-  const totalCategories = categoryDistribution ? categoryDistribution.reduce((sum, c) => sum + c.count, 0) : 0;
-
-  // KPI Top endpoints à risque
-  const [topEndpoints, setTopEndpoints] = useState<{ host: string; score: number; count: number }[] | null>(null);
 
   // KPI Versions d'agent
   const [agentVersions, setAgentVersions] = useState<{ version: string; count: number }[] | null>(null);
@@ -84,6 +104,23 @@ export default function CortexPanel() {
   const totalOs = osDistribution ? osDistribution.reduce((sum, o) => sum + o.count, 0) : 0;
   const OS_PALETTE = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b"];
 
+  // KPI Catégories d'alertes
+  const [categoryDistribution, setCategoryDistribution] = useState<{ category: string; count: number }[] | null>(null);
+  const totalCategories = categoryDistribution ? categoryDistribution.reduce((sum, c) => sum + c.count, 0) : 0;
+  // Tooltip catégorie : positionné en `fixed` (pas dans le flux du conteneur scrollable) pour ne pas être clippé
+  const [categoryTooltip, setCategoryTooltip] = useState<{ category: string; x: number; y: number } | null>(null);
+
+  // KPI Timeline (évolution du volume d'alertes)
+  const [alertsTimeline, setAlertsTimeline] = useState<{ time: number; label: string; count: number }[] | null>(null);
+  const [timelineGranularity, setTimelineGranularity] = useState<"hour" | "day" | "week" | "month" | "quarter" | null>(null);
+  const GRANULARITY_LABEL: Record<string, string> = { hour: "par heure", day: "par jour", week: "par semaine", month: "par mois", quarter: "par trimestre" };
+
+  // KPI Répartition par tranche horaire
+  const [hourlyDistribution, setHourlyDistribution] = useState<{ hour: number; label: string; count: number }[] | null>(null);
+
+  // KPI Top endpoints à risque
+  const [topEndpoints, setTopEndpoints] = useState<{ host: string; score: number; count: number }[] | null>(null);
+
   const [timePrefix, setTimePrefix] = useState<"last" | "this" | "next">("last");
   const [timeValue, setTimeValue] = useState<number>(30);
   const [timeUnit, setTimeUnit] = useState<"days" | "months" | "years">("days");
@@ -99,6 +136,9 @@ export default function CortexPanel() {
       setOsDistribution(null);
       setSeverityDistribution(null);
       setCategoryDistribution(null);
+      setAlertsTimeline(null);
+      setTimelineGranularity(null);
+      setHourlyDistribution(null);
       setTopEndpoints(null);
       setStatus("loading");
 
@@ -144,60 +184,70 @@ export default function CortexPanel() {
         return;
       }
 
-      // 🛡️ API CALL SECURE : Génère un nonce unique par appel
-      const apiCall = async (endpoint: string, payload: any) => {
-        const nonce = Array.from({length: 64}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
-        const timestamp = Date.now().toString();
-        const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(apiKey) + nonce + timestamp));
-        const hashedAuthKey = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-        return fetch(`/api/cortex${endpoint}`, {
-          method: 'POST',
-          headers: {
-            "x-xdr-timestamp": timestamp,
-            "x-xdr-nonce": nonce,
-            "x-xdr-auth-id": String(apiKeyId),
-            "Authorization": hashedAuthKey,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(payload)
-        });
+      const generateNonce = (length = 64) => Array.from({length}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
+      const computeSHA256 = async (text: string) => {
+        const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
       };
 
       try {
+        const nonce = generateNonce(64);
+        const timestamp = Date.now().toString();
+        const hashedAuthKey = await computeSHA256(String(apiKey) + nonce + timestamp);
+
+        const headers = {
+          "x-xdr-timestamp": timestamp,
+          "x-xdr-nonce": nonce,
+          "x-xdr-auth-id": String(apiKeyId),
+          "Authorization": hashedAuthKey,
+          "Content-Type": "application/json"
+        };
+
         let currentKpis = { coverageTotal: 0, coverageConnected: 0, totalAlerts: 0 };
 
         // =========================================================================
         // PARTIE 1 : APPELS REST (Instantanés)
         // =========================================================================
-        const totalEndpointsRes = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, { request_data: { search_from: 0, search_to: 1 } });
+        const totalEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
+          method: 'POST', headers, body: JSON.stringify({ request_data: { search_from: 0, search_to: 1 } })
+        });
         if (totalEndpointsRes.ok) currentKpis.coverageTotal = (await totalEndpointsRes.json()).reply?.total_count || 0;
 
-        const connectedEndpointsRes = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, {
-          request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
+        const connectedEndpointsRes = await fetch(`/api/cortex/public_api/v1/endpoints/get_endpoint/`, {
+          method: 'POST', headers, body: JSON.stringify({
+            request_data: { search_from: 0, search_to: 1, filters: [{ field: "endpoint_status", operator: "in", value: ["connected", "CONNECTED"] }] }
+          })
         });
         if (connectedEndpointsRes.ok) currentKpis.coverageConnected = (await connectedEndpointsRes.json()).reply?.total_count || 0;
 
-        const alertsRes = await apiCall(`/public_api/v1/alerts/get_alerts_multi_events/`, {
-          request_data: { search_from: 0, search_to: 1, filters: [{ field: "creation_time", operator: "gte", value: fromTimestamp }, { field: "creation_time", operator: "lte", value: toTimestamp }] }
+        const alertsRes = await fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
+          method: 'POST', headers, body: JSON.stringify({
+            request_data: { search_from: 0, search_to: 1, filters: [{ field: "creation_time", operator: "gte", value: fromTimestamp }, { field: "creation_time", operator: "lte", value: toTimestamp }] }
+          })
         });
         if (alertsRes.ok) currentKpis.totalAlerts = (await alertsRes.json()).reply?.total_count || 0;
 
+        // Requêtes REST pour les sévérités en parallèle (Syntaxe sécurisée 'in' avec tableau)
         const severitiesToFetch = ["Critical", "High", "Medium", "Low", "Informational"];
         const severityPromises = severitiesToFetch.map(sev =>
-          apiCall(`/public_api/v1/alerts/get_alerts_multi_events/`, {
-            request_data: {
-              search_from: 0, search_to: 1,
-              filters: [
-                { field: "creation_time", operator: "gte", value: fromTimestamp },
-                { field: "creation_time", operator: "lte", value: toTimestamp },
-                { field: "severity", operator: "in", value: [sev] }
-              ]
-            }
+          fetch(`/api/cortex/public_api/v1/alerts/get_alerts_multi_events/`, {
+            method: 'POST', headers, body: JSON.stringify({
+              request_data: {
+                search_from: 0, search_to: 1,
+                filters: [
+                  { field: "creation_time", operator: "gte", value: fromTimestamp },
+                  { field: "creation_time", operator: "lte", value: toTimestamp },
+                  { field: "severity", operator: "in", value: [sev] }
+                ]
+              }
+            })
           })
           .then(res => res.json())
           .then(data => ({ severity: sev, count: data?.reply?.total_count || 0 }))
-          .catch(() => ({ severity: sev, count: 0 }))
+          .catch(err => {
+            console.warn(`[REST] Erreur de récupération pour la sévérité ${sev}:`, err);
+            return { severity: sev, count: 0 };
+          })
         );
 
         const severityResults = await Promise.all(severityPromises);
@@ -213,24 +263,17 @@ export default function CortexPanel() {
         setStatus("success");
 
         // =========================================================================
-        // PARTIE 2 : APPELS XQL
+        // PARTIE 2 : APPELS XQL (Asynchrones lourds)
         // =========================================================================
         const executeXql = async (query: string, label: string, withTimeframe = true) => {
           const payload: any = { request_data: { query } };
+          if (withTimeframe) payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
 
-          // La condition withTimeframe est cruciale : on ne l'injecte QUE si c'est true
-          // Car le dataset "endpoints" plantera en erreur 500 s'il reçoit ce bloc JSON.
-          if (withTimeframe) {
-            payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
-          }
+          const startRes = await fetch(`/api/cortex/public_api/v1/xql/start_xql_query/`, {
+            method: 'POST', headers, body: JSON.stringify(payload)
+          });
 
-          const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload);
-
-          if (!startRes.ok) {
-            console.error(`❌ [API XQL - ${label}] Erreur HTTP au démarrage :`, startRes.status);
-            return null;
-          }
-
+          if (!startRes.ok) return null;
           const startData = await startRes.json();
           const queryId = startData?.reply;
           if (!queryId) return null;
@@ -238,8 +281,9 @@ export default function CortexPanel() {
           for (let i = 0; i < 15; i++) {
             if (isCancelled) break;
             await new Promise(res => setTimeout(res, 2000));
-            const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
-
+            const pollRes = await fetch(`/api/cortex/public_api/v1/xql/get_query_results/`, {
+              method: 'POST', headers, body: JSON.stringify({ request_data: { query_id: queryId } })
+            });
             if (!pollRes.ok) continue;
             const pollData = await pollRes.json();
 
@@ -253,92 +297,165 @@ export default function CortexPanel() {
           return null;
         };
 
-        const hostsQuery = `dataset = alerts | filter host_name != null and host_name != "" | comp count_distinct(host_name) as unique_hosts`;
-        const usersQuery = `dataset = alerts | filter user_name != null and to_string(user_name) != "" | comp count_distinct(to_string(user_name)) as unique_users`;
-        const categoryQuery = `dataset = alerts | filter category != null and category != "" | comp count() as cnt by category | sort desc cnt | limit 15`;
-        const topEndpointsQuery = `dataset = alerts | filter host_name != null and host_name != "" | comp count() as cnt by host_name, severity | limit 500`;
+        // NOTE IMPORTANTE : les requêtes XQL sont volontairement SÉQUENCÉES (une par une)
+        // et non lancées en parallèle. La plupart des tenants Cortex appliquent une limite
+        // de requêtes XQL asynchrones simultanées ; au-delà, l'API renvoie un 500 sur
+        // start_xql_query pour les requêtes en surplus. Avec 8 requêtes XQL à exécuter ici,
+        // le parallélisme total dépassait cette limite.
+        // Le grain du bin s'adapte à la DURÉE RÉELLE de la plage sélectionnée (et non à la
+        // seule unité choisie dans le filtre) : "derniers 3 jours" et "derniers 300 jours"
+        // utilisent tous les deux timeUnit = "days" mais doivent afficher des grains différents.
+        const rangeMs = Math.max(toTimestamp - fromTimestamp, 0);
+        const HOUR_MS = 3600 * 1000;
+        const DAY_MS = 24 * HOUR_MS;
 
-        // CORRECTION MAJEURE : On remet 'config timeframe' pour l'inventaire
-        // Ces deux requêtes sont exécutées avec withTimeframe = false !
-        const osQuery = `config timeframe = 3650d | dataset = endpoints | filter operating_system != null and operating_system != "" | comp count_distinct(endpoint_id) as cnt by operating_system`;
-        const versionsQuery = `config timeframe = 3650d | dataset = endpoints | filter agent_version != null and agent_version != "" | comp count_distinct(endpoint_id) as cnt by agent_version`;
+        let spanForBin: string;
+        let binGranularity: "hour" | "day" | "week" | "month" | "quarter";
 
-        executeXql(hostsQuery, "Endpoints", true).then(rows => {
-          if (isCancelled || !rows) return;
-          const distinctHosts = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
-          setKpis(prev => ({ ...prev, impactedEndpoints: distinctHosts }));
-        });
+        if (rangeMs <= 2 * DAY_MS) {
+          spanForBin = "1h"; binGranularity = "hour";
+        } else if (rangeMs <= 31 * DAY_MS) {
+          spanForBin = "1d"; binGranularity = "day";
+        } else if (rangeMs <= 100 * DAY_MS) {
+          spanForBin = "1w"; binGranularity = "week";
+        } else if (rangeMs <= 450 * DAY_MS) {
+          spanForBin = "1mo"; binGranularity = "month";
+        } else {
+          spanForBin = "3mo"; binGranularity = "quarter";
+        }
 
-        executeXql(usersQuery, "Utilisateurs", true).then(rows => {
-          if (isCancelled || !rows) return;
-          const distinctUsers = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
-          setKpis(prev => ({ ...prev, impactedUsers: distinctUsers }));
-        });
+        const formatBinLabel = (t: number): string => {
+          const d = new Date(t);
+          switch (binGranularity) {
+            case "hour":
+              return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+            case "day":
+              return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+            case "week":
+              return `Sem. du ${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}`;
+            case "month":
+              return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+            case "quarter": {
+              const quarter = Math.floor(d.getMonth() / 3) + 1;
+              return `T${quarter} ${d.getFullYear()}`;
+            }
+          }
+        };
 
-        executeXql(categoryQuery, "Catégories", true).then(rows => {
-          if (isCancelled) return;
-          if (!rows) { setCategoryDistribution([]); return; }
-          const parsed = rows
-            .map((r: any) => {
-              const catKey = Object.keys(r).find(k => k !== 'cnt');
-              const catName = catKey ? r[catKey] : "Inconnue";
-              return { category: String(catName), count: Number(r.cnt) || 0 };
-            })
-            .sort((a, b) => b.count - a.count);
-          setCategoryDistribution(parsed);
-        });
+        const xqlJobs: { query: string; label: string; withTimeframe?: boolean; onResult: (rows: any[]) => void }[] = [
+          {
+            query: `dataset = alerts | filter host_name != null and host_name != "" | comp count_distinct(host_name) as unique_hosts`,
+            label: "Endpoints",
+            onResult: (rows) => {
+              const distinctHosts = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
+              setKpis(prev => ({ ...prev, impactedEndpoints: distinctHosts }));
+            }
+          },
+          {
+            query: `dataset = alerts | filter user_name != null and to_string(user_name) != "" | comp count_distinct(to_string(user_name)) as unique_users`,
+            label: "Utilisateurs",
+            onResult: (rows) => {
+              const distinctUsers = rows?.length ? Number(Object.values(rows[0])[0]) || 0 : 0;
+              setKpis(prev => ({ ...prev, impactedUsers: distinctUsers }));
+            }
+          },
+          {
+            query: `config timeframe = 3650d | dataset = endpoints | filter operating_system != null and operating_system != "" | comp count_distinct(endpoint_id) as cnt by operating_system`,
+            label: "Répartition OS",
+            withTimeframe: false,
+            onResult: (rows) => {
+              if (!rows) return;
+              const parsed = rows
+                .map((r: any) => ({ os: String(r.operating_system), count: Number(r.cnt) || 0 }))
+                .sort((a, b) => b.count - a.count);
+              setOsDistribution(parsed);
+            }
+          },
+          {
+            query: `config timeframe = 3650d | dataset = endpoints | filter agent_version != null and agent_version != "" | comp count_distinct(endpoint_id) as cnt by agent_version`,
+            label: "Versions Agent",
+            withTimeframe: false,
+            onResult: (rows) => {
+              if (!rows) return;
+              const parsed = rows
+                .map((r: any) => ({ version: String(r.agent_version), count: Number(r.cnt) || 0 }))
+                .sort((a, b) => compareVersions(b.version, a.version));
+              setAgentVersions(parsed);
+            }
+          },
+          {
+            query: `dataset = alerts | filter category != null and category != "" | comp count() as cnt by category | sort desc cnt | limit 10`,
+            label: "Catégories",
+            onResult: (rows) => {
+              if (!rows) return;
+              const parsed = rows
+                .map((r: any) => ({ category: String(r.category), count: Number(r.cnt) || 0 }))
+                .sort((a, b) => b.count - a.count);
+              setCategoryDistribution(parsed);
+            }
+          },
+          {
+            query: `dataset = alerts | bin _time span = ${spanForBin} | comp count() as cnt by _time | sort asc _time`,
+            label: "Timeline",
+            onResult: (rows) => {
+              if (!rows) return;
+              const parsed = rows
+                .map((r: any) => {
+                  const t = Number(r._time);
+                  return { time: t, label: formatBinLabel(t), count: Number(r.cnt) || 0 };
+                })
+                .sort((a, b) => a.time - b.time);
+              setAlertsTimeline(parsed);
+              setTimelineGranularity(binGranularity);
+            }
+          },
+          {
+            // NB : si vos analystes ne sont pas en UTC, convertir _time avant extract_time.
+            query: `dataset = alerts | alter hour_of_day = extract_time(_time, "HOUR") | comp count() as cnt by hour_of_day | sort asc hour_of_day`,
+            label: "Tranches horaires",
+            onResult: (rows) => {
+              if (!rows) return;
+              const hourly = Array.from({ length: 24 }, (_, h) => ({ hour: h, label: `${String(h).padStart(2, "0")}h`, count: 0 }));
+              rows.forEach((r: any) => {
+                const h = Number(r.hour_of_day);
+                if (h >= 0 && h < 24) hourly[h].count = Number(r.cnt) || 0;
+              });
+              setHourlyDistribution(hourly);
+            }
+          },
+          {
+            query: `dataset = alerts | filter host_name != null and host_name != "" | alter risk_weight = if(severity = "Critical", 4, if(severity = "High", 3, if(severity = "Medium", 2, 1))) | comp sum(risk_weight) as risk_score, count() as alert_count by host_name | sort desc risk_score | limit 10`,
+            label: "Top endpoints",
+            onResult: (rows) => {
+              if (!rows) return;
+              const parsed = rows
+                .map((r: any) => ({ host: String(r.host_name), score: Number(r.risk_score) || 0, count: Number(r.alert_count) || 0 }))
+                .sort((a, b) => b.score - a.score);
+              setTopEndpoints(parsed);
+            }
+          },
+        ];
 
-        executeXql(topEndpointsQuery, "Top endpoints", true).then(rows => {
-          if (isCancelled) return;
-          if (!rows) { setTopEndpoints([]); return; }
+        // Pool de concurrence limitée : on lance au maximum CONCURRENCY_LIMIT requêtes XQL
+        // en parallèle. Dès qu'une se termine, la suivante de la file démarre. Ça accélère
+        // le chargement par rapport à un séquencement strict, tout en restant sous la limite
+        // de requêtes asynchrones simultanées du tenant (qui semblait se situer autour de 4).
+        const CONCURRENCY_LIMIT = 3;
+        let cursor = 0;
 
-          const scores: Record<string, { host: string; score: number; count: number }> = {};
+        const runNext = async (): Promise<void> => {
+          while (cursor < xqlJobs.length) {
+            const job = xqlJobs[cursor];
+            cursor += 1;
+            if (isCancelled) return;
+            const rows = await executeXql(job.query, job.label, job.withTimeframe ?? true);
+            if (isCancelled) return;
+            job.onResult(rows as any[]);
+          }
+        };
 
-          rows.forEach((r: any) => {
-            const host = String(r.host_name);
-            const sev = String(r.severity);
-            const count = Number(r.cnt) || 0;
-
-            let weight = 1;
-            if (sev === "Critical") weight = 4;
-            else if (sev === "High") weight = 3;
-            else if (sev === "Medium") weight = 2;
-
-            if (!scores[host]) scores[host] = { host, score: 0, count: 0 };
-            scores[host].score += (count * weight);
-            scores[host].count += count;
-          });
-
-          const parsed = Object.values(scores).sort((a, b) => b.score - a.score).slice(0, 10);
-          setTopEndpoints(parsed);
-        });
-
-        // ⚠️ Exécution avec FALSE pour ne pas envoyer le bloc timeframe
-        executeXql(osQuery, "Répartition OS", false).then(rows => {
-          if (isCancelled) return;
-          if (!rows) { setOsDistribution([]); return; }
-          const parsed = rows
-            .map((r: any) => {
-              const osKey = Object.keys(r).find(k => k !== 'cnt');
-              const osName = osKey ? r[osKey] : "Inconnu";
-              return { os: String(osName), count: Number(r.cnt) || 0 };
-            })
-            .sort((a, b) => b.count - a.count);
-          setOsDistribution(parsed);
-        });
-
-        executeXql(versionsQuery, "Versions Agent", false).then(rows => {
-          if (isCancelled) return;
-          if (!rows) { setAgentVersions([]); return; }
-          const parsed = rows
-            .map((r: any) => {
-              const verKey = Object.keys(r).find(k => k !== 'cnt');
-              const verName = verKey ? r[verKey] : "Inconnue";
-              return { version: String(verName), count: Number(r.cnt) || 0 };
-            })
-            .sort((a, b) => compareVersions(b.version, a.version));
-          setAgentVersions(parsed);
-        });
+        const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, xqlJobs.length) }, () => runNext());
+        await Promise.all(workers);
 
       } catch (err: any) {
         console.error("❌ Exception critique :", err);
@@ -485,7 +602,7 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 2 : FOCUS SÉVÉRITÉ DES ALERTES */}
+          {/* LIGNE 2 : FOCUS SÉVÉRITÉ DES ALERTES (1/3 Camembert XXL - 2/3 Détails Jauges) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-0">
@@ -573,7 +690,69 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 3 : CATÉGORIES + TOP ENDPOINTS À RISQUE */}
+          {/* LIGNE 3 (NOUVEAU) : TIMELINE + TRANCHES HORAIRES */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
+            <Card className="lg:col-span-2 border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-0 flex flex-row items-center justify-between">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-purple-500" /> Évolution du volume d&apos;alertes
+                </CardTitle>
+                {timelineGranularity && (
+                  <span className="text-[10px] font-bold text-purple-600 bg-purple-500/10 px-2 py-1 rounded-md border border-purple-500/20">
+                    {GRANULARITY_LABEL[timelineGranularity]}
+                  </span>
+                )}
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow flex items-center justify-center min-h-[260px]">
+                {!alertsTimeline ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-6 h-6 animate-spin text-purple-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : alertsTimeline.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Aucune alerte sur la période.</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <LineChart data={alertsTimeline}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.4} />
+                      <XAxis dataKey="label" tick={{ fontSize: 10, fontWeight: 600 }} interval="preserveStartEnd" />
+                      <YAxis tick={{ fontSize: 10, fontWeight: 600 }} allowDecimals={false} />
+                      <RechartsTooltip contentStyle={{ borderRadius: '8px', border: '1px solid var(--border)', fontSize: '12px', fontWeight: 'bold' }} itemStyle={{ color: 'var(--foreground)' }} />
+                      <Line type="monotone" dataKey="count" name="Alertes" stroke="#8b5cf6" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow flex items-center justify-center min-h-[260px]">
+                {!hourlyDistribution ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-6 h-6 animate-spin text-sky-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={hourlyDistribution}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.4} vertical={false} />
+                      <XAxis dataKey="label" tick={{ fontSize: 9, fontWeight: 600 }} interval={2} />
+                      <YAxis tick={{ fontSize: 10, fontWeight: 600 }} allowDecimals={false} />
+                      <RechartsTooltip contentStyle={{ borderRadius: '8px', border: '1px solid var(--border)', fontSize: '12px', fontWeight: 'bold' }} itemStyle={{ color: 'var(--foreground)' }} />
+                      <Bar dataKey="count" name="Alertes" fill="#0ea5e9" radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 4 (NOUVEAU) : CATÉGORIES + TOP ENDPOINTS À RISQUE */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-2">
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
@@ -596,14 +775,22 @@ export default function CortexPanel() {
                       const percentage = totalCategories > 0 ? ((c.count / totalCategories) * 100).toFixed(1) : "0";
 
                       return (
-                        <div key={c.category} className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden group hover:bg-secondary/20 transition-colors">
+                        <div
+                          key={c.category}
+                          className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden hover:bg-secondary/20 transition-colors"
+                          onMouseEnter={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setCategoryTooltip({ category: c.category, x: rect.left, y: rect.top });
+                          }}
+                          onMouseLeave={() => setCategoryTooltip(null)}
+                        >
                           <div
                             className="absolute top-0 left-0 h-full opacity-15"
                             style={{ width: `${percentage}%`, backgroundColor: color }}
                           />
                           <div className="relative z-10 flex items-center gap-2 overflow-hidden">
                             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                            <span className="font-bold text-foreground text-xs truncate" title={c.category}>{c.category}</span>
+                            <span className="font-bold text-foreground text-xs truncate">{c.category}</span>
                           </div>
                           <div className="relative z-10 flex items-center gap-4 shrink-0">
                             <span className="font-bold text-muted-foreground text-[10px] w-10 text-right">{percentage}%</span>
@@ -660,7 +847,7 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 4 : INVENTAIRE DU PARC (3 Colonnes équilibrées) */}
+          {/* LIGNE 5 : INVENTAIRE DU PARC (3 Colonnes équilibrées) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
 
             {/* Colonne 1 : Camembert Statut Agents */}
@@ -801,6 +988,24 @@ export default function CortexPanel() {
 
           </div>
         </>
+      )}
+
+      {/* Tooltip catégorie : rendu ici (racine du composant), en `position: fixed`,
+          pour ne jamais être clippé par un conteneur parent en overflow:auto */}
+      {categoryTooltip && (
+        <div
+          className="pointer-events-none fixed z-[100] w-64"
+          style={{
+            left: Math.min(categoryTooltip.x, window.innerWidth - 272),
+            top: categoryTooltip.y - 8,
+            transform: "translateY(-100%)"
+          }}
+        >
+          <div className="bg-popover text-popover-foreground text-xs rounded-lg border border-border shadow-lg p-3">
+            <p className="font-bold mb-1 text-foreground">{categoryTooltip.category}</p>
+            <p className="text-muted-foreground leading-snug">{getCategoryDescription(categoryTooltip.category)}</p>
+          </div>
+        </div>
       )}
     </div>
   );
