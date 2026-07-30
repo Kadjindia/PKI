@@ -2,13 +2,14 @@ import React, { useEffect, useState, useMemo } from "react";
 import {
   Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users,
   ShieldCheck, Monitor, AlertTriangle, Clock, TrendingUp, Layers, ServerCrash, Search,
-  ChevronLeft, ChevronRight, UserX, Eye, EyeOff
+  ChevronLeft, ChevronRight, UserX, Eye, EyeOff, Briefcase, Upload, FileSpreadsheet
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line
 } from "recharts";
+import * as XLSX from "xlsx";
 
 // ----------------------------------------------------------------------------
 // Comparaison de versions type "8.2.0.32000" -> compare partie par partie.
@@ -35,8 +36,10 @@ const SEVERITY_CONFIG: Record<string, { label: string; color: string; order: num
 
 const getSeverityStyle = (sev: string) => SEVERITY_CONFIG[sev] || { label: sev, color: "#94a3b8", order: 99 };
 
-// Palette pour les catégories / endpoints
+// Palette pour les catégories / endpoints / domaines
 const CATEGORY_PALETTE = ["#8b5cf6", "#0ea5e9", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b", "#a855f7", "#3b82f6"];
+const OS_PALETTE = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b"];
+const DOMAIN_PALETTE = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#f43f5e", "#0ea5e9", "#64748b", "#a855f7", "#22c55e", "#ec4899", "#14b8a6"];
 
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   "reconnaissance": "Collecte d'informations sur la cible avant l'attaque.",
@@ -61,6 +64,10 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
 
 const getCategoryDescription = (category: string): string =>
   CATEGORY_DESCRIPTIONS[category.trim().toLowerCase()] || "Catégorie d'alerte définie par Cortex XSIAM.";
+
+// 🆕 Clés de persistance localStorage pour la base RH
+const HR_MAPPING_STORAGE_KEY = "cortex_hr_mapping_v1";
+const HR_MAPPING_META_STORAGE_KEY = "cortex_hr_mapping_meta_v1";
 
 export default function CortexPanel() {
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
@@ -98,7 +105,6 @@ export default function CortexPanel() {
 
   const [osDistribution, setOsDistribution] = useState<{ os: string; count: number }[] | null>(null);
   const totalOs = osDistribution ? osDistribution.reduce((sum, o) => sum + o.count, 0) : 0;
-  const OS_PALETTE = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#22c55e", "#ec4899", "#14b8a6", "#f43f5e", "#64748b"];
 
   const [categoryDistribution, setCategoryDistribution] = useState<{ category: string; count: number }[] | null>(null);
   const totalCategories = categoryDistribution ? categoryDistribution.reduce((sum, c) => sum + c.count, 0) : 0;
@@ -110,7 +116,6 @@ export default function CortexPanel() {
 
   const [hourlyDistribution, setHourlyDistribution] = useState<{ hour: number; label: string; count: number }[] | null>(null);
   const [topEndpoints, setTopEndpoints] = useState<{ host: string; score: number; count: number }[] | null>(null);
-  const [topUsers, setTopUsers] = useState<{ user: string; score: number; count: number }[] | null>(null);
 
   const [timePrefix, setTimePrefix] = useState<"last" | "this" | "next">("last");
   const [timeValue, setTimeValue] = useState<number>(30);
@@ -129,18 +134,56 @@ export default function CortexPanel() {
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 50;
 
-  // 🆕 ETATS POUR LA LISTE COMPLETE DES UTILISATEURS À RISQUE + MASQUAGE
+  // ETAT POUR LE MAPPING RH (+ métadonnées du fichier pour affichage permanent)
+  const [hrMapping, setHrMapping] = useState<Record<string, string>>({});
+  const [hrFileMeta, setHrFileMeta] = useState<{ fileName: string; importedAt: string; rowCount: number } | null>(null);
+  const [hrSearchTerm, setHrSearchTerm] = useState("");
+
+  // CHARGEMENT AU MONTAGE : on restaure la base RH depuis localStorage si elle existe
+  useEffect(() => {
+    try {
+      const savedMapping = localStorage.getItem(HR_MAPPING_STORAGE_KEY);
+      const savedMeta = localStorage.getItem(HR_MAPPING_META_STORAGE_KEY);
+
+      if (savedMapping) {
+        const parsedMapping = JSON.parse(savedMapping);
+        setHrMapping(parsedMapping);
+      }
+      if (savedMeta) {
+        setHrFileMeta(JSON.parse(savedMeta));
+      }
+    } catch (err) {
+      console.error("Impossible de restaurer la base RH depuis le stockage local :", err);
+    }
+  }, []);
+
+  // ETATS POUR LA LISTE COMPLETE DES UTILISATEURS À RISQUE + MASQUAGE
   const [isUsersModalOpen, setIsUsersModalOpen] = useState(false);
   const [allUsersAtRisk, setAllUsersAtRisk] = useState<{ user: string; score: number; count: number }[] | null>(null);
-  const [allUsersLoading, setAllUsersLoading] = useState(false);
-  const [allUsersError, setAllUsersError] = useState<string | null>(null);
 
-  // Masquage : état en mémoire (session courante uniquement, non persisté entre rechargements).
-  // Pour une persistance durable, sauvegarder ce Set côté backend ou localStorage selon les besoins.
   const [hiddenUsers, setHiddenUsers] = useState<Set<string>>(new Set());
   const [showHiddenUsers, setShowHiddenUsers] = useState(false);
   const [userSearchTerm, setUserSearchTerm] = useState("");
   const [usersPage, setUsersPage] = useState(1);
+
+  // ETAT GLOBAL DE FILTRAGE CROISÉ
+  const [filters, setFilters] = useState<{
+    severity: string | null;
+    category: string | null;
+    os: string | null;
+    version: string | null;
+    host: string | null;
+    domain: string | null;
+  }>({
+    severity: null, category: null, os: null, version: null, host: null, domain: null,
+  });
+
+  const handleFilterToggle = (key: keyof typeof filters, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: prev[key] === value ? null : value }));
+  };
+
+  const clearFilters = () => setFilters({ severity: null, category: null, os: null, version: null, host: null, domain: null });
+  const hasActiveFilters = Object.values(filters).some(val => val !== null);
 
   const toggleHideUser = (user: string) => {
     setHiddenUsers(prev => {
@@ -174,45 +217,73 @@ export default function CortexPanel() {
     });
   };
 
-  // 🆕 Calcul de la plage temporelle factorisé : utilisé par la synchronisation globale
-  // ET par la requête à la demande "Tous les utilisateurs à risque", pour garantir
-  // que les deux respectent exactement le même filtre de dates sélectionné par l'utilisateur.
-  const computeTimeRange = (): { from: number; to: number } => {
-    const now = new Date();
-    let from = 0;
-    let to = 0;
+  // IMPORT ET LECTURE EXCEL (+ persistance localStorage jusqu'au prochain remplacement)
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    if (timePrefix === "this") {
-      if (timeUnit === "days") {
-        from = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-        to = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
-      } else if (timeUnit === "months") {
-        from = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-        to = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
-      } else if (timeUnit === "years") {
-        from = new Date(now.getFullYear(), 0, 1).getTime();
-        to = new Date(now.getFullYear() + 1, 0, 1).getTime() - 1;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws);
+
+        const newMapping: Record<string, string> = {};
+
+        data.forEach((row: any) => {
+          const keys = Object.keys(row);
+          const idKey = keys.find(k => k.trim().toUpperCase() === 'IDUNIQUE');
+          const domainKey = keys.find(k => k.trim().toUpperCase() === 'DOMAINE');
+
+          if (idKey && domainKey && row[idKey]) {
+            const hrId = String(row[idKey]).trim().toLowerCase();
+            if (hrId) {
+              newMapping[hrId] = String(row[domainKey]).trim();
+            }
+          }
+        });
+
+        const newMeta = {
+          fileName: file.name,
+          importedAt: new Date().toISOString(),
+          rowCount: Object.keys(newMapping).length
+        };
+
+        setHrMapping(newMapping);
+        setHrFileMeta(newMeta);
+
+        try {
+          localStorage.setItem(HR_MAPPING_STORAGE_KEY, JSON.stringify(newMapping));
+          localStorage.setItem(HR_MAPPING_META_STORAGE_KEY, JSON.stringify(newMeta));
+        } catch (storageErr) {
+          console.error("Impossible d'enregistrer la base RH en local :", storageErr);
+        }
+      } catch (err) {
+        console.error("Erreur lors de la lecture du fichier Excel :", err);
+        alert("Impossible de lire le fichier Excel. Vérifiez les colonnes IDUNIQUE et DOMAINE.");
       }
-    } else if (timePrefix === "last") {
-      to = now.getTime();
-      const fromDate = new Date(now);
-      if (timeUnit === "days") fromDate.setDate(fromDate.getDate() - timeValue);
-      else if (timeUnit === "months") fromDate.setMonth(fromDate.getMonth() - timeValue);
-      else if (timeUnit === "years") fromDate.setFullYear(fromDate.getFullYear() - timeValue);
-      from = fromDate.getTime();
-    } else if (timePrefix === "next") {
-      from = now.getTime();
-      const toDate = new Date(now);
-      if (timeUnit === "days") toDate.setDate(toDate.getDate() + timeValue);
-      else if (timeUnit === "months") toDate.setMonth(toDate.getMonth() + timeValue);
-      else if (timeUnit === "years") toDate.setFullYear(toDate.getFullYear() + timeValue);
-      to = toDate.getTime();
-    }
-
-    return { from, to };
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = ''; // Reset l'input
   };
 
-  // 🛠️ CORRECTIF PAGINATION : Parallélisation contrôlée (Workers) pour un chargement ultra-rapide
+  // Fonction pour trouver le domaine d'un utilisateur XDR en utilisant .includes()
+  const getDomainForUser = (xdrUser: string): string => {
+    if (!xdrUser) return "Non attribué";
+    const xdrLower = String(xdrUser).toLowerCase();
+
+    for (const [hrId, domain] of Object.entries(hrMapping)) {
+      if (xdrLower.includes(hrId)) {
+        return domain;
+      }
+    }
+    return "Non attribué";
+  };
+
+  // Parallélisation contrôlée (Workers) pour un chargement ultra-rapide de l'inventaire
   const fetchInventory = async () => {
     setInventoryLoading(true);
     setInventoryData([]);
@@ -286,83 +357,6 @@ export default function CortexPanel() {
     }
   };
 
-  // 🆕 Récupère TOUS les utilisateurs à risque (pas de limit 10), sur la même plage
-  // temporelle que le reste du dashboard. Plafonné à 500 lignes côté XQL par prudence
-  // (évite un payload démesuré sur un tenant avec des dizaines de milliers de comptes).
-  const fetchAllUsersAtRisk = async () => {
-    setAllUsersLoading(true);
-    setAllUsersAtRisk(null);
-    setAllUsersError(null);
-    setUsersPage(1);
-
-    try {
-      const { from, to } = computeTimeRange();
-      const query = `dataset = alerts | filter user_name != null and to_string(user_name) != "" | alter user_name_str = to_string(user_name), risk_weight = if(severity = "Critical", 4, if(severity = "High", 3, if(severity = "Medium", 2, 1))) | comp sum(risk_weight) as risk_score, count() as alert_count by user_name_str | sort desc risk_score | limit 500`;
-
-      let queryId: string | null = null;
-      let retryCount = 0;
-
-      while (retryCount < 3) {
-        const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, {
-          request_data: { query, timeframe: { from, to } }
-        });
-
-        if (startRes.status === 450 || startRes.status === 429 || startRes.status === 500) {
-          await new Promise(r => setTimeout(r, 3000));
-          retryCount++;
-          continue;
-        }
-
-        if (!startRes.ok) {
-          throw new Error(`Échec au démarrage de la requête XQL (HTTP ${startRes.status})`);
-        }
-
-        const startData = await startRes.json();
-        queryId = startData?.reply;
-        break;
-      }
-
-      if (!queryId) throw new Error("Aucun identifiant de requête XQL retourné après plusieurs tentatives.");
-
-      let rows: any[] | null = null;
-
-      for (let i = 0; i < 20; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-        const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
-
-        if (pollRes.status === 450 || pollRes.status === 429 || pollRes.status === 500) {
-          await new Promise(r => setTimeout(r, 3000));
-          continue;
-        }
-        if (!pollRes.ok) continue;
-
-        const pollData = await pollRes.json();
-
-        if (pollData.reply?.status === "SUCCESS") {
-          rows = pollData.reply.results?.data || [];
-          break;
-        } else if (pollData.reply?.status === "FAIL" || pollData.reply?.status === "FAILED") {
-          throw new Error("La requête XQL a échoué côté Cortex.");
-        }
-      }
-
-      if (rows === null) throw new Error("Délai dépassé en attente du résultat de la requête XQL.");
-
-      const parsed = rows
-        .map((r: any) => ({ user: String(r.user_name_str), score: Number(r.risk_score) || 0, count: Number(r.alert_count) || 0 }))
-        .sort((a, b) => b.score - a.score);
-
-      setAllUsersAtRisk(parsed);
-
-    } catch (err: any) {
-      console.error("Exception liste complète utilisateurs:", err);
-      setAllUsersError(err.message || "Erreur inconnue lors de la récupération des utilisateurs à risque.");
-      setAllUsersAtRisk(null);
-    } finally {
-      setAllUsersLoading(false);
-    }
-  };
-
   const uniqueOSList = useMemo(() => {
     if (!inventoryData) return [];
     const osSet = new Set(inventoryData.map(ep => ep.operating_system).filter(Boolean));
@@ -396,16 +390,69 @@ export default function CortexPanel() {
     currentPage * ITEMS_PER_PAGE
   );
 
-  // 🆕 Liste filtrée pour la modale "Tous les utilisateurs" : recherche + affichage des masqués optionnel
+  const visibleTopUsers = useMemo(() => {
+    if (!allUsersAtRisk) return null;
+    return allUsersAtRisk
+      .filter(u => !hiddenUsers.has(u.user))
+      .slice(0, 10);
+  }, [allUsersAtRisk, hiddenUsers]);
+
+  // 🆕 Agrégation détaillée pour le tableau pleine largeur (Calcul de moyenne et de part du risque)
+  const departmentRiskDistribution = useMemo(() => {
+    if (!allUsersAtRisk) return null;
+    if (Object.keys(hrMapping).length === 0) return [];
+
+    const deptMap: Record<string, { score: number; count: number; users: Set<string> }> = {};
+
+    allUsersAtRisk.forEach(u => {
+      if (hiddenUsers.has(u.user)) return;
+      const dept = getDomainForUser(u.user);
+
+      if (!deptMap[dept]) {
+        deptMap[dept] = { score: 0, count: 0, users: new Set() };
+      }
+
+      deptMap[dept].score += u.score;
+      deptMap[dept].count += u.count;
+      deptMap[dept].users.add(u.user);
+    });
+
+    const totalScoreAllDepts = Object.values(deptMap).reduce((sum, d) => sum + d.score, 0);
+
+    return Object.entries(deptMap)
+      .map(([department, data]) => ({
+        department,
+        score: data.score,
+        count: data.count,
+        userCount: data.users.size,
+        avgScorePerUser: data.users.size > 0 ? data.score / data.users.size : 0,
+        sharePct: totalScoreAllDepts > 0 ? (data.score / totalScoreAllDepts) * 100 : 0
+      }))
+      .sort((a, b) => b.score - a.score);
+  }, [allUsersAtRisk, hrMapping, hiddenUsers]);
+
+  // Liste des domaines filtrée par recherche
+  const filteredDepartmentDistribution = useMemo(() => {
+    if (!departmentRiskDistribution) return [];
+    const searchLower = hrSearchTerm.toLowerCase();
+    return departmentRiskDistribution.filter(d =>
+      hrSearchTerm === "" || d.department.toLowerCase().includes(searchLower)
+    );
+  }, [departmentRiskDistribution, hrSearchTerm]);
+
   const filteredAllUsers = useMemo(() => {
     if (!allUsersAtRisk) return [];
     const searchLower = userSearchTerm.toLowerCase();
+
     return allUsersAtRisk.filter(u => {
-      const matchesSearch = userSearchTerm === "" || u.user.toLowerCase().includes(searchLower);
+      const domain = getDomainForUser(u.user);
+      const matchesSearch = userSearchTerm === "" ||
+                            u.user.toLowerCase().includes(searchLower) ||
+                            domain.toLowerCase().includes(searchLower);
       const isHidden = hiddenUsers.has(u.user);
       return matchesSearch && (showHiddenUsers || !isHidden);
     });
-  }, [allUsersAtRisk, userSearchTerm, hiddenUsers, showHiddenUsers]);
+  }, [allUsersAtRisk, userSearchTerm, hiddenUsers, showHiddenUsers, hrMapping]);
 
   useEffect(() => {
     setUsersPage(1);
@@ -416,12 +463,6 @@ export default function CortexPanel() {
     (usersPage - 1) * ITEMS_PER_PAGE,
     usersPage * ITEMS_PER_PAGE
   );
-
-  // 🆕 Top 10 utilisateurs affiché en page principale, expurgé des utilisateurs masqués
-  const visibleTopUsers = useMemo(() => {
-    if (!topUsers) return null;
-    return topUsers.filter(u => !hiddenUsers.has(u.user));
-  }, [topUsers, hiddenUsers]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -438,10 +479,39 @@ export default function CortexPanel() {
       setTimelineGranularity(null);
       setHourlyDistribution(null);
       setTopEndpoints(null);
-      setTopUsers(null);
+      setAllUsersAtRisk(null);
       setStatus("loading");
 
-      const { from: fromTimestamp, to: toTimestamp } = computeTimeRange();
+      const now = new Date();
+      let fromTimestamp = 0;
+      let toTimestamp = 0;
+
+      if (timePrefix === "this") {
+        if (timeUnit === "days") {
+          fromTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+          toTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
+        } else if (timeUnit === "months") {
+          fromTimestamp = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+          toTimestamp = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
+        } else if (timeUnit === "years") {
+          fromTimestamp = new Date(now.getFullYear(), 0, 1).getTime();
+          toTimestamp = new Date(now.getFullYear() + 1, 0, 1).getTime() - 1;
+        }
+      } else if (timePrefix === "last") {
+        toTimestamp = now.getTime();
+        const fromDate = new Date(now);
+        if (timeUnit === "days") fromDate.setDate(fromDate.getDate() - timeValue);
+        else if (timeUnit === "months") fromDate.setMonth(fromDate.getMonth() - timeValue);
+        else if (timeUnit === "years") fromDate.setFullYear(fromDate.getFullYear() - timeValue);
+        fromTimestamp = fromDate.getTime();
+      } else if (timePrefix === "next") {
+        fromTimestamp = now.getTime();
+        const toDate = new Date(now);
+        if (timeUnit === "days") toDate.setDate(toDate.getDate() + timeValue);
+        else if (timeUnit === "months") toDate.setMonth(toDate.getMonth() + timeValue);
+        else if (timeUnit === "years") toDate.setFullYear(toDate.getFullYear() + timeValue);
+        toTimestamp = toDate.getTime();
+      }
 
       if (!fqdn || !apiKeyId || !apiKey) {
         setStatus("error");
@@ -497,7 +567,6 @@ export default function CortexPanel() {
 
         setStatus("success");
 
-        // 🛡️ REQUÊTES XQL AVEC SYSTÈME DE RETRY ANTI-QUOTA (Code 450)
         const executeXql = async (query: string, label: string, withTimeframe = true) => {
           const payload: any = { request_data: { query } };
           if (withTimeframe) payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
@@ -510,16 +579,12 @@ export default function CortexPanel() {
             const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload);
 
             if (startRes.status === 450 || startRes.status === 429 || startRes.status === 500) {
-              console.warn(`[XQL] Quota API atteint au démarrage de "${label}". Pause 3s...`);
               await new Promise(r => setTimeout(r, 3000));
               retryCount++;
               continue;
             }
 
-            if (!startRes.ok) {
-              console.error(`❌ [API XQL - ${label}] Erreur HTTP fatale :`, startRes.status);
-              return null;
-            }
+            if (!startRes.ok) return null;
 
             const startData = await startRes.json();
             queryId = startData?.reply;
@@ -535,7 +600,6 @@ export default function CortexPanel() {
             const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
 
             if (pollRes.status === 450 || pollRes.status === 429 || pollRes.status === 500) {
-              console.warn(`[XQL] Quota API atteint en cours de Polling pour "${label}". Pause 3s...`);
               await new Promise(r => setTimeout(r, 3000));
               continue;
             }
@@ -547,7 +611,6 @@ export default function CortexPanel() {
             if (pollData.reply?.status === "SUCCESS") {
               return pollData.reply.results?.data || [];
             } else if (pollData.reply?.status === "FAIL" || pollData.reply?.status === "FAILED") {
-              console.warn(`[XQL] Échec de la requête "${label}" côté Cortex.`);
               break;
             }
           }
@@ -679,14 +742,14 @@ export default function CortexPanel() {
             }
           },
           {
-            query: `dataset = alerts | filter user_name != null and to_string(user_name) != "" | alter user_name_str = to_string(user_name), risk_weight = if(severity = "Critical", 4, if(severity = "High", 3, if(severity = "Medium", 2, 1))) | comp sum(risk_weight) as risk_score, count() as alert_count by user_name_str | sort desc risk_score | limit 10`,
+            query: `dataset = alerts | filter user_name != null and to_string(user_name) != "" | alter user_name_str = to_string(user_name), risk_weight = if(severity = "Critical", 4, if(severity = "High", 3, if(severity = "Medium", 2, 1))) | comp sum(risk_weight) as risk_score, count() as alert_count by user_name_str | sort desc risk_score | limit 500`,
             label: "Top utilisateurs",
             onResult: (rows) => {
               if (!rows) return;
               const parsed = rows
                 .map((r: any) => ({ user: String(r.user_name_str), score: Number(r.risk_score) || 0, count: Number(r.alert_count) || 0 }))
                 .sort((a, b) => b.score - a.score);
-              setTopUsers(parsed);
+              setAllUsersAtRisk(parsed);
             }
           },
         ];
@@ -1003,10 +1066,10 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 4 : CATÉGORIES + TOP ENDPOINTS À RISQUE + TOP UTILISATEURS À RISQUE */}
+          {/* LIGNE 4 : CATÉGORIES + TOP ENDPOINTS + TOP USERS */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
             <Card className="border border-border shadow-sm flex flex-col">
-              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50 h-[56px]">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
                   <Layers className="w-4 h-4 text-violet-500" /> Répartition par catégorie
                 </CardTitle>
@@ -1018,7 +1081,7 @@ export default function CortexPanel() {
                     <span className="text-xs font-medium">Calcul XQL...</span>
                   </div>
                 ) : categoryDistribution.length === 0 ? (
-                  <p className="text-xs text-muted-foreground italic text-center py-8">Aucune catégorie sur la période.</p>
+                  <p className="text-xs text-muted-foreground italic text-center py-8">Aucune catégorie correspondante.</p>
                 ) : (
                   <div className="space-y-2.5 overflow-y-auto pr-2 max-h-[280px] custom-scrollbar">
                     {categoryDistribution.map((c, index) => {
@@ -1056,20 +1119,22 @@ export default function CortexPanel() {
             </Card>
 
             <Card className="border border-border shadow-sm flex flex-col">
-              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
-                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <ServerCrash className="w-4 h-4 text-rose-500" /> Top endpoints à risque
-                </CardTitle>
-                <button
-                  onClick={() => {
-                    setIsInventoryOpen(true);
-                    setInventoryError(null);
-                    fetchInventory();
-                  }}
-                  className="text-[10px] font-bold text-indigo-600 bg-indigo-500/10 px-2 py-1 rounded-md border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors flex items-center gap-1"
-                >
-                  <Monitor className="w-3 h-3" /> Inventaire complet
-                </button>
+              <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
+                <div className="flex items-center justify-between w-full">
+                  <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                    <ServerCrash className="w-4 h-4 text-rose-500" /> Top endpoints
+                  </CardTitle>
+                  <button
+                    onClick={() => {
+                      setIsInventoryOpen(true);
+                      setInventoryError(null);
+                      fetchInventory();
+                    }}
+                    className="text-[10px] font-bold text-indigo-600 bg-indigo-500/10 px-2 py-1 rounded-md border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors flex items-center gap-1"
+                  >
+                    <Monitor className="w-3 h-3" /> Inventaire
+                  </button>
+                </div>
               </CardHeader>
               <CardContent className="pt-4 flex-grow">
                 {!topEndpoints ? (
@@ -1107,21 +1172,19 @@ export default function CortexPanel() {
               </CardContent>
             </Card>
 
-            {/* CARTE : TOP UTILISATEURS À RISQUE + BOUTON "TOUS LES UTILISATEURS" */}
             <Card className="border border-border shadow-sm flex flex-col">
-              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
-                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <UserX className="w-4 h-4 text-amber-500" /> Top utilisateurs à risque
-                </CardTitle>
-                <button
-                  onClick={() => {
-                    setIsUsersModalOpen(true);
-                    fetchAllUsersAtRisk();
-                  }}
-                  className="text-[10px] font-bold text-amber-600 bg-amber-500/10 px-2 py-1 rounded-md border border-amber-500/20 hover:bg-amber-500/20 transition-colors flex items-center gap-1"
-                >
-                  <Users className="w-3 h-3" /> Tous les utilisateurs
-                </button>
+              <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
+                <div className="flex items-center justify-between w-full">
+                  <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                    <UserX className="w-4 h-4 text-amber-500" /> Top utilisateurs
+                  </CardTitle>
+                  <button
+                    onClick={() => setIsUsersModalOpen(true)}
+                    className="text-[10px] font-bold text-amber-600 bg-amber-500/10 px-2 py-1 rounded-md border border-amber-500/20 hover:bg-amber-500/20 transition-colors flex items-center gap-1"
+                  >
+                    <Users className="w-3 h-3" /> Tous les utils.
+                  </button>
+                </div>
               </CardHeader>
               <CardContent className="pt-4 flex-grow">
                 {!visibleTopUsers ? (
@@ -1131,7 +1194,7 @@ export default function CortexPanel() {
                   </div>
                 ) : visibleTopUsers.length === 0 ? (
                   <p className="text-xs text-muted-foreground italic text-center py-8">
-                    {topUsers && topUsers.length > 0 ? "Tous les utilisateurs à risque sont masqués." : "Aucun utilisateur impacté."}
+                    {allUsersAtRisk && allUsersAtRisk.length > 0 ? "Tous masqués." : "Aucun utilisateur impacté."}
                   </p>
                 ) : (
                   <div className="space-y-2.5 overflow-y-auto pr-2 max-h-[280px] custom-scrollbar">
@@ -1141,10 +1204,7 @@ export default function CortexPanel() {
 
                       return (
                         <div key={u.user} className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden group hover:bg-secondary/20 transition-colors">
-                          <div
-                            className="absolute top-0 left-0 h-full opacity-15 bg-amber-500"
-                            style={{ width: `${percentage}%` }}
-                          />
+                          <div className="absolute top-0 left-0 h-full opacity-15 bg-amber-500" style={{ width: `${percentage}%` }} />
                           <div className="relative z-10 flex items-center gap-2 overflow-hidden">
                             <span className="font-black text-amber-500 text-[10px] w-4 shrink-0">#{index + 1}</span>
                             <span className="font-bold text-foreground text-xs truncate" title={u.user}>{u.user}</span>
@@ -1162,8 +1222,135 @@ export default function CortexPanel() {
             </Card>
           </div>
 
+          {/* LIGNE 4 BIS : DOMAINES RH — TABLEAU DÉTAILLÉ EN PLEINE LARGEUR */}
+          <Card className="border border-border shadow-sm flex flex-col mt-4">
+            <CardHeader className="pb-3 border-b border-border/50">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <CardTitle className="text-sm font-bold text-foreground uppercase flex items-center gap-2">
+                  <Briefcase className="w-4.5 h-4.5 text-emerald-500" /> Analyse du risque par domaine RH
+                </CardTitle>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  {hrFileMeta ? (
+                    <>
+                      <span className="text-[11px] font-bold text-emerald-600 bg-emerald-500/10 px-2.5 py-1 rounded-md border border-emerald-500/20 flex items-center gap-1.5">
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                        {hrFileMeta.fileName}
+                      </span>
+                      <span className="text-[10px] font-medium text-muted-foreground">
+                        importé le {new Date(hrFileMeta.importedAt).toLocaleDateString("fr-FR")} · {hrFileMeta.rowCount} entrées
+                      </span>
+                      <label className="cursor-pointer inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 bg-indigo-500/10 px-2.5 py-1 rounded-md border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors">
+                        <Upload className="w-3.5 h-3.5" /> Remplacer
+                        <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} />
+                      </label>
+                    </>
+                  ) : (
+                    <span className="text-[11px] font-bold text-muted-foreground bg-secondary/50 px-2.5 py-1 rounded-md border border-border">
+                      Base RH manquante
+                    </span>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+
+            <CardContent className="pt-4">
+              {Object.keys(hrMapping).length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center px-4">
+                  <FileSpreadsheet className="w-10 h-10 text-muted-foreground/50 mb-3" />
+                  <p className="text-sm text-muted-foreground font-medium mb-4 leading-tight max-w-md">
+                    Importez votre base RH (colonnes <span className="font-bold">IDUNIQUE</span> et <span className="font-bold">DOMAINE</span>) pour activer l'analyse par département.
+                  </p>
+                  <label className="cursor-pointer text-xs font-bold text-indigo-600 bg-indigo-500/10 px-4 py-2 rounded-md border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors">
+                    <Upload className="w-3.5 h-3.5 inline mr-1.5" /> Charger le fichier Excel
+                    <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} />
+                  </label>
+                </div>
+              ) : !departmentRiskDistribution ? (
+                <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+                  <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
+                  <span className="text-xs font-medium">Calcul XQL...</span>
+                </div>
+              ) : departmentRiskDistribution.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic text-center py-12">Aucun domaine impacté sur la période.</p>
+              ) : (
+                <div className="flex flex-col">
+                  {/* Recherche domaine */}
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="relative w-full sm:w-64">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        type="text"
+                        placeholder="Filtrer un domaine..."
+                        value={hrSearchTerm}
+                        onChange={(e) => setHrSearchTerm(e.target.value)}
+                        className="w-full bg-background border border-border text-foreground font-medium text-xs rounded-lg pl-9 pr-3 py-1.5 focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="overflow-auto rounded-lg border border-border/60 max-h-[350px] custom-scrollbar">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead className="bg-secondary/60 sticky top-0 z-10 backdrop-blur-sm">
+                        <tr>
+                          <th className="p-2.5 font-bold text-muted-foreground border-b border-border">Domaine</th>
+                          <th className="p-2.5 font-bold text-muted-foreground border-b border-border text-right">Utilisateurs</th>
+                          <th className="p-2.5 font-bold text-muted-foreground border-b border-border text-right">Alertes</th>
+                          <th className="p-2.5 font-bold text-muted-foreground border-b border-border text-right">Score total</th>
+                          <th className="p-2.5 font-bold text-muted-foreground border-b border-border text-right">Score moy. / util.</th>
+                          <th className="p-2.5 font-bold text-muted-foreground border-b border-border text-right">Part du risque</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredDepartmentDistribution.map((d, index) => {
+                          const color = DOMAIN_PALETTE[departmentRiskDistribution.findIndex(x => x.department === d.department) % DOMAIN_PALETTE.length];
+                          const isActive = filters.domain === d.department;
+                          const isFaded = filters.domain && !isActive;
+
+                          return (
+                            <tr
+                              key={d.department}
+                              onClick={() => handleFilterToggle('domain', d.department)}
+                              className={`border-b border-border/40 hover:bg-secondary/20 transition-colors cursor-pointer ${isActive ? 'bg-secondary/20' : ''} ${isFaded ? 'opacity-40' : 'opacity-100'}`}
+                            >
+                              <td className="p-2.5 font-bold text-foreground">
+                                <span className="flex items-center gap-2">
+                                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                                  {d.department}
+                                </span>
+                              </td>
+                              <td className="p-2.5 text-muted-foreground font-medium text-right">{d.userCount.toLocaleString()}</td>
+                              <td className="p-2.5 text-muted-foreground font-medium text-right">{d.count.toLocaleString()}</td>
+                              <td className="p-2.5 font-black text-foreground text-right">{d.score.toLocaleString()}</td>
+                              <td className="p-2.5 text-muted-foreground font-medium text-right">{d.avgScorePerUser.toFixed(1)}</td>
+                              <td className="p-2.5 text-right">
+                                <span className="inline-flex items-center gap-1.5 justify-end w-full">
+                                  <span className="font-bold text-foreground">{d.sharePct.toFixed(1)}%</span>
+                                  <span className="w-14 h-1.5 rounded-full bg-secondary/60 overflow-hidden hidden sm:inline-block">
+                                    <span className="block h-full rounded-full" style={{ width: `${d.sharePct}%`, backgroundColor: color }} />
+                                  </span>
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {filteredDepartmentDistribution.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-muted-foreground italic">
+                              Aucun domaine ne correspond à ce filtre.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* LIGNE 5 : INVENTAIRE DU PARC */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-0">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -1318,7 +1505,7 @@ export default function CortexPanel() {
         </div>
       )}
 
-      {/* MODALE INVENTAIRE COMPLET ENDPOINTS (POP-UP) AVEC PAGINATION COTE CLIENT */}
+      {/* MODALE INVENTAIRE COMPLET ENDPOINTS */}
       {isInventoryOpen && (
         <div className="fixed inset-0 z-[200] bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-card border border-border shadow-2xl rounded-xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
@@ -1339,7 +1526,6 @@ export default function CortexPanel() {
               </button>
             </div>
 
-            {/* BARRE DE FILTRES FRONTEND */}
             <div className="p-3 bg-secondary/10 border-b border-border flex flex-col sm:flex-row gap-3 items-center shrink-0">
               <div className="relative flex-grow w-full sm:max-w-sm">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -1463,7 +1649,7 @@ export default function CortexPanel() {
         </div>
       )}
 
-      {/* 🆕 MODALE : TOUS LES UTILISATEURS À RISQUE (recherche + masquage + pagination) */}
+      {/* MODALE : TOUS LES UTILISATEURS À RISQUE */}
       {isUsersModalOpen && (
         <div className="fixed inset-0 z-[200] bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-card border border-border shadow-2xl rounded-xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
@@ -1483,17 +1669,16 @@ export default function CortexPanel() {
               </button>
             </div>
 
-            {/* BARRE DE FILTRES */}
             <div className="p-3 bg-secondary/10 border-b border-border flex flex-col sm:flex-row gap-3 items-center shrink-0">
               <div className="relative flex-grow w-full sm:max-w-sm">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <input
                   type="text"
-                  placeholder="Rechercher un utilisateur..."
+                  placeholder="Rechercher un utilisateur ou un domaine..."
                   value={userSearchTerm}
                   onChange={(e) => setUserSearchTerm(e.target.value)}
                   className="w-full bg-background border border-border text-foreground font-medium text-sm rounded-lg pl-9 pr-3 py-1.5 focus:ring-2 focus:ring-amber-500 outline-none"
-                  disabled={allUsersLoading || !!allUsersError}
+                  disabled={!allUsersAtRisk}
                 />
               </div>
 
@@ -1503,12 +1688,12 @@ export default function CortexPanel() {
                   checked={showHiddenUsers}
                   onChange={(e) => setShowHiddenUsers(e.target.checked)}
                   className="w-4 h-4 rounded border-border accent-amber-500 cursor-pointer"
-                  disabled={allUsersLoading || !!allUsersError}
+                  disabled={!allUsersAtRisk}
                 />
                 Afficher les masqués {hiddenUsers.size > 0 && `(${hiddenUsers.size})`}
               </label>
 
-              {!allUsersLoading && !allUsersError && allUsersAtRisk && (
+              {allUsersAtRisk && (
                 <div className="ml-auto text-xs font-bold text-muted-foreground bg-secondary/30 px-3 py-1.5 rounded-md border border-border whitespace-nowrap">
                   {filteredAllUsers.length} {filteredAllUsers.length > 1 ? 'résultats' : 'résultat'} sur {allUsersAtRisk.length}
                 </div>
@@ -1516,12 +1701,7 @@ export default function CortexPanel() {
             </div>
 
             <div className="flex-grow overflow-auto p-0 custom-scrollbar relative bg-background">
-              {allUsersError ? (
-                <div className="h-full flex flex-col items-center justify-center gap-3 text-destructive p-8">
-                  <XCircle className="w-8 h-8" />
-                  <p className="text-sm font-medium text-center">{allUsersError}</p>
-                </div>
-              ) : allUsersLoading ? (
+              {!allUsersAtRisk ? (
                 <div className="h-full flex flex-col items-center justify-center space-y-4 p-8">
                   <Loader2 className="w-8 h-8 animate-spin text-amber-500" />
                   <p className="text-sm font-medium text-muted-foreground text-center">Calcul XQL en cours (peut prendre quelques dizaines de secondes)...</p>
@@ -1531,6 +1711,7 @@ export default function CortexPanel() {
                   <thead className="bg-secondary/95 sticky top-0 z-10 backdrop-blur-md shadow-sm">
                     <tr>
                       <th className="p-3 font-bold text-muted-foreground border-b border-border">Utilisateur</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Domaine RH</th>
                       <th className="p-3 font-bold text-muted-foreground border-b border-border">Alertes déclenchées</th>
                       <th className="p-3 font-bold text-muted-foreground border-b border-border">Score de risque</th>
                       <th className="p-3 font-bold text-muted-foreground border-b border-border text-right">Action</th>
@@ -1539,10 +1720,16 @@ export default function CortexPanel() {
                   <tbody>
                     {paginatedUsers.map((u) => {
                       const isHidden = hiddenUsers.has(u.user);
+                      const domain = getDomainForUser(u.user);
 
                       return (
                         <tr key={u.user} className={`border-b border-border/50 hover:bg-secondary/20 transition-colors ${isHidden ? "opacity-50" : ""}`}>
                           <td className="p-3 font-bold text-foreground">{u.user}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold border ${domain === "Non attribué" ? "bg-secondary/50 text-muted-foreground border-border" : "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"}`}>
+                              {domain}
+                            </span>
+                          </td>
                           <td className="p-3 text-muted-foreground font-medium">{u.count.toLocaleString()}</td>
                           <td className="p-3 font-black text-amber-500">{u.score.toLocaleString()}</td>
                           <td className="p-3 text-right">
@@ -1566,7 +1753,7 @@ export default function CortexPanel() {
                     })}
                     {filteredAllUsers.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="p-12 text-center text-muted-foreground italic">
+                        <td colSpan={5} className="p-12 text-center text-muted-foreground italic">
                           {allUsersAtRisk?.length === 0 ? "Aucun utilisateur à risque sur cette période." : "Aucun utilisateur ne correspond à ces filtres."}
                         </td>
                       </tr>
@@ -1576,7 +1763,7 @@ export default function CortexPanel() {
               )}
             </div>
 
-            {!allUsersLoading && !allUsersError && usersTotalPages > 1 && (
+            {allUsersAtRisk && usersTotalPages > 1 && (
               <div className="p-3 border-t border-border bg-secondary/30 flex items-center justify-between shrink-0">
                 <p className="text-xs font-medium text-muted-foreground">
                   Page <span className="font-bold text-foreground">{usersPage}</span> sur <span className="font-bold text-foreground">{usersTotalPages}</span>
