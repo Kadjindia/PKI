@@ -22,7 +22,7 @@ export default function MonitoringView() {
           <Briefcase className="w-8 h-8 text-blue-500" /> Pilotage Stratégique des Risques SI
         </h1>
         <p className="text-sm text-muted-foreground mt-2">
-          Tableaux de bord d'aide à la décision RSSI.
+          Exploitation des données issues des solutions de sécurité.
         </p>
       </div>
 

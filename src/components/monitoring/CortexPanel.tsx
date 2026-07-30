@@ -791,7 +791,7 @@ export default function CortexPanel() {
           <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
             <Activity className="w-7 h-7 text-purple-500" /> Évaluation des Risques
           </h2>
-          <p className="text-muted-foreground font-medium mt-1">Architecture Duale : REST (Instantané) & XQL (Asynchrone)</p>
+          <p className="text-muted-foreground font-medium mt-1">Synthèse globale de la surface d'attaque et des incidents de sécurité</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 bg-secondary/20 p-2 rounded-xl border border-border">
@@ -1042,7 +1042,7 @@ export default function CortexPanel() {
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-0">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire
+                  <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire des alertes
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-4 flex-grow flex items-center justify-center min-h-[260px]">
@@ -1122,7 +1122,7 @@ export default function CortexPanel() {
               <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
                 <div className="flex items-center justify-between w-full">
                   <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                    <ServerCrash className="w-4 h-4 text-rose-500" /> Top endpoints
+                    <ServerCrash className="w-4 h-4 text-rose-500" /> Top endpoints à risque
                   </CardTitle>
                   <button
                     onClick={() => {
@@ -1176,7 +1176,7 @@ export default function CortexPanel() {
               <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
                 <div className="flex items-center justify-between w-full">
                   <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                    <UserX className="w-4 h-4 text-amber-500" /> Top utilisateurs
+                    <UserX className="w-4 h-4 text-amber-500" /> Top utilisateurs à risque
                   </CardTitle>
                   <button
                     onClick={() => setIsUsersModalOpen(true)}
@@ -1398,7 +1398,7 @@ export default function CortexPanel() {
               <CardHeader className="pb-2 flex flex-col justify-center border-b border-border/50 h-[56px]">
                 <div className="flex items-center justify-between w-full">
                   <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-teal-500" /> Versions
+                    <ShieldCheck className="w-4 h-4 text-teal-500" /> Versions des agents
                   </CardTitle>
                   {referenceVersion && (
                     <span className="text-[10px] font-bold text-teal-600 bg-teal-500/10 px-2 py-1 rounded-md border border-teal-500/20">
