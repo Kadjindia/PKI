@@ -2,7 +2,7 @@ import React, { useEffect, useState, useMemo } from "react";
 import {
   Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users,
   ShieldCheck, Monitor, AlertTriangle, Clock, TrendingUp, Layers, ServerCrash, Search,
-  ChevronLeft, ChevronRight
+  ChevronLeft, ChevronRight, UserX, Eye, EyeOff
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -110,12 +110,13 @@ export default function CortexPanel() {
 
   const [hourlyDistribution, setHourlyDistribution] = useState<{ hour: number; label: string; count: number }[] | null>(null);
   const [topEndpoints, setTopEndpoints] = useState<{ host: string; score: number; count: number }[] | null>(null);
+  const [topUsers, setTopUsers] = useState<{ user: string; score: number; count: number }[] | null>(null);
 
   const [timePrefix, setTimePrefix] = useState<"last" | "this" | "next">("last");
   const [timeValue, setTimeValue] = useState<number>(30);
   const [timeUnit, setTimeUnit] = useState<"days" | "months" | "years">("days");
 
-  // ETATS POUR L'INVENTAIRE ET LES FILTRES
+  // ETATS POUR L'INVENTAIRE ENDPOINTS ET LES FILTRES
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
   const [inventoryData, setInventoryData] = useState<any[] | null>(null);
   const [inventoryLoading, setInventoryLoading] = useState(false);
@@ -125,9 +126,30 @@ export default function CortexPanel() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [osFilter, setOsFilter] = useState("ALL");
 
-  // ETAT POUR LA PAGINATION
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 50;
+
+  // 🆕 ETATS POUR LA LISTE COMPLETE DES UTILISATEURS À RISQUE + MASQUAGE
+  const [isUsersModalOpen, setIsUsersModalOpen] = useState(false);
+  const [allUsersAtRisk, setAllUsersAtRisk] = useState<{ user: string; score: number; count: number }[] | null>(null);
+  const [allUsersLoading, setAllUsersLoading] = useState(false);
+  const [allUsersError, setAllUsersError] = useState<string | null>(null);
+
+  // Masquage : état en mémoire (session courante uniquement, non persisté entre rechargements).
+  // Pour une persistance durable, sauvegarder ce Set côté backend ou localStorage selon les besoins.
+  const [hiddenUsers, setHiddenUsers] = useState<Set<string>>(new Set());
+  const [showHiddenUsers, setShowHiddenUsers] = useState(false);
+  const [userSearchTerm, setUserSearchTerm] = useState("");
+  const [usersPage, setUsersPage] = useState(1);
+
+  const toggleHideUser = (user: string) => {
+    setHiddenUsers(prev => {
+      const next = new Set(prev);
+      if (next.has(user)) next.delete(user);
+      else next.add(user);
+      return next;
+    });
+  };
 
   const fqdn = import.meta.env.VITE_CORTEX_FQDN;
   const apiKeyId = import.meta.env.VITE_CORTEX_API_KEY_ID;
@@ -152,7 +174,45 @@ export default function CortexPanel() {
     });
   };
 
-// 🛠️ CORRECTIF PAGINATION : Parallélisation contrôlée (Workers) pour un chargement ultra-rapide
+  // 🆕 Calcul de la plage temporelle factorisé : utilisé par la synchronisation globale
+  // ET par la requête à la demande "Tous les utilisateurs à risque", pour garantir
+  // que les deux respectent exactement le même filtre de dates sélectionné par l'utilisateur.
+  const computeTimeRange = (): { from: number; to: number } => {
+    const now = new Date();
+    let from = 0;
+    let to = 0;
+
+    if (timePrefix === "this") {
+      if (timeUnit === "days") {
+        from = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        to = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
+      } else if (timeUnit === "months") {
+        from = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        to = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
+      } else if (timeUnit === "years") {
+        from = new Date(now.getFullYear(), 0, 1).getTime();
+        to = new Date(now.getFullYear() + 1, 0, 1).getTime() - 1;
+      }
+    } else if (timePrefix === "last") {
+      to = now.getTime();
+      const fromDate = new Date(now);
+      if (timeUnit === "days") fromDate.setDate(fromDate.getDate() - timeValue);
+      else if (timeUnit === "months") fromDate.setMonth(fromDate.getMonth() - timeValue);
+      else if (timeUnit === "years") fromDate.setFullYear(fromDate.getFullYear() - timeValue);
+      from = fromDate.getTime();
+    } else if (timePrefix === "next") {
+      from = now.getTime();
+      const toDate = new Date(now);
+      if (timeUnit === "days") toDate.setDate(toDate.getDate() + timeValue);
+      else if (timeUnit === "months") toDate.setMonth(toDate.getMonth() + timeValue);
+      else if (timeUnit === "years") toDate.setFullYear(toDate.getFullYear() + timeValue);
+      to = toDate.getTime();
+    }
+
+    return { from, to };
+  };
+
+  // 🛠️ CORRECTIF PAGINATION : Parallélisation contrôlée (Workers) pour un chargement ultra-rapide
   const fetchInventory = async () => {
     setInventoryLoading(true);
     setInventoryData([]);
@@ -161,7 +221,6 @@ export default function CortexPanel() {
 
     try {
       const BATCH_SIZE = 100;
-      // On se base sur le total connu, ou 0 si on n'a rien
       const totalExpected = kpis.coverageTotal > 0 ? kpis.coverageTotal : 0;
 
       if (totalExpected === 0) {
@@ -170,7 +229,6 @@ export default function CortexPanel() {
         return;
       }
 
-      // 1. On prépare la liste de tous les "offsets" (ex: [0, 100, 200, 300...])
       const offsets: number[] = [];
       for (let i = 0; i < totalExpected; i += BATCH_SIZE) {
         offsets.push(i);
@@ -178,13 +236,12 @@ export default function CortexPanel() {
 
       let allEndpoints: any[] = [];
       let cursor = 0;
-      const CONCURRENCY_LIMIT = 3; // On lance 3 requêtes REST en même temps max
+      const CONCURRENCY_LIMIT = 3;
 
-      // 2. Fonction exécutée par chaque "Worker"
       const runNext = async (): Promise<void> => {
         while (cursor < offsets.length) {
           const currentFrom = offsets[cursor];
-          cursor += 1; // On réserve cet offset pour ce worker
+          cursor += 1;
 
           try {
             const res = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, {
@@ -196,13 +253,11 @@ export default function CortexPanel() {
 
             if (!res.ok) {
               console.warn(`[REST] Échec API inventaire offset ${currentFrom}`);
-              continue; // Si un batch échoue, on passe au suivant sans tout crasher
+              continue;
             }
 
             const data = await res.json();
             const endpoints = data.reply?.endpoints || [];
-
-            // On ajoute les résultats au tableau global
             allEndpoints = [...allEndpoints, ...endpoints];
 
           } catch (err) {
@@ -211,12 +266,9 @@ export default function CortexPanel() {
         }
       };
 
-      // 3. Lancement des workers en parallèle
       const workers = Array.from({ length: Math.min(CONCURRENCY_LIMIT, offsets.length) }, () => runNext());
       await Promise.all(workers);
 
-      // 4. On trie le résultat final par nom d'hôte pour que ce soit propre,
-      // car les requêtes asynchrones ne reviennent pas forcément dans l'ordre.
       allEndpoints.sort((a, b) => {
         const nameA = a.endpoint_name || "";
         const nameB = b.endpoint_name || "";
@@ -231,6 +283,83 @@ export default function CortexPanel() {
       setInventoryData(null);
     } finally {
       setInventoryLoading(false);
+    }
+  };
+
+  // 🆕 Récupère TOUS les utilisateurs à risque (pas de limit 10), sur la même plage
+  // temporelle que le reste du dashboard. Plafonné à 500 lignes côté XQL par prudence
+  // (évite un payload démesuré sur un tenant avec des dizaines de milliers de comptes).
+  const fetchAllUsersAtRisk = async () => {
+    setAllUsersLoading(true);
+    setAllUsersAtRisk(null);
+    setAllUsersError(null);
+    setUsersPage(1);
+
+    try {
+      const { from, to } = computeTimeRange();
+      const query = `dataset = alerts | filter user_name != null and to_string(user_name) != "" | alter user_name_str = to_string(user_name), risk_weight = if(severity = "Critical", 4, if(severity = "High", 3, if(severity = "Medium", 2, 1))) | comp sum(risk_weight) as risk_score, count() as alert_count by user_name_str | sort desc risk_score | limit 500`;
+
+      let queryId: string | null = null;
+      let retryCount = 0;
+
+      while (retryCount < 3) {
+        const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, {
+          request_data: { query, timeframe: { from, to } }
+        });
+
+        if (startRes.status === 450 || startRes.status === 429 || startRes.status === 500) {
+          await new Promise(r => setTimeout(r, 3000));
+          retryCount++;
+          continue;
+        }
+
+        if (!startRes.ok) {
+          throw new Error(`Échec au démarrage de la requête XQL (HTTP ${startRes.status})`);
+        }
+
+        const startData = await startRes.json();
+        queryId = startData?.reply;
+        break;
+      }
+
+      if (!queryId) throw new Error("Aucun identifiant de requête XQL retourné après plusieurs tentatives.");
+
+      let rows: any[] | null = null;
+
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
+
+        if (pollRes.status === 450 || pollRes.status === 429 || pollRes.status === 500) {
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        if (!pollRes.ok) continue;
+
+        const pollData = await pollRes.json();
+
+        if (pollData.reply?.status === "SUCCESS") {
+          rows = pollData.reply.results?.data || [];
+          break;
+        } else if (pollData.reply?.status === "FAIL" || pollData.reply?.status === "FAILED") {
+          throw new Error("La requête XQL a échoué côté Cortex.");
+        }
+      }
+
+      if (rows === null) throw new Error("Délai dépassé en attente du résultat de la requête XQL.");
+
+      const parsed = rows
+        .map((r: any) => ({ user: String(r.user_name_str), score: Number(r.risk_score) || 0, count: Number(r.alert_count) || 0 }))
+        .sort((a, b) => b.score - a.score);
+
+      setAllUsersAtRisk(parsed);
+
+    } catch (err: any) {
+      console.error("Exception liste complète utilisateurs:", err);
+      setAllUsersError(err.message || "Erreur inconnue lors de la récupération des utilisateurs à risque.");
+      setAllUsersAtRisk(null);
+    } finally {
+      setAllUsersLoading(false);
     }
   };
 
@@ -267,6 +396,33 @@ export default function CortexPanel() {
     currentPage * ITEMS_PER_PAGE
   );
 
+  // 🆕 Liste filtrée pour la modale "Tous les utilisateurs" : recherche + affichage des masqués optionnel
+  const filteredAllUsers = useMemo(() => {
+    if (!allUsersAtRisk) return [];
+    const searchLower = userSearchTerm.toLowerCase();
+    return allUsersAtRisk.filter(u => {
+      const matchesSearch = userSearchTerm === "" || u.user.toLowerCase().includes(searchLower);
+      const isHidden = hiddenUsers.has(u.user);
+      return matchesSearch && (showHiddenUsers || !isHidden);
+    });
+  }, [allUsersAtRisk, userSearchTerm, hiddenUsers, showHiddenUsers]);
+
+  useEffect(() => {
+    setUsersPage(1);
+  }, [userSearchTerm, showHiddenUsers]);
+
+  const usersTotalPages = Math.ceil(filteredAllUsers.length / ITEMS_PER_PAGE);
+  const paginatedUsers = filteredAllUsers.slice(
+    (usersPage - 1) * ITEMS_PER_PAGE,
+    usersPage * ITEMS_PER_PAGE
+  );
+
+  // 🆕 Top 10 utilisateurs affiché en page principale, expurgé des utilisateurs masqués
+  const visibleTopUsers = useMemo(() => {
+    if (!topUsers) return null;
+    return topUsers.filter(u => !hiddenUsers.has(u.user));
+  }, [topUsers, hiddenUsers]);
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -282,38 +438,10 @@ export default function CortexPanel() {
       setTimelineGranularity(null);
       setHourlyDistribution(null);
       setTopEndpoints(null);
+      setTopUsers(null);
       setStatus("loading");
 
-      const now = new Date();
-      let fromTimestamp = 0;
-      let toTimestamp = 0;
-
-      if (timePrefix === "this") {
-        if (timeUnit === "days") {
-          fromTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-          toTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
-        } else if (timeUnit === "months") {
-          fromTimestamp = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-          toTimestamp = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
-        } else if (timeUnit === "years") {
-          fromTimestamp = new Date(now.getFullYear(), 0, 1).getTime();
-          toTimestamp = new Date(now.getFullYear() + 1, 0, 1).getTime() - 1;
-        }
-      } else if (timePrefix === "last") {
-        toTimestamp = now.getTime();
-        const fromDate = new Date(now);
-        if (timeUnit === "days") fromDate.setDate(fromDate.getDate() - timeValue);
-        else if (timeUnit === "months") fromDate.setMonth(fromDate.getMonth() - timeValue);
-        else if (timeUnit === "years") fromDate.setFullYear(fromDate.getFullYear() - timeValue);
-        fromTimestamp = fromDate.getTime();
-      } else if (timePrefix === "next") {
-        fromTimestamp = now.getTime();
-        const toDate = new Date(now);
-        if (timeUnit === "days") toDate.setDate(toDate.getDate() + timeValue);
-        else if (timeUnit === "months") toDate.setMonth(toDate.getMonth() + timeValue);
-        else if (timeUnit === "years") toDate.setFullYear(toDate.getFullYear() + timeValue);
-        toTimestamp = toDate.getTime();
-      }
+      const { from: fromTimestamp, to: toTimestamp } = computeTimeRange();
 
       if (!fqdn || !apiKeyId || !apiKey) {
         setStatus("error");
@@ -377,7 +505,6 @@ export default function CortexPanel() {
           let queryId = null;
           let retryCount = 0;
 
-          // ETAPE 1 : Démarrer la requête (Avec Retry si 450)
           while (retryCount < 3) {
             if (isCancelled) return null;
             const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload);
@@ -401,17 +528,16 @@ export default function CortexPanel() {
 
           if (!queryId) return null;
 
-          // ETAPE 2 : Poller les résultats (Avec Retry si 450)
           for (let i = 0; i < 20; i++) {
             if (isCancelled) break;
-            await new Promise(res => setTimeout(res, 3000)); // Pause augmentée à 3s pour soulager Cortex
+            await new Promise(res => setTimeout(res, 3000));
 
             const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
 
             if (pollRes.status === 450 || pollRes.status === 429 || pollRes.status === 500) {
               console.warn(`[XQL] Quota API atteint en cours de Polling pour "${label}". Pause 3s...`);
               await new Promise(r => setTimeout(r, 3000));
-              continue; // Ne grille pas l'itération, on retente la suivante
+              continue;
             }
 
             if (!pollRes.ok) continue;
@@ -552,9 +678,19 @@ export default function CortexPanel() {
               setTopEndpoints(parsed);
             }
           },
+          {
+            query: `dataset = alerts | filter user_name != null and to_string(user_name) != "" | alter user_name_str = to_string(user_name), risk_weight = if(severity = "Critical", 4, if(severity = "High", 3, if(severity = "Medium", 2, 1))) | comp sum(risk_weight) as risk_score, count() as alert_count by user_name_str | sort desc risk_score | limit 10`,
+            label: "Top utilisateurs",
+            onResult: (rows) => {
+              if (!rows) return;
+              const parsed = rows
+                .map((r: any) => ({ user: String(r.user_name_str), score: Number(r.risk_score) || 0, count: Number(r.alert_count) || 0 }))
+                .sort((a, b) => b.score - a.score);
+              setTopUsers(parsed);
+            }
+          },
         ];
 
-        // Limite de concurrence très conservatrice (2 max) pour éviter le blocage API 450
         const CONCURRENCY_LIMIT = 2;
         let cursor = 0;
 
@@ -867,8 +1003,8 @@ export default function CortexPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 4 : CATÉGORIES + TOP ENDPOINTS À RISQUE */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-2">
+          {/* LIGNE 4 : CATÉGORIES + TOP ENDPOINTS À RISQUE + TOP UTILISATEURS À RISQUE */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
             <Card className="border border-border shadow-sm flex flex-col">
               <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -962,6 +1098,60 @@ export default function CortexPanel() {
                           <div className="relative z-10 flex items-center gap-4 shrink-0">
                             <span className="font-bold text-muted-foreground text-[10px]">{e.count} alerte{e.count > 1 ? "s" : ""}</span>
                             <span className="font-black text-rose-500 text-sm w-10 text-right">{e.score.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* CARTE : TOP UTILISATEURS À RISQUE + BOUTON "TOUS LES UTILISATEURS" */}
+            <Card className="border border-border shadow-sm flex flex-col">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <UserX className="w-4 h-4 text-amber-500" /> Top utilisateurs à risque
+                </CardTitle>
+                <button
+                  onClick={() => {
+                    setIsUsersModalOpen(true);
+                    fetchAllUsersAtRisk();
+                  }}
+                  className="text-[10px] font-bold text-amber-600 bg-amber-500/10 px-2 py-1 rounded-md border border-amber-500/20 hover:bg-amber-500/20 transition-colors flex items-center gap-1"
+                >
+                  <Users className="w-3 h-3" /> Tous les utilisateurs
+                </button>
+              </CardHeader>
+              <CardContent className="pt-4 flex-grow">
+                {!visibleTopUsers ? (
+                  <div className="flex items-center gap-2 text-muted-foreground py-12 justify-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
+                    <span className="text-xs font-medium">Calcul XQL...</span>
+                  </div>
+                ) : visibleTopUsers.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic text-center py-8">
+                    {topUsers && topUsers.length > 0 ? "Tous les utilisateurs à risque sont masqués." : "Aucun utilisateur impacté."}
+                  </p>
+                ) : (
+                  <div className="space-y-2.5 overflow-y-auto pr-2 max-h-[280px] custom-scrollbar">
+                    {visibleTopUsers.map((u, index) => {
+                      const maxScore = visibleTopUsers[0]?.score || 1;
+                      const percentage = ((u.score / maxScore) * 100).toFixed(0);
+
+                      return (
+                        <div key={u.user} className="relative flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-secondary/5 overflow-hidden group hover:bg-secondary/20 transition-colors">
+                          <div
+                            className="absolute top-0 left-0 h-full opacity-15 bg-amber-500"
+                            style={{ width: `${percentage}%` }}
+                          />
+                          <div className="relative z-10 flex items-center gap-2 overflow-hidden">
+                            <span className="font-black text-amber-500 text-[10px] w-4 shrink-0">#{index + 1}</span>
+                            <span className="font-bold text-foreground text-xs truncate" title={u.user}>{u.user}</span>
+                          </div>
+                          <div className="relative z-10 flex items-center gap-4 shrink-0">
+                            <span className="font-bold text-muted-foreground text-[10px]">{u.count} alerte{u.count > 1 ? "s" : ""}</span>
+                            <span className="font-black text-amber-500 text-sm w-10 text-right">{u.score.toLocaleString()}</span>
                           </div>
                         </div>
                       );
@@ -1128,7 +1318,7 @@ export default function CortexPanel() {
         </div>
       )}
 
-      {/* MODALE INVENTAIRE COMPLET (POP-UP) AVEC PAGINATION COTE CLIENT */}
+      {/* MODALE INVENTAIRE COMPLET ENDPOINTS (POP-UP) AVEC PAGINATION COTE CLIENT */}
       {isInventoryOpen && (
         <div className="fixed inset-0 z-[200] bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-card border border-border shadow-2xl rounded-xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
@@ -1216,7 +1406,6 @@ export default function CortexPanel() {
                     </tr>
                   </thead>
                   <tbody>
-                    {/* CARTOGRAPHIE DE LA PAGE ACTIVE SEULEMENT POUR LES PERFORMANCES DU DOM */}
                     {paginatedInventory.map((ep, i) => {
                       const isConnected = ep.endpoint_status?.toLowerCase() === 'connected';
                       const users = Array.isArray(ep.users) ? ep.users.join(", ") : (ep.users || "N/A");
@@ -1247,7 +1436,6 @@ export default function CortexPanel() {
               )}
             </div>
 
-            {/* CONTROLES DE PAGINATION */}
             {!inventoryLoading && !inventoryError && totalPages > 1 && (
               <div className="p-3 border-t border-border bg-secondary/30 flex items-center justify-between shrink-0">
                 <p className="text-xs font-medium text-muted-foreground">
@@ -1264,6 +1452,146 @@ export default function CortexPanel() {
                   <button
                     onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
                     disabled={currentPage === totalPages}
+                    className="flex items-center gap-1 text-xs font-bold bg-background border border-border px-3 py-1.5 rounded-lg hover:bg-secondary disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-foreground"
+                  >
+                    Suivant <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 🆕 MODALE : TOUS LES UTILISATEURS À RISQUE (recherche + masquage + pagination) */}
+      {isUsersModalOpen && (
+        <div className="fixed inset-0 z-[200] bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border shadow-2xl rounded-xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b border-border flex items-center justify-between bg-secondary/30 shrink-0">
+              <h3 className="text-lg font-black text-foreground flex items-center gap-2">
+                <UserX className="w-5 h-5 text-amber-500" /> Tous les utilisateurs à risque
+              </h3>
+              <button
+                onClick={() => {
+                  setIsUsersModalOpen(false);
+                  setUserSearchTerm("");
+                  setShowHiddenUsers(false);
+                }}
+                className="p-1 hover:bg-destructive/10 hover:text-destructive rounded-md transition-colors"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* BARRE DE FILTRES */}
+            <div className="p-3 bg-secondary/10 border-b border-border flex flex-col sm:flex-row gap-3 items-center shrink-0">
+              <div className="relative flex-grow w-full sm:max-w-sm">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  placeholder="Rechercher un utilisateur..."
+                  value={userSearchTerm}
+                  onChange={(e) => setUserSearchTerm(e.target.value)}
+                  className="w-full bg-background border border-border text-foreground font-medium text-sm rounded-lg pl-9 pr-3 py-1.5 focus:ring-2 focus:ring-amber-500 outline-none"
+                  disabled={allUsersLoading || !!allUsersError}
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-xs font-bold text-muted-foreground cursor-pointer whitespace-nowrap select-none">
+                <input
+                  type="checkbox"
+                  checked={showHiddenUsers}
+                  onChange={(e) => setShowHiddenUsers(e.target.checked)}
+                  className="w-4 h-4 rounded border-border accent-amber-500 cursor-pointer"
+                  disabled={allUsersLoading || !!allUsersError}
+                />
+                Afficher les masqués {hiddenUsers.size > 0 && `(${hiddenUsers.size})`}
+              </label>
+
+              {!allUsersLoading && !allUsersError && allUsersAtRisk && (
+                <div className="ml-auto text-xs font-bold text-muted-foreground bg-secondary/30 px-3 py-1.5 rounded-md border border-border whitespace-nowrap">
+                  {filteredAllUsers.length} {filteredAllUsers.length > 1 ? 'résultats' : 'résultat'} sur {allUsersAtRisk.length}
+                </div>
+              )}
+            </div>
+
+            <div className="flex-grow overflow-auto p-0 custom-scrollbar relative bg-background">
+              {allUsersError ? (
+                <div className="h-full flex flex-col items-center justify-center gap-3 text-destructive p-8">
+                  <XCircle className="w-8 h-8" />
+                  <p className="text-sm font-medium text-center">{allUsersError}</p>
+                </div>
+              ) : allUsersLoading ? (
+                <div className="h-full flex flex-col items-center justify-center space-y-4 p-8">
+                  <Loader2 className="w-8 h-8 animate-spin text-amber-500" />
+                  <p className="text-sm font-medium text-muted-foreground text-center">Calcul XQL en cours (peut prendre quelques dizaines de secondes)...</p>
+                </div>
+              ) : (
+                <table className="w-full text-left border-collapse text-sm">
+                  <thead className="bg-secondary/95 sticky top-0 z-10 backdrop-blur-md shadow-sm">
+                    <tr>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Utilisateur</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Alertes déclenchées</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Score de risque</th>
+                      <th className="p-3 font-bold text-muted-foreground border-b border-border text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedUsers.map((u) => {
+                      const isHidden = hiddenUsers.has(u.user);
+
+                      return (
+                        <tr key={u.user} className={`border-b border-border/50 hover:bg-secondary/20 transition-colors ${isHidden ? "opacity-50" : ""}`}>
+                          <td className="p-3 font-bold text-foreground">{u.user}</td>
+                          <td className="p-3 text-muted-foreground font-medium">{u.count.toLocaleString()}</td>
+                          <td className="p-3 font-black text-amber-500">{u.score.toLocaleString()}</td>
+                          <td className="p-3 text-right">
+                            <button
+                              onClick={() => toggleHideUser(u.user)}
+                              className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-md border transition-colors ${
+                                isHidden
+                                  ? "text-emerald-600 bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20"
+                                  : "text-muted-foreground bg-secondary/30 border-border hover:bg-secondary/50"
+                              }`}
+                            >
+                              {isHidden ? (
+                                <><Eye className="w-3 h-3" /> Afficher</>
+                              ) : (
+                                <><EyeOff className="w-3 h-3" /> Masquer</>
+                              )}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredAllUsers.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="p-12 text-center text-muted-foreground italic">
+                          {allUsersAtRisk?.length === 0 ? "Aucun utilisateur à risque sur cette période." : "Aucun utilisateur ne correspond à ces filtres."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {!allUsersLoading && !allUsersError && usersTotalPages > 1 && (
+              <div className="p-3 border-t border-border bg-secondary/30 flex items-center justify-between shrink-0">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Page <span className="font-bold text-foreground">{usersPage}</span> sur <span className="font-bold text-foreground">{usersTotalPages}</span>
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setUsersPage(prev => Math.max(prev - 1, 1))}
+                    disabled={usersPage === 1}
+                    className="flex items-center gap-1 text-xs font-bold bg-background border border-border px-3 py-1.5 rounded-lg hover:bg-secondary disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-foreground"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Précédent
+                  </button>
+                  <button
+                    onClick={() => setUsersPage(prev => Math.min(prev + 1, usersTotalPages))}
+                    disabled={usersPage === usersTotalPages}
                     className="flex items-center gap-1 text-xs font-bold bg-background border border-border px-3 py-1.5 rounded-lg hover:bg-secondary disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-foreground"
                   >
                     Suivant <ChevronRight className="w-4 h-4" />
