@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger
 } from "@/components/ui/accordion";
@@ -42,11 +43,10 @@ const BITSIGHT_VECTOR_NAMES: Record<string, string> = {
   tls_ssl: "SSL/TLS"
 };
 
-// 1. LA FONCTION D'APPEL API
+// 1. LA FONCTION D'APPEL API — passe désormais par la fonction proxy Supabase.
+// Le token et le GUID BitSight ne transitent plus jamais côté client :
+// ils sont lus uniquement côté serveur, dans la fonction Edge `bitsight-proxy`.
 const fetchBitsightDetails = async () => {
-  const token = import.meta.env.VITE_BITSIGHT_TOKEN;
-  const guid = import.meta.env.VITE_BITSIGHT_COMPANY_GUID;
-
   const realData = {
     executive: {
       score: 0, maxScore: 900, trends: { d7: "N/A", d30: "N/A", d90: "N/A" },
@@ -83,119 +83,127 @@ const fetchBitsightDetails = async () => {
     techShadowIt: { technologies: [], shadowIt: [] }
   };
 
-  if (!token || !guid) {
-    console.warn("⚠️ Token ou GUID manquant. Affichage du squelette vide.");
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (!session) {
+    console.warn("⚠️ Utilisateur non authentifié. Affichage du squelette vide.");
     return realData;
   }
 
-  const credentials = btoa(`${token}:`);
-  const headers = {
-    'Authorization': `Basic ${credentials}`,
-    'Accept': 'application/json'
+  // Petit helper qui appelle la fonction Edge bitsight-proxy avec le JWT de session.
+  // `path` correspond au sous-chemin après /companies/{guid}/ côté API BitSight
+  // (vide pour le rating lui-même, "findings" ou "assets" sinon).
+  const call = async (path: string, params: Record<string, string> = {}) => {
+    const query = new URLSearchParams({ path, ...params }).toString();
+    const res = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bitsight-proxy?${query}`,
+      { headers: { Authorization: `Bearer ${session.access_token}` } }
+    );
+    if (!res.ok) {
+      throw new Error(`Erreur API BitSight (${path || "rating"}) : ${res.status}`);
+    }
+    return res.json();
   };
 
   // --- APPEL 1 : SCORE, TENDANCES & POSTURE ---
   try {
-    const ratingResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}`, { headers });
-    if (ratingResponse.ok) {
-      const ratingData = await ratingResponse.json();
+    const ratingData = await call("");
 
-      realData.executive.score = ratingData.current_rating || 0;
-      realData.executive.industryName = ratingData.industry || "Secteur inconnu";
+    realData.executive.score = ratingData.current_rating || 0;
+    realData.executive.industryName = ratingData.industry || "Secteur inconnu";
 
-      if (ratingData.rating_industry_median === "below") realData.executive.percentile = "Sous la moyenne";
-      else if (ratingData.rating_industry_median === "above") realData.executive.percentile = "Au-dessus";
-      else realData.executive.percentile = "Dans la moyenne";
+    if (ratingData.rating_industry_median === "below") realData.executive.percentile = "Sous la moyenne";
+    else if (ratingData.rating_industry_median === "above") realData.executive.percentile = "Au-dessus";
+    else realData.executive.percentile = "Dans la moyenne";
 
-      realData.attackSurface.publicIpsCount = ratingData.ipv4_count || 0;
-      realData.executive.monitoredAssets = ratingData.ipv4_count || 0;
+    realData.attackSurface.publicIpsCount = ratingData.ipv4_count || 0;
+    realData.executive.monitoredAssets = ratingData.ipv4_count || 0;
 
-      if (ratingData.rating_details && typeof ratingData.rating_details === 'object') {
-        const categoriesList: any[] = [];
-        const positiveList: any[] = [];
-        const negativeList: any[] = [];
+    if (ratingData.rating_details && typeof ratingData.rating_details === 'object') {
+      const categoriesList: any[] = [];
+      const positiveList: any[] = [];
+      const negativeList: any[] = [];
 
-        Object.entries(ratingData.rating_details).forEach(([key, val]: [string, any]) => {
-          const officialName = BITSIGHT_VECTOR_NAMES[key] || key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-          const grade = val.grade || 'B';
+      Object.entries(ratingData.rating_details).forEach(([key, val]: [string, any]) => {
+        const officialName = BITSIGHT_VECTOR_NAMES[key] || key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        const grade = val.grade || 'B';
 
-          let progressScore = 70;
-          if (grade === 'A' || grade === 'GOOD') {
-            progressScore = 95;
-            positiveList.push({ factor: officialName, impact: "Conforme (A)" });
-          } else if (grade === 'B' || grade === 'WARN') {
-            progressScore = 70;
-          } else {
-            progressScore = 40;
-            negativeList.push({ factor: officialName, impact: `Risque (${grade})` });
-          }
+        let progressScore = 70;
+        if (grade === 'A' || grade === 'GOOD') {
+          progressScore = 95;
+          positiveList.push({ factor: officialName, impact: "Conforme (A)" });
+        } else if (grade === 'B' || grade === 'WARN') {
+          progressScore = 70;
+        } else {
+          progressScore = 40;
+          negativeList.push({ factor: officialName, impact: `Risque (${grade})` });
+        }
 
-          categoriesList.push({
-            name: officialName,
-            key: key,
-            score: progressScore,
-            rating: grade.charAt(0).toUpperCase()
-          });
+        categoriesList.push({
+          name: officialName,
+          key: key,
+          score: progressScore,
+          rating: grade.charAt(0).toUpperCase()
         });
+      });
 
-        realData.scorePosture.categories = categoriesList;
-        realData.scorePosture.positiveFactors = positiveList.slice(0, 3);
-        realData.scorePosture.negativeFactors = negativeList.slice(0, 3);
-      }
+      realData.scorePosture.categories = categoriesList;
+      realData.scorePosture.positiveFactors = positiveList.slice(0, 3);
+      realData.scorePosture.negativeFactors = negativeList.slice(0, 3);
+    }
 
-      if (Array.isArray(ratingData.ratings) && ratingData.ratings.length > 0) {
-        const sortedRatings = [...ratingData.ratings].sort((a: any, b: any) => a.rating_date.localeCompare(b.rating_date));
-        const currentScore = realData.executive.score;
+    if (Array.isArray(ratingData.ratings) && ratingData.ratings.length > 0) {
+      const sortedRatings = [...ratingData.ratings].sort((a: any, b: any) => a.rating_date.localeCompare(b.rating_date));
+      const currentScore = realData.executive.score;
 
-        const getRatingDaysAgo = (days: number) => {
-          if (sortedRatings.length === 0) return null;
-          const latestEntry = sortedRatings[sortedRatings.length - 1];
-          const latestDate = new Date(latestEntry.rating_date);
-          const targetDate = new Date(latestDate);
-          targetDate.setDate(targetDate.getDate() - days);
-          const targetStr = targetDate.toISOString().split('T')[0];
+      const getRatingDaysAgo = (days: number) => {
+        if (sortedRatings.length === 0) return null;
+        const latestEntry = sortedRatings[sortedRatings.length - 1];
+        const latestDate = new Date(latestEntry.rating_date);
+        const targetDate = new Date(latestDate);
+        targetDate.setDate(targetDate.getDate() - days);
+        const targetStr = targetDate.toISOString().split('T')[0];
 
-          let match = sortedRatings.find(r => r.rating_date === targetStr);
-          if (!match) {
-            const targetIdx = sortedRatings.length - 1 - days;
-            if (targetIdx >= 0) match = sortedRatings[targetIdx];
-          }
-          return match ? match.rating : null;
+        let match = sortedRatings.find(r => r.rating_date === targetStr);
+        if (!match) {
+          const targetIdx = sortedRatings.length - 1 - days;
+          if (targetIdx >= 0) match = sortedRatings[targetIdx];
+        }
+        return match ? match.rating : null;
+      };
+
+      const formatDiff = (pastScore: number | null) => {
+        if (pastScore === null) return "N/A";
+        const diff = currentScore - pastScore;
+        if (diff === 0) return "0";
+        return diff > 0 ? `+${diff}` : `${diff}`;
+      };
+
+      realData.executive.trends = {
+        d7: formatDiff(getRatingDaysAgo(7)),
+        d30: formatDiff(getRatingDaysAgo(30)),
+        d90: formatDiff(getRatingDaysAgo(90))
+      };
+
+      const monthlyMap = new Map();
+      sortedRatings.forEach((r: any) => {
+        if (r.rating_date) {
+          const monthKey = r.rating_date.substring(0, 7);
+          monthlyMap.set(monthKey, r.rating);
+        }
+      });
+
+      realData.scorePosture.historical = Array.from(monthlyMap.entries()).map(([monthKey, score]) => {
+        const [year, month] = monthKey.split('-');
+        const dateObj = new Date(parseInt(year), parseInt(month) - 1, 1);
+        const formattedLabel = dateObj.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' });
+        return {
+          month: formattedLabel.charAt(0).toUpperCase() + formattedLabel.slice(1),
+          score: score,
+          industry: null,
+          topPeers: null
         };
-
-        const formatDiff = (pastScore: number | null) => {
-          if (pastScore === null) return "N/A";
-          const diff = currentScore - pastScore;
-          if (diff === 0) return "0";
-          return diff > 0 ? `+${diff}` : `${diff}`;
-        };
-
-        realData.executive.trends = {
-          d7: formatDiff(getRatingDaysAgo(7)),
-          d30: formatDiff(getRatingDaysAgo(30)),
-          d90: formatDiff(getRatingDaysAgo(90))
-        };
-
-        const monthlyMap = new Map();
-        sortedRatings.forEach((r: any) => {
-          if (r.rating_date) {
-            const monthKey = r.rating_date.substring(0, 7);
-            monthlyMap.set(monthKey, r.rating);
-          }
-        });
-
-        realData.scorePosture.historical = Array.from(monthlyMap.entries()).map(([monthKey, score]) => {
-          const [year, month] = monthKey.split('-');
-          const dateObj = new Date(parseInt(year), parseInt(month) - 1, 1);
-          const formattedLabel = dateObj.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' });
-          return {
-            month: formattedLabel.charAt(0).toUpperCase() + formattedLabel.slice(1),
-            score: score,
-            industry: null,
-            topPeers: null
-          };
-        });
-      }
+      });
     }
   } catch (error) {
     console.error("Crash réseau sur le Score :", error);
@@ -203,59 +211,56 @@ const fetchBitsightDetails = async () => {
 
   // --- APPEL 2BIS : TOTAL GLOBAL DES FAILLES + DÉDOUBLONNAGE ---
   try {
-    const allFindingsResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}/findings?limit=500`, { headers });
-    if (allFindingsResponse.ok) {
-      const allData = await allFindingsResponse.json();
+    const allData = await call("findings", { limit: "500" });
 
-      realData.executive.totalFindings = allData.count || 0;
-      realData.findings.kpis.total = allData.count || 0;
+    realData.executive.totalFindings = allData.count || 0;
+    realData.findings.kpis.total = allData.count || 0;
 
-      if (allData.results && Array.isArray(allData.results)) {
-        const uniqueFindingsMap = new Map();
+    if (allData.results && Array.isArray(allData.results)) {
+      const uniqueFindingsMap = new Map();
 
-        allData.results.forEach((f: any) => {
-          let assetList = "Actif inconnu";
-          if (Array.isArray(f.assets) && f.assets.length > 0) {
-            assetList = f.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
+      allData.results.forEach((f: any) => {
+        let assetList = "Actif inconnu";
+        if (Array.isArray(f.assets) && f.assets.length > 0) {
+          assetList = f.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
+        }
+
+        const vectorLabel = f.risk_vector_label || BITSIGHT_VECTOR_NAMES[f.risk_vector] || "Autre";
+        const uniqueKey = `${assetList}::${vectorLabel}`;
+        const discoveryDate = f.first_seen || "1970-01-01";
+
+        if (!uniqueFindingsMap.has(uniqueKey)) {
+          uniqueFindingsMap.set(uniqueKey, { ...f, assetList, vectorLabel, parsedDate: new Date(discoveryDate).getTime() });
+        } else {
+          const existing = uniqueFindingsMap.get(uniqueKey);
+          const currentParsedDate = new Date(discoveryDate).getTime();
+          if (currentParsedDate > existing.parsedDate) {
+            uniqueFindingsMap.set(uniqueKey, { ...f, assetList, vectorLabel, parsedDate: currentParsedDate });
           }
+        }
+      });
 
-          const vectorLabel = f.risk_vector_label || BITSIGHT_VECTOR_NAMES[f.risk_vector] || "Autre";
-          const uniqueKey = `${assetList}::${vectorLabel}`;
-          const discoveryDate = f.first_seen || "1970-01-01";
+      realData.findings.list = Array.from(uniqueFindingsMap.values()).map((f: any) => {
+        const rawSeverity = f.severity_category || "minor";
+        let sevLabel = "Mineur";
 
-          if (!uniqueFindingsMap.has(uniqueKey)) {
-            uniqueFindingsMap.set(uniqueKey, { ...f, assetList, vectorLabel, parsedDate: new Date(discoveryDate).getTime() });
-          } else {
-            const existing = uniqueFindingsMap.get(uniqueKey);
-            const currentParsedDate = new Date(discoveryDate).getTime();
-            if (currentParsedDate > existing.parsedDate) {
-              uniqueFindingsMap.set(uniqueKey, { ...f, assetList, vectorLabel, parsedDate: currentParsedDate });
-            }
-          }
-        });
+        if (rawSeverity === "severe") { sevLabel = "Critique"; }
+        else if (rawSeverity === "material") { sevLabel = "Matériel"; }
+        else if (rawSeverity === "moderate") { sevLabel = "Modéré"; }
 
-        realData.findings.list = Array.from(uniqueFindingsMap.values()).map((f: any) => {
-          const rawSeverity = f.severity_category || "minor";
-          let sevLabel = "Mineur";
+        return {
+          finding: f.vectorLabel,
+          vectorKey: f.risk_vector,
+          severity: sevLabel,
+          severityKey: rawSeverity,
+          asset: f.assetList,
+          status: "Ouvert",
+          discoveryDate: f.first_seen || "Récemment",
+          rawDateMs: f.parsedDate
+        };
+      });
 
-          if (rawSeverity === "severe") { sevLabel = "Critique"; }
-          else if (rawSeverity === "material") { sevLabel = "Matériel"; }
-          else if (rawSeverity === "moderate") { sevLabel = "Modéré"; }
-
-          return {
-            finding: f.vectorLabel,
-            vectorKey: f.risk_vector,
-            severity: sevLabel,
-            severityKey: rawSeverity,
-            asset: f.assetList,
-            status: "Ouvert",
-            discoveryDate: f.first_seen || "Récemment",
-            rawDateMs: f.parsedDate
-          };
-        });
-
-        realData.findings.list.sort((a, b) => b.rawDateMs - a.rawDateMs);
-      }
+      realData.findings.list.sort((a, b) => b.rawDateMs - a.rawDateMs);
     }
   } catch (error) {
     console.error("Erreur extraction findings", error);
@@ -263,44 +268,41 @@ const fetchBitsightDetails = async () => {
 
   // --- APPEL 2 : FAILLES SÉVÈRES PRIORITAIRES ---
   try {
-    const findingsResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}/findings?severity_category=severe&limit=10`, { headers });
-    if (findingsResponse.ok) {
-      const findingsData = await findingsResponse.json();
+    const findingsData = await call("findings", { severity_category: "severe", limit: "10" });
 
-      if (findingsData && Array.isArray(findingsData.results)) {
-        realData.executive.criticalRisks = findingsData.count || 0;
+    if (findingsData && Array.isArray(findingsData.results)) {
+      realData.executive.criticalRisks = findingsData.count || 0;
 
-        const safeRisks = findingsData.results.map((finding: any, index: number) => {
-          const riskName = finding.risk_vector_label || "Vulnérabilité critique";
+      const safeRisks = findingsData.results.map((finding: any, index: number) => {
+        const riskName = finding.risk_vector_label || "Vulnérabilité critique";
 
-          let assetList = "Actif inconnu";
-          if (Array.isArray(finding.assets) && finding.assets.length > 0) {
-            assetList = finding.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
+        let assetList = "Actif inconnu";
+        if (Array.isArray(finding.assets) && finding.assets.length > 0) {
+          assetList = finding.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
+        }
+
+        const remediations = finding.details?.remediations || [];
+        const observedIps = finding.details?.observed_ips || [];
+        const rawScore = finding.severity || 'N/A';
+
+        return {
+          id: `RSK-${index + 1}`,
+          risk: riskName,
+          severity: "Critique",
+          impactScore: `Sévérité ${rawScore}`,
+          assets: assetList,
+          discoveryDate: finding.first_seen || "Récemment",
+          lastSeen: finding.last_seen || "Récemment",
+          status: "Ouvert",
+          details: {
+            remediations: remediations,
+            ips: observedIps,
+            evidence: finding.evidence_key || assetList
           }
+        };
+      });
 
-          const remediations = finding.details?.remediations || [];
-          const observedIps = finding.details?.observed_ips || [];
-          const rawScore = finding.severity || 'N/A';
-
-          return {
-            id: `RSK-${index + 1}`,
-            risk: riskName,
-            severity: "Critique",
-            impactScore: `Sévérité ${rawScore}`,
-            assets: assetList,
-            discoveryDate: finding.first_seen || "Récemment",
-            lastSeen: finding.last_seen || "Récemment",
-            status: "Ouvert",
-            details: {
-              remediations: remediations,
-              ips: observedIps,
-              evidence: finding.evidence_key || assetList
-            }
-          };
-        });
-
-        realData.priorityRisks = safeRisks;
-      }
+      realData.priorityRisks = safeRisks;
     }
   } catch (error) {
     console.error("Crash réseau sur le Score :", error);
@@ -339,97 +341,87 @@ const fetchBitsightDetails = async () => {
 
   // --- APPEL 3 : INVENTAIRE ET SURFACE D'ATTAQUE + TECHNOLOGIES ---
   try {
-    const assetsResponse = await fetch(`/api/bitsight/ratings/v1/companies/${guid}/assets?limit=1000`, { headers });
+    const assetsData = await call("assets", { limit: "1000" });
 
-    if (assetsResponse.ok) {
-      const assetsData = await assetsResponse.json();
+    if (assetsData && typeof assetsData.count === 'number') {
+      realData.executive.monitoredAssets = assetsData.count;
+    }
 
-      if (assetsData && typeof assetsData.count === 'number') {
-        realData.executive.monitoredAssets = assetsData.count;
-      }
+    if (assetsData && Array.isArray(assetsData.results)) {
+      let criticalCount = 0;
+      let ipCount = 0;
+      let domainCount = 0;
+      const techList: any[] = [];
 
-      if (assetsData && Array.isArray(assetsData.results)) {
+      realData.attackSurface.riskyAssets = assetsData.results.map((asset: any) => {
+        // 1. Lecture propre de la criticité (1 = Critique)
+        const category = String(asset.importance_category || "").toLowerCase();
+        const importanceNum = Number(asset.importance);
 
-        // ==========================================
+        const severeFindingsCount = asset.findings?.counts_by_severity?.severe || 0;
+        const materialFindingsCount = asset.findings?.counts_by_severity?.material || 0;
 
-        let criticalCount = 0;
-        let ipCount = 0;
-        let domainCount = 0;
-        const techList: any[] = [];
+        let riskLabel = "Faible";
+        // Un actif est critique s'il a le tag "critical", l'importance 1, ou des failles graves
+        if (category === "critical" || importanceNum === 1 || severeFindingsCount > 0 || materialFindingsCount > 0) {
+          riskLabel = "Critique";
+          criticalCount++;
+        } else if (category === "high" || importanceNum === 2) {
+          riskLabel = "Élevé";
+        } else if (category === "medium" || importanceNum === 3) {
+          riskLabel = "Moyen";
+        } else {
+          riskLabel = "Faible";
+        }
 
-        realData.attackSurface.riskyAssets = assetsData.results.map((asset: any) => {
+        // 2. Détection dynamique IP vs Domaine
+        let typeLabel = "Domaine";
+        if (asset.is_ip === true || asset.asset_type === "IP" || asset.type === "ip") {
+          typeLabel = "IP Publique";
+          ipCount++;
+        } else {
+          domainCount++;
+        }
 
-          // 1. CORRECTION : Lecture propre de la criticité (1 = Critique)
-          const category = String(asset.importance_category || "").toLowerCase();
-          const importanceNum = Number(asset.importance);
+        // 3. Extraction des technologies
+        if (Array.isArray(asset.products)) {
+          asset.products.forEach((prod: any) => {
+            if (prod.vendor && prod.vendor !== "unknown") {
+              const vendorName = prod.vendor.charAt(0).toUpperCase() + prod.vendor.slice(1);
+              const productName = prod.product ? prod.product.replace(/_/g, ' ') : '';
+              const version = prod.version || 'Version non détectée';
 
-          const severeFindingsCount = asset.findings?.counts_by_severity?.severe || 0;
-          const materialFindingsCount = asset.findings?.counts_by_severity?.material || 0;
-
-          let riskLabel = "Faible";
-          // Un actif est critique s'il a le tag "critical", l'importance 1, ou des failles graves
-          if (category === "critical" || importanceNum === 1 || severeFindingsCount > 0 || materialFindingsCount > 0) {
-            riskLabel = "Critique";
-            criticalCount++;
-          } else if (category === "high" || importanceNum === 2) {
-            riskLabel = "Élevé";
-          } else if (category === "medium" || importanceNum === 3) {
-            riskLabel = "Moyen";
-          } else {
-            riskLabel = "Faible";
-          }
-
-          // 2. Détection dynamique IP vs Domaine
-          let typeLabel = "Domaine";
-          if (asset.is_ip === true || asset.asset_type === "IP" || asset.type === "ip") {
-            typeLabel = "IP Publique";
-            ipCount++;
-          } else {
-            domainCount++;
-          }
-
-          // 3. Extraction des technologies
-          if (Array.isArray(asset.products)) {
-            asset.products.forEach((prod: any) => {
-              if (prod.vendor && prod.vendor !== "unknown") {
-                const vendorName = prod.vendor.charAt(0).toUpperCase() + prod.vendor.slice(1);
-                const productName = prod.product ? prod.product.replace(/_/g, ' ') : '';
-                const version = prod.version || 'Version non détectée';
-
-                let techRisk = "Normal";
-                if (version.startsWith('7.') || version.startsWith('5.') || prod.vendor === 'centos') {
-                  techRisk = "Élevé";
-                }
-
-                techList.push({
-                  name: `${vendorName} ${productName}`,
-                  version: version,
-                  type: prod.type || 'application',
-                  asset: asset.asset || 'Actif non spécifié',
-                  risk: techRisk
-                });
+              let techRisk = "Normal";
+              if (version.startsWith('7.') || version.startsWith('5.') || prod.vendor === 'centos') {
+                techRisk = "Élevé";
               }
-            });
-          }
 
-          return {
-            asset: asset.asset || "Actif sans nom",
-            type: typeLabel,
-            riskLevel: riskLabel,
-            findings: asset.findings?.total_count || 0,
-            countsBySeverity: asset.findings?.counts_by_severity || { severe: 0, material: 0, moderate: 0, minor: 0 },
-            vendors: Array.isArray(asset.products) ? asset.products.map((p:any) => p.vendor).filter(Boolean) : []
-          };
-        });
+              techList.push({
+                name: `${vendorName} ${productName}`,
+                version: version,
+                type: prod.type || 'application',
+                asset: asset.asset || 'Actif non spécifié',
+                risk: techRisk
+              });
+            }
+          });
+        }
 
-        // Mise à jour explicite des compteurs pour les cartes
-        realData.attackSurface.publicIpsCount = ipCount;
-        realData.attackSurface.domainsCount = domainCount;
-        realData.attackSurface.criticalAssetsCount = criticalCount;
-        realData.techShadowIt.technologies = techList;
-      }
-    } else {
-      console.error("❌ Erreur API Assets:", await assetsResponse.text());
+        return {
+          asset: asset.asset || "Actif sans nom",
+          type: typeLabel,
+          riskLevel: riskLabel,
+          findings: asset.findings?.total_count || 0,
+          countsBySeverity: asset.findings?.counts_by_severity || { severe: 0, material: 0, moderate: 0, minor: 0 },
+          vendors: Array.isArray(asset.products) ? asset.products.map((p: any) => p.vendor).filter(Boolean) : []
+        };
+      });
+
+      // Mise à jour explicite des compteurs pour les cartes
+      realData.attackSurface.publicIpsCount = ipCount;
+      realData.attackSurface.domainsCount = domainCount;
+      realData.attackSurface.criticalAssetsCount = criticalCount;
+      realData.techShadowIt.technologies = techList;
     }
   } catch (error) {
     console.error("Crash réseau sur la Surface d'Attaque :", error);
@@ -639,9 +631,18 @@ export default function BitsightPanel() {
                       <div key={idx} className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl space-y-2">
                         <strong className="text-sm text-foreground block">{rem.message}</strong>
                         {rem.help_text && <p className="text-xs text-muted-foreground">{rem.help_text}</p>}
+                        {/*
+                          Correction sécurité : rem.remediation_tip vient de l'API BitSight et était
+                          auparavant injecté via dangerouslySetInnerHTML (risque XSS). On l'affiche
+                          désormais en texte brut, React échappe automatiquement le contenu.
+                          Si un rendu HTML est vraiment nécessaire un jour, utiliser DOMPurify :
+                          import DOMPurify from 'dompurify';
+                          <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(rem.remediation_tip) }} />
+                        */}
                         {rem.remediation_tip && (
-                          <div className="text-xs text-blue-500 font-medium underline-offset-4 hover:underline mt-2"
-                               dangerouslySetInnerHTML={{ __html: rem.remediation_tip }} />
+                          <div className="text-xs text-blue-500 font-medium mt-2">
+                            {rem.remediation_tip}
+                          </div>
                         )}
                       </div>
                     ))}
