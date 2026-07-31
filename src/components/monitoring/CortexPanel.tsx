@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Activity, Cpu, AlertOctagon, XCircle, Loader2, Calendar, Target, Users,
   ShieldCheck, Monitor, AlertTriangle, Clock, TrendingUp, Layers, ServerCrash, Search,
@@ -194,27 +195,32 @@ export default function CortexPanel() {
     });
   };
 
-  const fqdn = import.meta.env.VITE_CORTEX_FQDN;
-  const apiKeyId = import.meta.env.VITE_CORTEX_API_KEY_ID;
-  const apiKey = import.meta.env.VITE_CORTEX_API_KEY;
-
+  // NOUVEL APPEL API SÉCURISÉ VIA EDGE FUNCTION SUPABASE (Paramètres dans le body)
   const apiCall = async (endpoint: string, payload: any) => {
-    const nonce = Array.from({length: 64}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
-    const timestamp = Date.now().toString();
-    const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(apiKey) + nonce + timestamp));
-    const hashedAuthKey = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-    return fetch(`/api/cortex${endpoint}`, {
+    const { data, error } = await supabase.functions.invoke('cortex-proxy', {
       method: 'POST',
-      headers: {
-        "x-xdr-timestamp": timestamp,
-        "x-xdr-nonce": nonce,
-        "x-xdr-auth-id": String(apiKeyId),
-        "Authorization": hashedAuthKey,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
+      body: {
+        path: endpoint,
+        payload: payload
+      }
     });
+
+    if (error) {
+      console.error(`[Cortex Proxy] Erreur sur ${endpoint}:`, error.message);
+      // On simule un objet Response en erreur pour ne pas casser la logique existante
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({})
+      };
+    }
+
+    // On simule un objet Response valide
+    return {
+      ok: true,
+      status: 200,
+      json: async () => data
+    };
   };
 
   // IMPORT ET LECTURE EXCEL (+ persistance localStorage jusqu'au prochain remplacement)
@@ -511,12 +517,6 @@ export default function CortexPanel() {
         else if (timeUnit === "months") toDate.setMonth(toDate.getMonth() + timeValue);
         else if (timeUnit === "years") toDate.setFullYear(toDate.getFullYear() + timeValue);
         toTimestamp = toDate.getTime();
-      }
-
-      if (!fqdn || !apiKeyId || !apiKey) {
-        setStatus("error");
-        setMessage("Paramètres d'API manquants.");
-        return;
       }
 
       try {

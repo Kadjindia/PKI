@@ -1,10 +1,6 @@
-// src/services/cortexService.ts
+import { supabase } from "@/integrations/supabase/client";
 
 export const fetchCortexExecutiveData = async () => {
-  const fqdn = import.meta.env.VITE_CORTEX_FQDN;
-  const apiKeyId = import.meta.env.VITE_CORTEX_API_KEY_ID;
-  const apiKey = import.meta.env.VITE_CORTEX_API_KEY;
-
   // Structure exécutive orientée gestion des risques et automatisation
   const executiveData = {
     kpis: {
@@ -24,45 +20,42 @@ export const fetchCortexExecutiveData = async () => {
     }
   };
 
-  // Si les clés ne sont pas encore chargées, on renvoie des données de démonstration cohérentes
-  if (!fqdn || !apiKeyId || !apiKey) {
-    console.warn("⚠️ Configuration Cortex XSIAM manquante. Chargement des données de présentation.");
+  const { data: { session } } = await supabase.auth.getSession();
+
+  // Si l'utilisateur n'est pas connecté, on renvoie les données de démonstration
+  if (!session) {
+    console.warn("⚠️ Utilisateur non authentifié. Chargement des données de présentation.");
     return getMockCortexData();
   }
 
-  // En-têtes spécifiques à l'Advanced API Cortex XDR / XSIAM
-  const headers = {
-    "x-xdr-auth-id": apiKeyId,
-    "Authorization": apiKey,
-    "Content-Type": "application/json"
-  };
-
   try {
-    // 1. Récupération des Incidents
-    // L'API Cortex utilise généralement un endpoint public_api/v1/... avec un payload JSON
-    const incidentsResponse = await fetch(`https://${fqdn}/public_api/v1/incidents/get_incidents/`, {
+    // 1. Récupération des Incidents via l'Edge Function Supabase (endpoint et payload dans le body)
+    const { data, error } = await supabase.functions.invoke('cortex-proxy', {
       method: 'POST',
-      headers,
-      body: JSON.stringify({
-        request_data: {
-          search_from: 0,
-          search_to: 50,
-          sort: { field: "creation_time", keyword: "desc" }
+      body: {
+        path: '/public_api/v1/incidents/get_incidents/',
+        payload: {
+          request_data: {
+            search_from: 0,
+            search_to: 50,
+            sort: { field: "creation_time", keyword: "desc" }
+          }
         }
-      })
+      }
     });
 
-    if (incidentsResponse.ok) {
-      const incidentsJson = await incidentsResponse.json();
-      // Ici interviendra le parsing réel pour alimenter executiveData.incidentsList
-      // executiveData.incidentsList = incidentsJson.reply.incidents.map(...)
+    if (error) {
+      throw new Error(error.message);
     }
 
-    // 2. (Futur) Récupération via XQL pour des métriques avancées (taux d'automatisation, MTTD/MTTR)
-    // const xqlResponse = await fetch(`https://${fqdn}/public_api/v1/xql/start_xql_query/`, {...})
+    // Ici interviendra le parsing réel pour alimenter executiveData.incidentsList
+    // if (data?.reply?.incidents) { ... }
+
+    // 2. (Futur) Récupération via XQL pour des métriques avancées
+    // const { data: xqlData } = await supabase.functions.invoke('cortex-proxy', { body: { path: '/public_api/v1/xql/start_xql_query/', payload: {...} } });
 
   } catch (error) {
-    console.error("Erreur de connexion à l'API Cortex XSIAM :", error);
+    console.error("Erreur de connexion à l'API Cortex XSIAM via proxy :", error);
   }
 
   // Retour temporaire du mock si le parsing réel n'est pas encore finalisé
