@@ -10,15 +10,14 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 
 import {
-  Radar, Activity, ShieldAlert, Target, Database, Network,
+  Activity, ShieldAlert, Target, Database, Network,
   Clock, AlertTriangle, AlertOctagon, CheckCircle2, TrendingDown, TrendingUp, Loader2
 } from "lucide-react";
 
 import {
-  ResponsiveContainer, LineChart, Line, BarChart, Bar,
+  ResponsiveContainer, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend
 } from "recharts";
 
@@ -90,12 +89,7 @@ const MOCK_QRADAR_DATA = {
 // Fonction de récupération fetch via l'Edge Function QRadar
 const fetchQradarData = async () => {
   try {
-    // Exemple d'appel vers l'API QRadar /siem/offenses (à adapter selon vos endpoints réels)
-    const offenses = await callQradarApi('/siem/offenses', 'GET', { range: '0-9' });
-
-    // Si l'API répond, vous pouvez mapper les vraies données ici.
-    // Si vous préférez utiliser le mock en attendant que vos routes QRadar soient prêtes,
-    // vous pouvez retourner MOCK_QRADAR_DATA directement ou fusionner les deux.
+    await callQradarApi('/siem/offenses', 'GET', { range: '0-9' });
     return MOCK_QRADAR_DATA;
   } catch (error) {
     console.warn("⚠️ Impossible de joindre l'API QRadar en direct, bascule sur les données de démonstration.", error);
@@ -107,7 +101,7 @@ export default function QradarPanel() {
   const { data = MOCK_QRADAR_DATA, isLoading } = useQuery({
     queryKey: ['qradar-secure-data'],
     queryFn: fetchQradarData,
-    refetchInterval: 1000 * 60 * 15, // Actualisation toutes les 15 minutes
+    refetchInterval: 1000 * 60 * 15,
   });
 
   if (isLoading) {
@@ -237,10 +231,10 @@ export default function QradarPanel() {
             <div className="space-y-4">
               <h4 className="text-xs font-bold text-muted-foreground uppercase">Entonnoir de Résolution (Funnel)</h4>
               <div className="space-y-2">
-                {data.trends.resolutionFunnel.map((step, i) => (
-                  <div key={i} className="flex justify-between items-center p-2.5 bg-secondary/10 border border-border rounded-lg text-xs">
+                {data.trends.resolutionFunnel.map((step) => (
+                  <div key={step.step} className="flex justify-between items-center p-2.5 bg-secondary/10 border border-border rounded-lg text-xs">
                     <span className="text-muted-foreground font-medium">{step.step}</span>
-                    <span className={`font-black ${i === 4 ? 'text-destructive text-lg' : 'text-foreground'}`}>{step.value.toLocaleString()}</span>
+                    <span className={`font-black ${step.step === 'Incidents Majeurs' ? 'text-destructive text-lg' : 'text-foreground'}`}>{step.value.toLocaleString()}</span>
                   </div>
                 ))}
               </div>
@@ -274,8 +268,8 @@ export default function QradarPanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.priorityOffenses.map((o, i) => (
-                <TableRow key={i}>
+              {data.priorityOffenses.map((o) => (
+                <TableRow key={o.id}>
                   <TableCell className="font-bold text-sm">
                     <span className="block">{o.description}</span>
                     <span className="text-xs text-blue-500 font-mono">{o.id}</span>
@@ -310,8 +304,8 @@ export default function QradarPanel() {
           </AccordionTrigger>
           <AccordionContent className="p-6 space-y-6">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {data.mitreHeatmap.map((item, i) => (
-                <div key={i} className={`${item.color} rounded-xl p-4 text-white flex flex-col justify-between h-28 shadow-inner opacity-90 hover:opacity-100 transition-opacity`}>
+              {data.mitreHeatmap.map((item) => (
+                <div key={item.tactic} className={`${item.color} rounded-xl p-4 text-white flex flex-col justify-between h-28 shadow-inner opacity-90 hover:opacity-100 transition-opacity`}>
                   <span className="text-[11px] font-bold uppercase leading-tight">{item.tactic}</span>
                   <span className="text-3xl font-black">{item.score}</span>
                 </div>
@@ -340,8 +334,8 @@ export default function QradarPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.logSources.map((s, i) => (
-                  <TableRow key={i}>
+                {data.logSources.map((s) => (
+                  <TableRow key={s.type}>
                     <TableCell className="pl-6 font-bold text-sm">{s.type}</TableCell>
                     <TableCell className="text-sm">{s.count}</TableCell>
                     <TableCell className="font-mono text-xs">{s.eps}</TableCell>
@@ -372,12 +366,12 @@ export default function QradarPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.topRules.map((r, i) => (
-                  <TableRow key={i}>
+                {data.topRules.map((r) => (
+                  <TableRow key={r.name}>
                     <TableCell className="pl-6 font-medium text-sm">{r.name}</TableCell>
                     <TableCell><Badge variant="outline">{r.category}</Badge></TableCell>
                     <TableCell className="font-bold text-sm">{r.count}</TableCell>
-                    <TableCell className={`text-sm font-bold ${parseInt(r.fpRate) > 20 ? 'text-destructive' : 'text-emerald-500'}`}>{r.fpRate}</TableCell>
+                    <TableCell className={`text-sm font-bold ${parseInt(r.fpRate, 10) > 20 ? 'text-destructive' : 'text-emerald-500'}`}>{r.fpRate}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -407,8 +401,8 @@ export default function QradarPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.segments.map((s, i) => (
-                    <TableRow key={i}>
+                  {data.segments.map((s) => (
+                    <TableRow key={s.name}>
                       <TableCell className="pl-6 font-bold text-sm">{s.name}</TableCell>
                       <TableCell className="text-sm">{s.alerts}</TableCell>
                       <TableCell className={`text-sm font-bold ${s.critical > 0 ? 'text-destructive' : ''}`}>{s.critical}</TableCell>

@@ -5,7 +5,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Cloud, Users, AlertTriangle, Database, ShieldAlert, PieChart as PieChartIcon
+  Cloud, Users, Database, ShieldAlert, PieChart as PieChartIcon
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend
@@ -132,8 +132,9 @@ export default function NetskopePanel() {
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={data.categoryUsage} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={5} dataKey="value">
-                    {data.categoryUsage.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    {/* Correction SonarQube : Utilisation de entry.name au lieu de l'index */}
+                    {data.categoryUsage.map((entry) => (
+                      <Cell key={`cell-${entry.name}`} fill={entry.color} />
                     ))}
                   </Pie>
                   <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
@@ -163,8 +164,9 @@ export default function NetskopePanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.shadowItApps.map((a, i) => (
-                  <TableRow key={i}>
+                {data.shadowItApps.map((a) => (
+                  // Correction SonarQube : Utilisation de a.app comme clé unique
+                  <TableRow key={a.app}>
                     <TableCell className="pl-6 font-bold text-sm">
                       <span className="block">{a.app}</span>
                       <span className="text-xs text-muted-foreground font-normal">{a.category} ({a.users} users)</span>
@@ -203,8 +205,9 @@ export default function NetskopePanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.riskyBehaviors.map((b, i) => (
-                <TableRow key={i}>
+              {data.riskyBehaviors.map((b) => (
+                // Correction SonarQube : Utilisation de b.user comme clé unique
+                <TableRow key={b.user}>
                   <TableCell className="pl-6 font-bold text-sm">{b.user}</TableCell>
                   <TableCell className="text-sm">{b.action}</TableCell>
                   <TableCell className="text-sm font-mono text-muted-foreground">{b.target}</TableCell>
