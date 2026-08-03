@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo } from "react";
 import { useKpi } from "@/context/KpiContext";
 import { toast } from "sonner";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -17,12 +17,16 @@ import { Label } from "@/components/ui/label";
 // --- ICÔNES ---
 import { Mail, AlertTriangle, ShieldCheck, Inbox, Plus, Activity, AlertCircle, ArrowUpRight, ArrowDownRight, Globe, Upload, Loader2, CalendarDays } from "lucide-react";
 
-// --- FONCTIONS UTILITAIRES ---
+// ============================================================================
+// FONCTIONS UTILITAIRES DE BASE
+// ============================================================================
+
 const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
   return Number.isNaN(n) ? 0 : n;
 };
+
 const calculatePercentage = (part: number, total: number) => {
   const p = safeNum(part);
   const t = safeNum(total);
@@ -30,8 +34,6 @@ const calculatePercentage = (part: number, total: number) => {
   return Math.round((p / t) * 100);
 };
 
-// Convertit une valeur de cellule (CSV/Excel, typée unknown) en string de façon sûre,
-// sans risquer un "[object Object]" si la cellule contient un type inattendu.
 function cellToString(val: unknown): string {
   if (val === null || val === undefined) return "";
   if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
@@ -40,7 +42,6 @@ function cellToString(val: unknown): string {
   return "";
 }
 
-// Analyseur universel de dates (extrait YYYY-MM)
 function parsePeriod(rawVal: any): string | null {
   if (!rawVal) return null;
   if (typeof rawVal === "number") {
@@ -59,19 +60,16 @@ function parsePeriod(rawVal: any): string | null {
   return null;
 }
 
-// Extrait pour éliminer le ternaire imbriqué de la carte "Erreurs Adressage"
-function getErreurCardClasses(erreur: number | undefined) {
-  const value = erreur ?? 0;
-  if (value > 25) {
+function getErreurCardClasses(erreur: number = 0) {
+  if (erreur > 25) {
     return { border: 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10', text: 'text-rose-600 dark:text-rose-400' };
   }
-  if (value > 10) {
+  if (erreur > 10) {
     return { border: 'border-l-amber-500', text: 'text-amber-600 dark:text-amber-500' };
   }
   return { border: 'border-l-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' };
 }
 
-// Extrait pour éliminer le ternaire imbriqué du badge "Erreurs" dans le tableau
 function ErreurBadge({ erreur }: Readonly<{ erreur: number }>) {
   if (erreur > 25) {
     return <Badge variant="destructive" className="font-bold">{erreur}</Badge>;
@@ -82,6 +80,55 @@ function ErreurBadge({ erreur }: Readonly<{ erreur: number }>) {
   return <span className="text-emerald-600 font-medium">{erreur}</span>;
 }
 
+// ============================================================================
+// NOUVELLES FONCTIONS EXTRAITES (Réduction de la complexité cognitive)
+// ============================================================================
+
+function extractRowPeriod(row: Record<string, unknown>, dateCol: string | undefined, defaultPeriod: string) {
+  if (dateCol && row[dateCol]) {
+    const extracted = parsePeriod(row[dateCol]);
+    if (extracted) return extracted;
+  }
+  return defaultPeriod;
+}
+
+function incrementGroupStats(
+  stats: { total: number; fraude: number; interne1212: number; externe: number; erreur: number },
+  row: Record<string, unknown>,
+  cols: { emailCol?: string; typeCol?: string; dossierCol?: string }
+) {
+  stats.total++;
+
+  if (cols.emailCol) {
+    const email = cellToString(row[cols.emailCol]).toLowerCase().trim();
+    if (email === "le1212@actionlogement.fr") stats.interne1212++;
+    if (email === "fraude.als@actionlogement.fr") stats.fraude++;
+  }
+
+  if (cols.typeCol) {
+    const type = cellToString(row[cols.typeCol]).toUpperCase().trim();
+    if (type === "EXTERNE") stats.externe++;
+  }
+
+  if (cols.dossierCol) {
+    const dossier = cellToString(row[cols.dossierCol]).trim();
+    if (dossier === "05 - Erreur d'adressage") stats.erreur++;
+  }
+}
+
+const getTrend = (current: number, previous: number | null) => {
+  if (!previous) return null;
+  const diff = current - previous;
+  const percent = Math.round((Math.abs(diff) / previous) * 100);
+  if (diff > 0) return <span className="text-rose-500 flex items-center text-xs"><ArrowUpRight className="w-3 h-3 mr-0.5"/>+{percent}%</span>;
+  if (diff < 0) return <span className="text-emerald-500 flex items-center text-xs"><ArrowDownRight className="w-3 h-3 mr-0.5"/>-{percent}%</span>;
+  return <span className="text-slate-500 text-xs">=</span>;
+};
+
+// ============================================================================
+// COMPOSANT PRINCIPAL
+// ============================================================================
+
 export default function MessagerieView() {
   const { entries } = useKpi();
   const queryClient = useQueryClient();
@@ -89,19 +136,21 @@ export default function MessagerieView() {
   // --- ÉTATS ---
   const [isAddStatsOpen, setIsAddStatsOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  // État pour la saisie manuelle (1 mois)
+
   const [newStats, setNewStats] = useState({
     period: new Date().toISOString().substring(0, 7),
     total: 0, fraude: 0, interne1212: 0, externe: 0, erreur: 0
   });
-  // État pour l'import de fichier (Plusieurs mois)
+
   const [parsedMonths, setParsedMonths] = useState<Record<string, typeof newStats>>({});
 
   // --- PRÉPARATION DES DONNÉES GLOBALES ---
   const msgEntries = entries.filter(e => e.kpiId.startsWith('msg-'));
+
   const availablePeriods = useMemo(() => {
     return [...new Set(msgEntries.map((e) => e.period))].sort((a, b) => a.localeCompare(b));
   }, [msgEntries]);
+
   const monthlyData = useMemo(() => {
     return availablePeriods.map(period => {
       const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === period)?.value);
@@ -119,23 +168,16 @@ export default function MessagerieView() {
       };
     });
   }, [availablePeriods, msgEntries]);
+
   const currentMonthData = monthlyData.length > 0 ? monthlyData[monthlyData.length - 1] : null;
   const previousMonthData = monthlyData.length > 1 ? monthlyData[monthlyData.length - 2] : null;
-
-  const getTrend = (current: number, previous: number) => {
-    if (!previous) return null;
-    const diff = current - previous;
-    const percent = Math.round((Math.abs(diff) / previous) * 100);
-    if (diff > 0) return <span className="text-rose-500 flex items-center text-xs"><ArrowUpRight className="w-3 h-3 mr-0.5"/>+{percent}%</span>;
-    if (diff < 0) return <span className="text-emerald-500 flex items-center text-xs"><ArrowDownRight className="w-3 h-3 mr-0.5"/>-{percent}%</span>;
-    return <span className="text-slate-500 text-xs">=</span>;
-  };
 
   const erreurCardClasses = getErreurCardClasses(currentMonthData?.erreur);
 
   // ============================================================================
   // LOGIQUE D'ANALYSE DU FICHIER (VENTILATION PAR MOIS)
   // ============================================================================
+
   const processRawData = (data: Record<string, unknown>[]) => {
     if (data.length === 0) {
       toast.error("Le fichier est vide.");
@@ -148,31 +190,18 @@ export default function MessagerieView() {
     const typeCol = columns.find(c => c.toLowerCase() === "type");
     const dossierCol = columns.find(c => c.toLowerCase().includes("dossier"));
 
+    const cols = { emailCol, typeCol, dossierCol };
     const groups: Record<string, typeof newStats> = {};
+
+    // Boucle épurée grâce à l'extraction
     data.forEach(row => {
-      let period = newStats.period;
-      if (dateCol && row[dateCol]) {
-        const extracted = parsePeriod(row[dateCol]);
-        if (extracted) period = extracted;
-      }
+      const period = extractRowPeriod(row, dateCol, newStats.period);
       if (!groups[period]) {
         groups[period] = { period, total: 0, fraude: 0, interne1212: 0, externe: 0, erreur: 0 };
       }
-      groups[period].total++;
-      if (emailCol) {
-        const email = cellToString(row[emailCol]).toLowerCase().trim();
-        if (email === "le1212@actionlogement.fr") groups[period].interne1212++;
-        if (email === "fraude.als@actionlogement.fr") groups[period].fraude++;
-      }
-      if (typeCol) {
-        const type = cellToString(row[typeCol]).toUpperCase().trim();
-        if (type === "EXTERNE") groups[period].externe++;
-      }
-      if (dossierCol) {
-        const dossier = cellToString(row[dossierCol]).trim();
-        if (dossier === "05 - Erreur d'adressage") groups[period].erreur++;
-      }
+      incrementGroupStats(groups[period], row, cols);
     });
+
     setParsedMonths(groups);
     toast.success(`Fichier analysé ! ${Object.keys(groups).length} mois détecté(s).`);
     setIsAnalyzing(false);
@@ -183,6 +212,7 @@ export default function MessagerieView() {
     if (!file) return;
     setIsAnalyzing(true);
     const ext = file.name.split(".").pop()?.toLowerCase();
+
     if (ext === "csv") {
       Papa.parse(file, {
         header: true,
@@ -212,10 +242,12 @@ export default function MessagerieView() {
   // ============================================================================
   // SAUVEGARDE DANS LA BASE DE DONNÉES
   // ============================================================================
+
   const saveStatsMutation = useMutation({
     mutationFn: async () => {
       const sourceLabel = "Bilan Messagerie (Import)";
       const promises: Promise<any>[] = [];
+
       if (Object.keys(parsedMonths).length > 0) {
         Object.values(parsedMonths).forEach((stats) => {
           promises.push(
@@ -253,6 +285,115 @@ export default function MessagerieView() {
     }
   });
 
+  // ============================================================================
+  // SOUS-RENDUS (Pour alléger le JSX principal)
+  // ============================================================================
+
+  const renderParsedDataPreview = () => (
+    <div className="space-y-4 mt-2">
+      <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
+        <h4 className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
+          <CalendarDays className="w-4 h-4" />
+          Bilan de l'analyse ({Object.keys(parsedMonths).length} mois détectés)
+        </h4>
+        <div className="max-h-[300px] overflow-y-auto rounded-md border border-border">
+          <Table>
+            <TableHeader className="bg-muted/50 sticky top-0">
+              <TableRow>
+                <TableHead>Mois</TableHead>
+                <TableHead>Total</TableHead>
+                <TableHead>Fraude</TableHead>
+                <TableHead>1212</TableHead>
+                <TableHead>Ext.</TableHead>
+                <TableHead>Erreurs</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {Object.values(parsedMonths).sort((a, b) => b.period.localeCompare(a.period)).map((s) => (
+                <TableRow key={s.period}>
+                  <TableCell className="font-medium text-xs">{s.period}</TableCell>
+                  <TableCell className="font-bold text-xs">{s.total}</TableCell>
+                  <TableCell className="text-xs text-amber-600">{s.fraude}</TableCell>
+                  <TableCell className="text-xs text-emerald-600">{s.interne1212}</TableCell>
+                  <TableCell className="text-xs text-slate-500">{s.externe}</TableCell>
+                  <TableCell className="text-xs text-rose-500">{s.erreur}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+      <DialogFooter className="pt-2">
+        <Button type="button" variant="outline" onClick={() => setParsedMonths({})}>
+          Annuler le fichier
+        </Button>
+        <Button type="button" onClick={() => saveStatsMutation.mutate()} disabled={saveStatsMutation.isPending}>
+          {saveStatsMutation.isPending ? "Enregistrement..." : "Valider l'importation de ces mois"}
+        </Button>
+      </DialogFooter>
+    </div>
+  );
+
+  const renderManualEntryForm = () => (
+    <>
+      <div className="mt-4 mb-2">
+        <Label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-primary/50 rounded-lg cursor-pointer bg-primary/5 hover:bg-primary/10 transition-colors">
+          <div className="flex flex-col items-center justify-center pt-5 pb-6 text-center px-4">
+            {isAnalyzing ? (
+              <Loader2 className="w-6 h-6 text-primary mb-2 animate-spin" />
+            ) : (
+              <Upload className="w-6 h-6 text-primary mb-2" />
+            )}
+            <p className="text-sm font-semibold text-primary">{isAnalyzing ? "Analyse en cours..." : "Glissez votre export brut (CSV / XLSX)"}</p>
+            <p className="text-[10px] text-muted-foreground mt-1">L'algorithme lira la colonne Date et ventilera les compteurs mois par mois.</p>
+          </div>
+          <Input type="file" accept=".csv, .xlsx, .xls" className="hidden" disabled={isAnalyzing} onChange={handleFileUpload} />
+        </Label>
+      </div>
+      <div className="relative flex items-center py-2">
+        <div className="flex-grow border-t border-border"></div>
+        <span className="flex-shrink-0 mx-4 text-muted-foreground text-[10px] font-bold uppercase tracking-wider">Ou Saisie Manuelle (1 mois)</span>
+        <div className="flex-grow border-t border-border"></div>
+      </div>
+      <form onSubmit={(e) => { e.preventDefault(); saveStatsMutation.mutate(); }} className="space-y-4">
+        <div className="space-y-2">
+          <Label>Mois concerné</Label>
+          <Input type="month" required value={newStats.period} onChange={(e) => setNewStats({...newStats, period: e.target.value})} />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label className="text-blue-600 dark:text-blue-400">Volume Total</Label>
+            <Input type="number" min="0" required value={newStats.total} onChange={(e) => setNewStats({...newStats, total: Number.parseInt(e.target.value, 10) || 0})} />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-amber-600 dark:text-amber-500">Menaces Fraude</Label>
+            <Input type="number" min="0" required value={newStats.fraude} onChange={(e) => setNewStats({...newStats, fraude: Number.parseInt(e.target.value, 10) || 0})} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label className="text-emerald-600 dark:text-emerald-400">Remontées 1212</Label>
+            <Input type="number" min="0" required value={newStats.interne1212} onChange={(e) => setNewStats({...newStats, interne1212: Number.parseInt(e.target.value, 10) || 0})} />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-slate-600 dark:text-slate-400">Mails Externes</Label>
+            <Input type="number" min="0" required value={newStats.externe} onChange={(e) => setNewStats({...newStats, externe: Number.parseInt(e.target.value, 10) || 0})} />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label className="text-rose-600 dark:text-rose-400">Erreurs d'adressage (Bruit)</Label>
+          <Input type="number" min="0" required value={newStats.erreur} onChange={(e) => setNewStats({...newStats, erreur: Number.parseInt(e.target.value, 10) || 0})} />
+        </div>
+        <DialogFooter className="pt-4 border-t border-border/50">
+          <Button type="button" variant="outline" onClick={() => setIsAddStatsOpen(false)}>Annuler</Button>
+          <Button type="submit" disabled={saveStatsMutation.isPending || isAnalyzing}>
+            {saveStatsMutation.isPending ? "Enregistrement..." : "Enregistrer manuellement"}
+          </Button>
+        </DialogFooter>
+      </form>
+    </>
+  );
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       {/* HEADER */}
@@ -266,10 +407,11 @@ export default function MessagerieView() {
             Analyse des flux, menaces qualifiées et erreurs d'adressage
           </p>
         </div>
-        <Button onClick={() => setIsAddStatsOpen(true)}>
+        <Button type="button" onClick={() => setIsAddStatsOpen(true)}>
           <Plus className="w-4 h-4 mr-2" /> Intégrer des données
         </Button>
       </div>
+
       {/* KPI CARDS */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
         <Card className="border-l-4 border-l-blue-500 shadow-sm">
@@ -286,6 +428,7 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
+
         <Card className={`border-l-4 shadow-sm ${currentMonthData && currentMonthData.tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -302,6 +445,7 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
+
         <Card className="border-l-4 border-l-emerald-500 shadow-sm">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -318,6 +462,7 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
+
         <Card className="border-l-4 border-l-slate-400 shadow-sm">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -332,6 +477,7 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
+
         <Card className={`border-l-4 shadow-sm ${erreurCardClasses.border}`}>
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -352,6 +498,7 @@ export default function MessagerieView() {
           </CardContent>
         </Card>
       </div>
+
       {/* GRAPHIQUE */}
       <Card className="shadow-sm">
         <CardHeader className="border-b border-border/50 pb-4">
@@ -384,6 +531,7 @@ export default function MessagerieView() {
           )}
         </CardContent>
       </Card>
+
       {/* TABLEAU */}
       <Card className="shadow-sm">
         <CardHeader className="border-b border-border/50 pb-4">
@@ -435,9 +583,8 @@ export default function MessagerieView() {
           </Table>
         </CardContent>
       </Card>
-      {/* ============================================================================ */}
-      {/* MODALE D'AJOUT ET D'IMPORT AUTOMATIQUE                                        */}
-      {/* ============================================================================ */}
+
+      {/* MODALE D'AJOUT ET D'IMPORT AUTOMATIQUE */}
       <Dialog open={isAddStatsOpen} onOpenChange={(open) => {
         setIsAddStatsOpen(open);
         if (!open) setParsedMonths({});
@@ -447,108 +594,10 @@ export default function MessagerieView() {
             <DialogTitle>Intégrer les données de Messagerie SSI</DialogTitle>
             <DialogDescription>Glissez un export brut (Excel/CSV) pour que l'algorithme ventile les données par mois, ou saisissez-les manuellement.</DialogDescription>
           </DialogHeader>
-          {Object.keys(parsedMonths).length > 0 ? (
-            <div className="space-y-4 mt-2">
-              <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
-                  <CalendarDays className="w-4 h-4" />
-                  Bilan de l'analyse ({Object.keys(parsedMonths).length} mois détectés)
-                </h4>
-                <div className="max-h-[300px] overflow-y-auto rounded-md border border-border">
-                  <Table>
-                    <TableHeader className="bg-muted/50 sticky top-0">
-                      <TableRow>
-                        <TableHead>Mois</TableHead>
-                        <TableHead>Total</TableHead>
-                        <TableHead>Fraude</TableHead>
-                        <TableHead>1212</TableHead>
-                        <TableHead>Ext.</TableHead>
-                        <TableHead>Erreurs</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {Object.values(parsedMonths).sort((a, b) => b.period.localeCompare(a.period)).map((s) => (
-                        <TableRow key={s.period}>
-                          <TableCell className="font-medium text-xs">{s.period}</TableCell>
-                          <TableCell className="font-bold text-xs">{s.total}</TableCell>
-                          <TableCell className="text-xs text-amber-600">{s.fraude}</TableCell>
-                          <TableCell className="text-xs text-emerald-600">{s.interne1212}</TableCell>
-                          <TableCell className="text-xs text-slate-500">{s.externe}</TableCell>
-                          <TableCell className="text-xs text-rose-500">{s.erreur}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-              <DialogFooter className="pt-2">
-                <Button type="button" variant="outline" onClick={() => setParsedMonths({})}>
-                  Annuler le fichier
-                </Button>
-                <Button onClick={() => saveStatsMutation.mutate()} disabled={saveStatsMutation.isPending}>
-                  {saveStatsMutation.isPending ? "Enregistrement..." : "Valider l'importation de ces mois"}
-                </Button>
-              </DialogFooter>
-            </div>
-          ) : (
-            <>
-              <div className="mt-4 mb-2">
-                <Label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-primary/50 rounded-lg cursor-pointer bg-primary/5 hover:bg-primary/10 transition-colors">
-                  <div className="flex flex-col items-center justify-center pt-5 pb-6 text-center px-4">
-                    {isAnalyzing ? (
-                      <Loader2 className="w-6 h-6 text-primary mb-2 animate-spin" />
-                    ) : (
-                      <Upload className="w-6 h-6 text-primary mb-2" />
-                    )}
-                    <p className="text-sm font-semibold text-primary">{isAnalyzing ? "Analyse en cours..." : "Glissez votre export brut (CSV / XLSX)"}</p>
-                    <p className="text-[10px] text-muted-foreground mt-1">L'algorithme lira la colonne Date et ventilera les compteurs mois par mois.</p>
-                  </div>
-                  <Input type="file" accept=".csv, .xlsx, .xls" className="hidden" disabled={isAnalyzing} onChange={handleFileUpload} />
-                </Label>
-              </div>
-              <div className="relative flex items-center py-2">
-                <div className="flex-grow border-t border-border"></div>
-                <span className="flex-shrink-0 mx-4 text-muted-foreground text-[10px] font-bold uppercase tracking-wider">Ou Saisie Manuelle (1 mois)</span>
-                <div className="flex-grow border-t border-border"></div>
-              </div>
-              <form onSubmit={(e) => { e.preventDefault(); saveStatsMutation.mutate(); }} className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Mois concerné</Label>
-                  <Input type="month" required value={newStats.period} onChange={(e) => setNewStats({...newStats, period: e.target.value})} />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label className="text-blue-600 dark:text-blue-400">Volume Total</Label>
-                    <Input type="number" min="0" required value={newStats.total} onChange={(e) => setNewStats({...newStats, total: Number.parseInt(e.target.value, 10) || 0})} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-amber-600 dark:text-amber-500">Menaces Fraude</Label>
-                    <Input type="number" min="0" required value={newStats.fraude} onChange={(e) => setNewStats({...newStats, fraude: Number.parseInt(e.target.value, 10) || 0})} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label className="text-emerald-600 dark:text-emerald-400">Remontées 1212</Label>
-                    <Input type="number" min="0" required value={newStats.interne1212} onChange={(e) => setNewStats({...newStats, interne1212: Number.parseInt(e.target.value, 10) || 0})} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-slate-600 dark:text-slate-400">Mails Externes</Label>
-                    <Input type="number" min="0" required value={newStats.externe} onChange={(e) => setNewStats({...newStats, externe: Number.parseInt(e.target.value, 10) || 0})} />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-rose-600 dark:text-rose-400">Erreurs d'adressage (Bruit)</Label>
-                  <Input type="number" min="0" required value={newStats.erreur} onChange={(e) => setNewStats({...newStats, erreur: Number.parseInt(e.target.value, 10) || 0})} />
-                </div>
-                <DialogFooter className="pt-4 border-t border-border/50">
-                  <Button type="button" variant="outline" onClick={() => setIsAddStatsOpen(false)}>Annuler</Button>
-                  <Button type="submit" disabled={saveStatsMutation.isPending || isAnalyzing}>
-                    {saveStatsMutation.isPending ? "Enregistrement..." : "Enregistrer manuellement"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </>
-          )}
+
+          {/* Appel des sous-rendus pour éviter la complexité cognitive */}
+          {Object.keys(parsedMonths).length > 0 ? renderParsedDataPreview() : renderManualEntryForm()}
+
         </DialogContent>
       </Dialog>
     </div>

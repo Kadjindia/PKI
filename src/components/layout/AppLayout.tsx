@@ -19,7 +19,13 @@ const NAV_ITEMS = [
   { path: "/monitoring", label: "Monitoring SI", icon: Activity },
 ];
 
-// Correction SonarQube : Props en lecture seule
+// Utilitaire pour le titre du bouton d'épinglage (Évite les ternaires imbriqués pour SonarQube)
+const getPinTitle = (isExpanded: boolean, isPinned: boolean): string | undefined => {
+  if (isExpanded) return undefined;
+  return isPinned ? "Réduire" : "Épingler";
+};
+
+// Props en lecture seule
 export default function AppLayout({ children }: { readonly children: ReactNode }) {
   const location = useLocation();
   const { user, signOut } = useAuth();
@@ -38,11 +44,11 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
   const [showGreeting, setShowGreeting] = useState(true);
   const [isFadingOut, setIsFadingOut] = useState(false);
 
-  // NOUVEAU : État pour l'effet "machine à écrire"
+  // État pour l'effet "machine à écrire"
   const [visibleChars, setVisibleChars] = useState(0);
 
-  // Correction SonarQube : Utilisation de l'opérateur logique au lieu du ternaire
-  const greetingName = firstName || user?.email || "";
+  // SÉCURITÉ : On force le type String pour éviter tout crash si la variable est null/undefined au chargement
+  const greetingName = String(firstName || user?.email || "");
   const prefixText = "Bonjour, ";
   const suffixText = " 👋";
 
@@ -53,36 +59,34 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
   };
 
   const isExpanded = isPinned || isHovered;
-
-  // Correction SonarQube : Extraction du ternaire imbriqué
-  let pinTitle: string | undefined = undefined;
-  if (!isExpanded) {
-    pinTitle = isPinned ? "Réduire" : "Épingler";
-  }
+  const pinTitle = getPinTitle(isExpanded, isPinned);
 
   // 1. GESTION DE L'EFFET MACHINE À ÉCRIRE
   useEffect(() => {
-    const totalChars = prefixText.length + greetingName.length + suffixText.length;
+    // Sécurité : Vérification que les chaînes existent bien pour éviter un crash sur .length
+    const totalChars = (prefixText?.length || 0) + (greetingName?.length || 0) + (suffixText?.length || 0);
+
     if (visibleChars < totalChars) {
       const timer = setTimeout(() => {
         setVisibleChars((prev) => prev + 1);
-      }, 50); // VITESSE DE FRAPPE : 50ms par lettre (ajustable)
+      }, 50); // Vitesse de frappe (50ms)
       return () => clearTimeout(timer);
     }
   }, [visibleChars, greetingName]);
 
-  // Redémarrer l'animation proprement si les données chargent après
+  // Redémarrer l'animation proprement si le nom charge après coup
   useEffect(() => {
     setVisibleChars(0);
   }, [greetingName]);
 
-  // Fonction pour afficher uniquement les lettres "tapées"
-  const getVisibleText = (text: string, startIndex: number) => {
+  // SÉCURITÉ : Fonction blindée pour extraire le texte visible sans faire planter `.slice`
+  const getVisibleText = (text: string | undefined | null, startIndex: number) => {
+    if (!text) return "";
     const charsToShow = Math.max(0, visibleChars - startIndex);
-    return text.slice(0, charsToShow);
+    return String(text).slice(0, charsToShow);
   };
 
-  // 2. DISPARITION APRÈS 2 MINUTES
+  // 2. DISPARITION DU GREETING APRÈS 2 MINUTES
   useEffect(() => {
     const fadeOutTimer = setTimeout(() => {
       setIsFadingOut(true);
@@ -98,6 +102,7 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
     };
   }, []);
 
+  // 3. FERMETURE DU MENU UTILISATEUR AU CLIC EXTERNE
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -108,23 +113,28 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // 4. RÉCUPÉRATION DES DONNÉES UTILISATEUR
   useEffect(() => {
     const fetchUserData = async () => {
-      if (user) {
-        const { data, error } = await supabase
-          .from('users')
-          .select('initials, first_name')
-          .eq('id', user.id)
-          .single();
+      if (user?.id) {
+        try {
+          const { data, error } = await supabase
+            .from('users')
+            .select('initials, first_name')
+            .eq('id', user.id)
+            .single();
 
-        if (data && !error) {
-          if (data.initials) {
-            setCustomInitials(data.initials);
-            localStorage.setItem('userInitials', data.initials);
+          if (data && !error) {
+            if (data.initials) {
+              setCustomInitials(data.initials);
+              localStorage.setItem('userInitials', data.initials);
+            }
+            if (data.first_name) {
+              setFirstName(data.first_name);
+            }
           }
-          if (data.first_name) {
-            setFirstName(data.first_name);
-          }
+        } catch (err) {
+          console.error("Erreur lors de la récupération du profil:", err);
         }
       }
     };
@@ -151,12 +161,15 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
         </div>
 
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto overflow-x-hidden">
-          {NAV_ITEMS.map((item) => (
-            <Link key={item.path} to={item.path} className={`nav-link flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${location.pathname === item.path ? "active bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`} title={!isExpanded ? item.label : undefined}>
-              <item.icon className="w-5 h-5 shrink-0" />
-              {isExpanded && <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">{item.label}</span>}
-            </Link>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link key={item.path} to={item.path} className={`nav-link flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${location.pathname === item.path ? "active bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`} title={!isExpanded ? item.label : undefined}>
+                <Icon className="w-5 h-5 shrink-0" />
+                {isExpanded && <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">{item.label}</span>}
+              </Link>
+            );
+          })}
         </nav>
 
         <div className="p-3 border-t border-border flex flex-col gap-2 overflow-hidden">
@@ -165,7 +178,6 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
             {isExpanded && <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">Paramètres</span>}
           </Link>
 
-          {/* Correction SonarQube : Type button explicite + variable title extraite */}
           <button type="button" onClick={togglePin} className="flex items-center gap-3 px-3 py-2.5 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors w-full text-left" title={pinTitle}>
             {isPinned ? <ChevronLeft className="w-5 h-5 shrink-0" /> : <ChevronRight className="w-5 h-5 shrink-0" />}
             {isExpanded && <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">{isPinned ? "Réduire" : "Épingler"}</span>}
@@ -196,14 +208,13 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
           </div>
 
           <div className="relative" ref={dropdownRef}>
-            {/* Correction SonarQube : Type button explicite */}
             <button
               type="button"
               onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
               className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
               <span className="text-sm font-medium text-foreground">
-                {user?.email}
+                {user?.email || "Profil"}
               </span>
               <ChevronDown className="w-4 h-4 text-muted-foreground" />
             </button>
@@ -211,7 +222,6 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
             {isUserMenuOpen && (
               <div className="absolute right-0 mt-2 w-64 bg-card rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.1)] dark:shadow-[0_10px_40px_rgba(0,0,0,0.5)] border border-border py-2 z-50 animate-in fade-in slide-in-from-top-2">
                 <div className="px-2 py-1 space-y-1">
-                  {/* Correction SonarQube : Type button explicite */}
                   <button type="button" onClick={() => { setIsUserMenuOpen(false); setIsProfileModalOpen(true); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors">
                     <User className="w-4 h-4" /> Modifier le profil
                   </button>
@@ -221,7 +231,6 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
                 </div>
                 <div className="h-px bg-border my-1"></div>
                 <div className="px-2 py-1">
-                  {/* Correction SonarQube : Type button explicite */}
                   <button type="button" onClick={() => { setIsUserMenuOpen(false); signOut(); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md text-destructive hover:bg-destructive/10 transition-colors">
                     <LogOut className="w-4 h-4" /> Déconnexion
                   </button>
