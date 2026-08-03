@@ -19,10 +19,11 @@ import { Button } from "@/components/ui/button";
 import { FileSpreadsheet, Keyboard, Globe, BarChart3, Database, Trash2, Eye } from "lucide-react";
 import { useState } from "react";
 
+// Correction SonarQube : Props en lecture seule
 interface Props {
-  kpi: KpiDefinition;
-  open: boolean;
-  onClose: () => void;
+  readonly kpi: KpiDefinition;
+  readonly open: boolean;
+  readonly onClose: () => void;
 }
 
 const SOURCE_ICONS: Record<string, typeof FileSpreadsheet> = {
@@ -33,6 +34,20 @@ const SOURCE_ICONS: Record<string, typeof FileSpreadsheet> = {
   api: Globe,
   sharepoint: Database,
 };
+
+// --- FONCTIONS UTILITAIRES ---
+
+// Correction SonarQube : Prévient les conversions hasardeuses type "[object Object]"
+function safeStringify(val: unknown): string {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "string") return val;
+  if (typeof val === "number" || typeof val === "boolean") return val.toString();
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return "";
+  }
+}
 
 export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
   const { getEntriesForKpi, removeEntry } = useKpi();
@@ -109,6 +124,7 @@ export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
                         <div className="flex items-center justify-end gap-1">
                           {isFile && entry.source?.rawData && (
                             <Button
+                              type="button"
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7"
@@ -118,6 +134,7 @@ export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
                             </Button>
                           )}
                           <Button
+                            type="button"
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-destructive hover:text-destructive"
@@ -142,7 +159,7 @@ export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
               <h4 className="text-xs font-medium text-muted-foreground">
                 Aperçu — {previewEntry.source.fileName} ({previewEntry.source.rawData.length} lignes)
               </h4>
-              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setPreviewEntry(null)}>
+              <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => setPreviewEntry(null)}>
                 <span className="text-xs">✕</span>
               </Button>
             </div>
@@ -158,15 +175,20 @@ export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {previewEntry.source.rawData.map((row, i) => (
-                    <TableRow key={i} className="hover:bg-secondary/20">
-                      {previewEntry.source!.columns?.map((col) => (
-                        <TableCell key={col} className="text-xs font-mono py-1.5">
-                          {String((row as Record<string, unknown>)[col] ?? "")}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
+                  {previewEntry.source.rawData.map((row) => {
+                    // Correction SonarQube : clé basée sur l'objet converti au lieu de l'index
+                    const rowKey = safeStringify(row);
+                    return (
+                      <TableRow key={rowKey} className="hover:bg-secondary/20">
+                        {previewEntry.source!.columns?.map((col) => (
+                          <TableCell key={col} className="text-xs font-mono py-1.5">
+                            {/* Correction SonarQube : safeStringify au lieu de String() */}
+                            {safeStringify((row as Record<string, unknown>)[col])}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

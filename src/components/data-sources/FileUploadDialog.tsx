@@ -30,7 +30,6 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
 
-// Correction SonarQube : Props en lecture seule
 interface Props {
   readonly kpi: KpiDefinition;
   readonly open: boolean;
@@ -51,7 +50,6 @@ const AGG_LABELS: Record<AggMethod, string> = {
 
 // --- FONCTIONS UTILITAIRES ---
 
-// Correction SonarQube : Prévient les conversions hasardeuses type "[object Object]"
 function safeString(val: unknown): string {
   if (val === null || val === undefined) return "";
   if (typeof val === "string") return val;
@@ -73,29 +71,76 @@ function parsePeriod(rawVal: unknown): string | null {
 
   const s = safeString(rawVal).trim();
 
-  // Correction SonarQube : Utilisation de RegExp.exec()
   const frRegex = /^(\d{2})\/(\d{2})\/(\d{4})/;
   const frMatch = frRegex.exec(s);
   if (frMatch) return `${frMatch[3]}-${frMatch[2]}`;
 
-  // Correction SonarQube : Utilisation de RegExp.exec()
   const isoRegex = /^(\d{4})-(\d{2})/;
   const isoMatch = isoRegex.exec(s);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}`;
 
   const d = new Date(s);
-  // Correction SonarQube : Number.isNaN au lieu de isNaN
   if (!Number.isNaN(d.getTime())) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   }
   return null;
 }
 
-// Correction SonarQube : Extraction du ternaire imbriqué
 function getStepClassName(isActive: boolean, isDone: boolean): string {
   if (isActive) return "bg-primary/15 text-primary";
   if (isDone) return "bg-success/15 text-success";
   return "bg-secondary text-muted-foreground";
+}
+
+// Correction SonarQube : Extraction de la logique complexe pour réduire la complexité cognitive
+async function processAutomatedKpis(
+  groupData: Record<string, unknown>[],
+  period: string,
+  file: File,
+  columns: string[],
+  kpis: KpiDefinition[]
+) {
+  const emailCol = columns.find(c => c.toLowerCase() === "email");
+  const typeCol = columns.find(c => c.toLowerCase() === "type");
+  const dossierCol = columns.find(c => c.toLowerCase() === "dossier");
+
+  if (emailCol) {
+    const kpi1212 = kpis.find(k => k.name.toLowerCase().includes("1212"));
+    if (kpi1212) {
+      const data1212 = groupData.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "le1212@actionlogement.fr");
+      if (data1212.length > 0) {
+        await uploadFileForKpi({ file, kpiId: kpi1212.id, period, selectedColumn: emailCol, aggregation: "count", computedValue: data1212.length, rawData: data1212.slice(0, 50), detailRows: [] });
+      }
+    }
+
+    const kpiFraude = kpis.find(k => k.name.toLowerCase().includes("fraude"));
+    if (kpiFraude) {
+      const dataFraude = groupData.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "fraude.als@actionlogement.fr");
+      if (dataFraude.length > 0) {
+        await uploadFileForKpi({ file, kpiId: kpiFraude.id, period, selectedColumn: emailCol, aggregation: "count", computedValue: dataFraude.length, rawData: dataFraude.slice(0, 50), detailRows: [] });
+      }
+    }
+  }
+
+  if (typeCol) {
+    const kpiExterne = kpis.find(k => k.name.toLowerCase().includes("externe"));
+    if (kpiExterne) {
+      const dataExterne = groupData.filter(row => safeString(row[typeCol]).toUpperCase().trim() === "EXTERNE");
+      if (dataExterne.length > 0) {
+        await uploadFileForKpi({ file, kpiId: kpiExterne.id, period, selectedColumn: typeCol, aggregation: "count", computedValue: dataExterne.length, rawData: dataExterne.slice(0, 50), detailRows: [] });
+      }
+    }
+  }
+
+  if (dossierCol) {
+    const kpiAdressage = kpis.find(k => k.name.toLowerCase().includes("adressage"));
+    if (kpiAdressage) {
+      const dataAdressage = groupData.filter(row => safeString(row[dossierCol]).trim() === "05 - Erreur d'adressage");
+      if (dataAdressage.length > 0) {
+        await uploadFileForKpi({ file, kpiId: kpiAdressage.id, period, selectedColumn: dossierCol, aggregation: "count", computedValue: dataAdressage.length, rawData: dataAdressage.slice(0, 50), detailRows: [] });
+      }
+    }
+  }
 }
 
 // --- COMPOSANT PRINCIPAL ---
@@ -220,9 +265,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         result = data.filter(r => r[selectedColumn] !== "" && r[selectedColumn] !== null).length;
       } else {
         const values = data
-          // Correction SonarQube : safeString
           .map((r) => Number(safeString(r[selectedColumn]).replace(',', '.')))
-          // Correction SonarQube : Number.isNaN
           .filter((v) => !Number.isNaN(v));
 
         switch (aggMethod) {
@@ -245,57 +288,22 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     setUploading(true);
 
     try {
-      const emailCol = columns.find(c => c.toLowerCase() === "email");
-      const typeCol = columns.find(c => c.toLowerCase() === "type");
-      const dossierCol = columns.find(c => c.toLowerCase() === "dossier");
-
       for (const [p, group] of Object.entries(groupedResults)) {
-
+        // Enregistrement du KPI principal
         await uploadFileForKpi({
           file, kpiId: kpi.id, period: p, selectedColumn, aggregation: aggMethod,
           selectedSheet: fileType === "excel" ? selectedSheet : undefined,
           computedValue: group.value,
           rawData: group.data.slice(0, 100),
           detailRows: group.data.slice(0, 20).map((row) => ({
-            // Correction SonarQube : safeString
             label: safeString(Object.values(row)[0]),
             value: Number(row[selectedColumn]) || 0,
             metadata: {},
           })),
         });
 
-        const kpi1212 = kpis.find(k => k.name.toLowerCase().includes("1212"));
-        if (kpi1212 && emailCol) {
-          // Correction SonarQube : safeString
-          const data1212 = group.data.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "le1212@actionlogement.fr");
-          if (data1212.length > 0) {
-            await uploadFileForKpi({ file, kpiId: kpi1212.id, period: p, selectedColumn: emailCol, aggregation: "count", computedValue: data1212.length, rawData: data1212.slice(0, 50), detailRows: [] });
-          }
-        }
-
-        const kpiFraude = kpis.find(k => k.name.toLowerCase().includes("fraude"));
-        if (kpiFraude && emailCol) {
-          const dataFraude = group.data.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "fraude.als@actionlogement.fr");
-          if (dataFraude.length > 0) {
-            await uploadFileForKpi({ file, kpiId: kpiFraude.id, period: p, selectedColumn: emailCol, aggregation: "count", computedValue: dataFraude.length, rawData: dataFraude.slice(0, 50), detailRows: [] });
-          }
-        }
-
-        const kpiExterne = kpis.find(k => k.name.toLowerCase().includes("externe"));
-        if (kpiExterne && typeCol) {
-          const dataExterne = group.data.filter(row => safeString(row[typeCol]).toUpperCase().trim() === "EXTERNE");
-          if (dataExterne.length > 0) {
-             await uploadFileForKpi({ file, kpiId: kpiExterne.id, period: p, selectedColumn: typeCol, aggregation: "count", computedValue: dataExterne.length, rawData: dataExterne.slice(0, 50), detailRows: [] });
-          }
-        }
-
-        const kpiAdressage = kpis.find(k => k.name.toLowerCase().includes("adressage"));
-        if (kpiAdressage && dossierCol) {
-          const dataAdressage = group.data.filter(row => safeString(row[dossierCol]).trim() === "05 - Erreur d'adressage");
-          if (dataAdressage.length > 0) {
-             await uploadFileForKpi({ file, kpiId: kpiAdressage.id, period: p, selectedColumn: dossierCol, aggregation: "count", computedValue: dataAdressage.length, rawData: dataAdressage.slice(0, 50), detailRows: [] });
-          }
-        }
+        // Appel de la fonction extraite pour gérer les automatisations complexes (Fraude, 1212, Externe...)
+        await processAutomatedKpis(group.data, p, file, columns, kpis);
       }
 
       const nbMois = Object.keys(groupedResults).length;
@@ -334,13 +342,16 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
 
         <div className="flex items-center gap-2 mb-4">
           {["Upload", "Configuration", "Validation"].map((label, i) => {
-            const stepIdx = i === 0 ? "upload" : i === 1 ? "configure" : "confirm";
+            // Correction SonarQube : Remplacement du ternaire imbriqué par un tableau
+            const stepsArray = ["upload", "configure", "confirm"];
+            const stepIdx = stepsArray[i];
+
             const isActive = step === stepIdx;
             const isDone = (stepIdx === "upload" && step !== "upload") || (stepIdx === "configure" && step === "confirm");
+
             return (
               <div key={label} className="flex items-center gap-2">
                 {i > 0 && <div className="w-8 h-px bg-border" />}
-                {/* Correction SonarQube : appel de getStepClassName */}
                 <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${getStepClassName(isActive, isDone)}`}>
                   {isDone ? <Check className="w-3 h-3" /> : <span>{i + 1}</span>}
                   {label}
@@ -351,28 +362,21 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         </div>
 
         {step === "upload" && (
-          // Correction SonarQube : Rôle button, tabIndex et onKeyDown pour un élément cliquable accessible
-          <div
-            role="button"
-            tabIndex={0}
-            className="border-2 border-dashed border-border rounded-xl p-12 text-center hover:border-primary/50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary"
+          // Correction SonarQube : Utilisation d'un vrai <button> pour l'accessibilité
+          <button
+            type="button"
+            className="block w-full border-2 border-dashed border-border rounded-xl p-12 text-center hover:border-primary/50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary bg-transparent"
             onClick={() => fileInputRef.current?.click()}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                fileInputRef.current?.click();
-              }
-            }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
           >
             <Upload className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm font-medium text-foreground mb-1">
+            <span className="block text-sm font-medium text-foreground mb-1">
               Glissez-déposez un fichier ou cliquez pour sélectionner
-            </p>
-            <p className="text-xs text-muted-foreground">Formats supportés : .xlsx, .xls, .csv</p>
+            </span>
+            <span className="block text-xs text-muted-foreground">Formats supportés : .xlsx, .xls, .csv</span>
             <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleFileChange} />
-          </div>
+          </button>
         )}
 
         {step === "configure" && (
@@ -446,7 +450,8 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Aperçu (10 premières lignes)</label>
+              {/* Correction SonarQube : Remplacement de <label> par un <p> vu qu'il n'y a pas d'input associé */}
+              <p className="text-xs font-medium text-muted-foreground">Aperçu (10 premières lignes)</p>
               <div className="rounded-lg border border-border overflow-hidden">
                 <Table>
                   <TableHeader>
@@ -460,11 +465,9 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                   </TableHeader>
                   <TableBody>
                     {rawData.map((row, i) => (
-                      // Suppression de l'erreur React potentielle
                       <TableRow key={crypto.randomUUID ? crypto.randomUUID() : i}>
                         {columns.slice(0, 5).map((col) => (
                           <TableCell key={col} className={`text-xs py-2 ${col === selectedColumn ? "font-bold" : ""}`}>
-                            {/* Correction SonarQube : safeString */}
                             {safeString(row[col])}
                           </TableCell>
                         ))}
