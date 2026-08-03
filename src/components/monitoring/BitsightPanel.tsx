@@ -20,40 +20,28 @@ import {
   CartesianGrid, Tooltip as RechartsTooltip, Legend, XAxis, YAxis, Cell
 } from "recharts";
 
-// Dictionnaire officiel et complet des libellés de vecteurs de risque BitSight
+// Dictionnaire officiel des libellés de vecteurs de risque BitSight
 const BITSIGHT_VECTOR_NAMES: Record<string, string> = {
-  ssl_configurations: "SSL Configurations",
-  spf: "SPF",
-  dmarc: "DMARC",
-  dkim: "DKIM",
-  open_ports: "Open Ports",
-  patching: "Patching",
-  vulnerabilities: "Vulnerabilities",
-  botnets: "Botnets",
-  malware: "Malware",
-  desktop_software: "Desktop Software",
-  server_software: "Server Software",
-  file_sharing: "File Sharing",
-  dns: "DNS",
-  ip_reputation: "IP Reputation",
-  web_application: "Application Security",
-  social_engineering: "Social Engineering",
-  mobile_applications: "Mobile Applications",
-  network_filtering: "Network Filtering",
-  tls_ssl: "SSL/TLS"
+  ssl_configurations: "SSL Configurations", spf: "SPF", dmarc: "DMARC", dkim: "DKIM",
+  open_ports: "Open Ports", patching: "Patching", vulnerabilities: "Vulnerabilities",
+  botnets: "Botnets", malware: "Malware", desktop_software: "Desktop Software",
+  server_software: "Server Software", file_sharing: "File Sharing", dns: "DNS",
+  ip_reputation: "IP Reputation", web_application: "Application Security",
+  social_engineering: "Social Engineering", mobile_applications: "Mobile Applications",
+  network_filtering: "Network Filtering", tls_ssl: "SSL/TLS"
 };
 
-// Utilitaire de génération d'ID unique sécurisé (Correction SonarQube)
+// ============================================================================
+// SOUS-FONCTIONS UTILITAIRES (Pour éliminer la complexité et les ternaires)
+// ============================================================================
+
+// Générateur d'ID sécurisé (remplace Math.random)
 const generateId = () => {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return `id-${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`;
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  const array = new Uint32Array(1);
+  if (typeof window !== 'undefined' && window.crypto) window.crypto.getRandomValues(array);
+  return `id-${array[0].toString(16)}-${Date.now().toString(36)}`;
 };
-
-// ============================================================================
-// SOUS-FONCTIONS UTILITAIRES (Évite les ternaires imbriqués)
-// ============================================================================
 
 const isAssetMatchingFilter = (asset: any, filter: string) => {
   if (filter === 'domains') return asset.type === 'Domaine';
@@ -74,6 +62,10 @@ const getSeverityBadgeProps = (severity: string): { variant: "destructive" | "de
   return { variant: 'secondary', className: '' };
 };
 
+const getTechRiskBadgeVariant = (risk: string): "destructive" | "secondary" => {
+  return risk === 'Élevé' ? 'destructive' : 'secondary';
+};
+
 const getScoreCardStyles = (score: number) => {
   if (score < 600) return { borderClass: 'border-l-destructive', iconClass: 'text-destructive' };
   if (score < 700) return { borderClass: 'border-l-orange-500', iconClass: 'text-orange-500' };
@@ -86,8 +78,29 @@ const getTrendStyle = (trend: string) => {
   return { color: "text-slate-500", bg: "bg-slate-500/10", Icon: Activity };
 };
 
+const getAssetFilterStyle = (currentFilter: string, targetFilter: string) => {
+  const isSelected = currentFilter === targetFilter;
+  if (targetFilter === 'critical') {
+    return isSelected ? 'bg-destructive/20 border-destructive ring-2 ring-destructive/50' : 'bg-destructive/10 border-destructive/20 hover:bg-destructive/20';
+  }
+  return isSelected ? 'bg-blue-500/20 border-blue-500 ring-2 ring-blue-500/50' : 'bg-secondary/20 border-border hover:bg-secondary/40';
+};
+
+const getHygieneCardClass = (grade: string) => {
+  if (grade === 'A' || grade === 'B') return 'border-emerald-500/20 bg-emerald-500/5';
+  if (grade === 'N/A') return 'border-border bg-secondary/10';
+  return 'border-destructive/20 bg-destructive/5';
+};
+
+const getHygieneBadgeClass = (grade: string) => {
+  if (grade === 'A' || grade === 'B') return 'bg-emerald-500';
+  if (grade === 'N/A') return 'bg-slate-500';
+  return 'bg-destructive';
+};
+
+
 // ============================================================================
-// SOUS-FONCTIONS API (Pour réduire la complexité cognitive)
+// SOUS-FONCTIONS API
 // ============================================================================
 
 const processScoreAndPosture = (ratingData: any, realData: any) => {
@@ -109,13 +122,13 @@ const processScoreAndPosture = (ratingData: any, realData: any) => {
     Object.entries(ratingData.rating_details).forEach(([key, val]: [string, any]) => {
       const officialName = BITSIGHT_VECTOR_NAMES[key] || key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
       const grade = val.grade || 'B';
-
       let progressScore = 70;
+
       if (grade === 'A' || grade === 'GOOD') {
         progressScore = 95;
         positiveList.push({ factor: officialName, impact: "Conforme (A)" });
       } else if (grade === 'B' || grade === 'WARN') {
-        // Default 70
+        // default 70
       } else {
         progressScore = 40;
         negativeList.push({ factor: officialName, impact: `Risque (${grade})` });
@@ -132,30 +145,24 @@ const processScoreAndPosture = (ratingData: any, realData: any) => {
 
 const processHistoricalRatings = (ratingData: any, realData: any) => {
   if (!Array.isArray(ratingData.ratings) || ratingData.ratings.length === 0) return;
-
   const sortedRatings = [...ratingData.ratings].sort((a: any, b: any) => a.rating_date.localeCompare(b.rating_date));
   const currentScore = realData.executive.score;
 
   const getRatingDaysAgo = (days: number) => {
     if (sortedRatings.length === 0) return null;
-    const latestEntry = sortedRatings[sortedRatings.length - 1];
-    const latestDate = new Date(latestEntry.rating_date);
+    const latestDate = new Date(sortedRatings[sortedRatings.length - 1].rating_date);
     latestDate.setDate(latestDate.getDate() - days);
     const targetStr = latestDate.toISOString().split('T')[0];
 
     let match = sortedRatings.find(r => r.rating_date === targetStr);
-    if (!match) {
-      const targetIdx = sortedRatings.length - 1 - days;
-      if (targetIdx >= 0) match = sortedRatings[targetIdx];
-    }
+    if (!match) match = sortedRatings[Math.max(0, sortedRatings.length - 1 - days)];
     return match ? match.rating : null;
   };
 
   const formatDiff = (pastScore: number | null) => {
     if (pastScore === null) return "N/A";
     const diff = currentScore - pastScore;
-    if (diff === 0) return "0";
-    return diff > 0 ? `+${diff}` : `${diff}`;
+    return diff === 0 ? "0" : (diff > 0 ? `+${diff}` : `${diff}`);
   };
 
   realData.executive.trends = {
@@ -165,11 +172,7 @@ const processHistoricalRatings = (ratingData: any, realData: any) => {
   };
 
   const monthlyMap = new Map();
-  sortedRatings.forEach((r: any) => {
-    if (r.rating_date) {
-      monthlyMap.set(r.rating_date.substring(0, 7), r.rating);
-    }
-  });
+  sortedRatings.forEach((r: any) => { if (r.rating_date) monthlyMap.set(r.rating_date.substring(0, 7), r.rating); });
 
   realData.scorePosture.historical = Array.from(monthlyMap.entries()).map(([monthKey, score]) => {
     const [year, month] = monthKey.split('-');
@@ -188,9 +191,8 @@ const processFindings = (allData: any, realData: any) => {
 
     allData.results.forEach((f: any) => {
       let assetList = "Actif inconnu";
-      if (Array.isArray(f.assets) && f.assets.length > 0) {
-        assetList = f.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
-      }
+      if (Array.isArray(f.assets) && f.assets.length > 0) assetList = f.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
+
       const vectorLabel = f.risk_vector_label || BITSIGHT_VECTOR_NAMES[f.risk_vector] || "Autre";
       const uniqueKey = `${assetList}::${vectorLabel}`;
       const parsedDate = new Date(f.first_seen || "1970-01-01").getTime();
@@ -208,8 +210,7 @@ const processFindings = (allData: any, realData: any) => {
       else if (rawSeverity === "moderate") sevLabel = "Modéré";
 
       return {
-        id: generateId(),
-        finding: f.vectorLabel, vectorKey: f.risk_vector, severity: sevLabel,
+        id: generateId(), finding: f.vectorLabel, vectorKey: f.risk_vector, severity: sevLabel,
         severityKey: rawSeverity, asset: f.assetList, status: "Ouvert",
         discoveryDate: f.first_seen || "Récemment", rawDateMs: f.parsedDate
       };
@@ -222,14 +223,11 @@ const processPriorityRisks = (findingsData: any, realData: any) => {
     realData.executive.criticalRisks = findingsData.count || 0;
     realData.priorityRisks = findingsData.results.map((finding: any, index: number) => {
       let assetList = "Actif inconnu";
-      if (Array.isArray(finding.assets) && finding.assets.length > 0) {
-        assetList = finding.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
-      }
+      if (Array.isArray(finding.assets) && finding.assets.length > 0) assetList = finding.assets.map((a: any) => a.asset).filter(Boolean).join(", ");
+
       return {
-        id: `RSK-${index + 1}`,
-        risk: finding.risk_vector_label || "Vulnérabilité critique",
-        severity: "Critique", impactScore: `Sévérité ${finding.severity || 'N/A'}`,
-        assets: assetList, discoveryDate: finding.first_seen || "Récemment",
+        id: `RSK-${index + 1}`, risk: finding.risk_vector_label || "Vulnérabilité critique", severity: "Critique",
+        impactScore: `Sévérité ${finding.severity || 'N/A'}`, assets: assetList, discoveryDate: finding.first_seen || "Récemment",
         lastSeen: finding.last_seen || "Récemment", status: "Ouvert",
         details: { remediations: finding.details?.remediations || [], ips: finding.details?.observed_ips || [], evidence: finding.evidence_key || assetList }
       };
@@ -238,14 +236,10 @@ const processPriorityRisks = (findingsData: any, realData: any) => {
 };
 
 const processAssetsAndTech = (assetsData: any, realData: any) => {
-  if (assetsData && typeof assetsData.count === 'number') {
-    realData.executive.monitoredAssets = assetsData.count;
-  }
+  if (assetsData && typeof assetsData.count === 'number') realData.executive.monitoredAssets = assetsData.count;
 
   if (assetsData && Array.isArray(assetsData.results)) {
-    let criticalCount = 0;
-    let ipCount = 0;
-    let domainCount = 0;
+    let criticalCount = 0; let ipCount = 0; let domainCount = 0;
     const techList: any[] = [];
 
     realData.attackSurface.riskyAssets = assetsData.results.map((asset: any) => {
@@ -255,22 +249,13 @@ const processAssetsAndTech = (assetsData: any, realData: any) => {
       const materialFindings = asset.findings?.counts_by_severity?.material || 0;
 
       let riskLabel = "Faible";
-      if (category === "critical" || importanceNum === 1 || severeFindings > 0 || materialFindings > 0) {
-        riskLabel = "Critique";
-        criticalCount++;
-      } else if (category === "high" || importanceNum === 2) {
-        riskLabel = "Élevé";
-      } else if (category === "medium" || importanceNum === 3) {
-        riskLabel = "Moyen";
-      }
+      if (category === "critical" || importanceNum === 1 || severeFindings > 0 || materialFindings > 0) { riskLabel = "Critique"; criticalCount++; }
+      else if (category === "high" || importanceNum === 2) riskLabel = "Élevé";
+      else if (category === "medium" || importanceNum === 3) riskLabel = "Moyen";
 
       let typeLabel = "Domaine";
-      if (asset.is_ip === true || asset.asset_type === "IP" || asset.type === "ip") {
-        typeLabel = "IP Publique";
-        ipCount++;
-      } else {
-        domainCount++;
-      }
+      if (asset.is_ip === true || asset.asset_type === "IP" || asset.type === "ip") { typeLabel = "IP Publique"; ipCount++; }
+      else domainCount++;
 
       if (Array.isArray(asset.products)) {
         asset.products.forEach((prod: any) => {
@@ -278,10 +263,8 @@ const processAssetsAndTech = (assetsData: any, realData: any) => {
             const version = prod.version || 'Version non détectée';
             let techRisk = "Normal";
             if (version.startsWith('7.') || version.startsWith('5.') || prod.vendor === 'centos') techRisk = "Élevé";
-
             techList.push({
-              id: generateId(),
-              name: `${prod.vendor.charAt(0).toUpperCase() + prod.vendor.slice(1)} ${prod.product ? prod.product.replace(/_/g, ' ') : ''}`,
+              id: generateId(), name: `${prod.vendor.charAt(0).toUpperCase() + prod.vendor.slice(1)} ${prod.product ? prod.product.replace(/_/g, ' ') : ''}`,
               version: version, type: prod.type || 'application', asset: asset.asset || 'Actif non spécifié', risk: techRisk
             });
           }
@@ -289,8 +272,7 @@ const processAssetsAndTech = (assetsData: any, realData: any) => {
       }
 
       return {
-        id: generateId(),
-        asset: asset.asset || "Actif sans nom", type: typeLabel, riskLevel: riskLabel,
+        id: generateId(), asset: asset.asset || "Actif sans nom", type: typeLabel, riskLevel: riskLabel,
         findings: asset.findings?.total_count || 0,
         countsBySeverity: asset.findings?.counts_by_severity || { severe: 0, material: 0, moderate: 0, minor: 0 },
         vendors: Array.isArray(asset.products) ? asset.products.map((p: any) => p.vendor).filter(Boolean) : []
@@ -330,7 +312,6 @@ const processHygiene = (realData: any) => {
   }
 };
 
-// --- APPEL API GLOBAL ---
 const fetchBitsightDetails = async () => {
   const realData = {
     executive: { score: 0, maxScore: 900, trends: { d7: "N/A", d30: "N/A", d90: "N/A" }, industryName: "N/A", percentile: "N/A", monitoredAssets: 0, newAssets: 0, totalFindings: 0, criticalRisks: 0 },
@@ -378,16 +359,16 @@ const fetchBitsightDetails = async () => {
 };
 
 // ============================================================================
-// HOOK DE TRAITEMENT (Extrait du composant principal)
+// HOOK DE TRAITEMENT (Prend bien en compte selectedAssetForFindings désormais)
 // ============================================================================
 
-function useBitsightDataProcessing(data: any, filters: any) {
+function useBitsightDataProcessing(data: any, filters: any, selectedAssetForFindings: string | null) {
   return useMemo(() => {
     if (!data) return {} as any;
     const {
       assetFilter, modalAssetSearch, modalAssetTypeFilter, modalAssetRiskFilter,
       modalTechSearch, modalTechRiskFilter, findingSeverityFilter, findingVectorFilter,
-      modalFindingSearch, selectedAssetForFindings
+      modalFindingSearch
     } = filters;
 
     const allAssets = [...(data.attackSurface.riskyAssets || [])].sort((a, b) => (b.findings || 0) - (a.findings || 0));
@@ -423,17 +404,16 @@ function useBitsightDataProcessing(data: any, filters: any) {
     ];
 
     const cm: Record<string, any> = {};
-    // Correction SonarQube : Condition avec bloc d'accolades strict
     rFind.filter((f: any) => findingSeverityFilter === "all" || f.severityKey === findingSeverityFilter).forEach((f: any) => {
-      if (!cm[f.finding]) {
-        cm[f.finding] = { count: 0, key: f.vectorKey };
-      }
+      if (!cm[f.finding]) { cm[f.finding] = { count: 0, key: f.vectorKey }; }
       cm[f.finding].count++;
     });
 
     const catDist = Object.entries(cm).map(([category, details]) => ({ category, count: details.count, vectorKey: details.key })).sort((a, b) => b.count - a.count).slice(0, 10);
 
     const mFind = fFind.filter((f: any) => f.asset.toLowerCase().includes(modalFindingSearch.toLowerCase()) || f.finding.toLowerCase().includes(modalFindingSearch.toLowerCase()));
+
+    // CORRECTION : Filtre correctement les findings spécifiques liés à l'actif sélectionné
     const spFind = rFind.filter((f: any) => selectedAssetForFindings && f.asset.includes(selectedAssetForFindings));
 
     return {
@@ -441,66 +421,16 @@ function useBitsightDataProcessing(data: any, filters: any) {
       top10Techs: sTechs.slice(0, 10), modalFilteredTechs: mTechs, displayFindings: fFind.slice(0, 10), dynamicSeverityDistribution: sevDist,
       dynamicCategoryDistribution: catDist, modalFilteredFindings: mFind, specificAssetFindings: spFind
     };
-  }, [data, filters]);
+  }, [data, filters, selectedAssetForFindings]);
 }
 
 // ============================================================================
-// COMPOSANT PRINCIPAL
+// SOUS-COMPOSANTS REACT (Pour réduire la complexité cognitive de la vue principale)
 // ============================================================================
-export default function BitsightPanel() {
-  const { data, isLoading } = useQuery({
-    queryKey: ['bitsight-real-data-v45'],
-    queryFn: fetchBitsightDetails,
-    refetchInterval: 1000 * 60 * 15,
-  });
 
-  const [selectedRisk, setSelectedRisk] = useState<any>(null);
-  const [isAssetsModalOpen, setIsAssetsModalOpen] = useState(false);
-  const [isFindingsModalOpen, setIsFindingsModalOpen] = useState(false);
-  const [selectedAssetForFindings, setSelectedAssetForFindings] = useState<string | null>(null);
-  const [isTechModalOpen, setIsTechModalOpen] = useState(false);
-
-  const [assetFilter, setAssetFilter] = useState<'all' | 'domains' | 'ips' | 'critical'>('all');
-  const [modalAssetSearch, setModalAssetSearch] = useState("");
-  const [modalAssetTypeFilter, setModalAssetTypeFilter] = useState("all");
-  const [modalAssetRiskFilter, setModalAssetRiskFilter] = useState("all");
-
-  const [findingSeverityFilter, setFindingSeverityFilter] = useState("all");
-  const [findingVectorFilter, setFindingVectorFilter] = useState("all");
-  const [modalFindingSearch, setModalFindingSearch] = useState("");
-
-  const [modalTechSearch, setModalTechSearch] = useState("");
-  const [modalTechRiskFilter, setModalTechRiskFilter] = useState("all");
-
-  const filters = {
-    assetFilter, modalAssetSearch, modalAssetTypeFilter, modalAssetRiskFilter,
-    modalTechSearch, modalTechRiskFilter, findingSeverityFilter, findingVectorFilter,
-    modalFindingSearch, selectedAssetForFindings
-  };
-
-  const {
-    top10Assets, modalFilteredAssets, activeTopTechnologies,
-    top10Techs, modalFilteredTechs, displayFindings, dynamicSeverityDistribution, dynamicCategoryDistribution,
-    modalFilteredFindings, specificAssetFindings
-  } = useBitsightDataProcessing(data, filters);
-
-  if (isLoading || !data) {
-    return (
-      <div className="flex flex-col items-center justify-center py-32 space-y-4">
-        <Globe className="w-10 h-10 text-emerald-500 animate-spin opacity-50" />
-        <p className="text-muted-foreground font-medium animate-pulse">Extraction des données brutes depuis BitSight...</p>
-      </div>
-    );
-  }
-
-  const scoreStyles = getScoreCardStyles(data.executive.score);
-  const d7Style = getTrendStyle(data.executive.trends.d7);
-  const d30Style = getTrendStyle(data.executive.trends.d30);
-  const d90Style = getTrendStyle(data.executive.trends.d90);
-
-  // --- SOUS-FONCTIONS DE RENDU ---
-
-  const renderRiskModal = () => (
+const RiskModal = ({ selectedRisk, onClose }: any) => {
+  if (!selectedRisk) return null;
+  return (
     <div className="fixed inset-0 z-[60] flex justify-end bg-background/50 backdrop-blur-sm transition-opacity">
       <div className="w-full max-w-lg bg-card h-full shadow-2xl border-l border-border flex flex-col animate-in slide-in-from-right duration-300">
         <div className="flex items-start justify-between p-6 border-b border-border bg-secondary/20">
@@ -509,7 +439,7 @@ export default function BitsightPanel() {
             <h3 className="text-xl font-black flex items-center gap-2 text-foreground"><AlertOctagon className="w-6 h-6 text-destructive" />{selectedRisk.risk}</h3>
             <p className="text-sm text-muted-foreground font-mono mt-2">{selectedRisk.id}</p>
           </div>
-          <button type="button" onClick={() => setSelectedRisk(null)} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors">
+          <button type="button" onClick={onClose} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors">
             <X className="w-5 h-5 text-foreground" />
           </button>
         </div>
@@ -553,8 +483,11 @@ export default function BitsightPanel() {
       </div>
     </div>
   );
+};
 
-  const renderAssetsModal = () => (
+const AssetsModal = ({ isOpen, onClose, modalFilteredAssets, data, filters, setFilters }: any) => {
+  if (!isOpen) return null;
+  return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 transition-opacity">
       <div className="w-full max-w-[90vw] bg-card rounded-2xl shadow-2xl border border-border flex flex-col animate-in fade-in zoom-in-95 duration-200 h-[90vh]">
         <div className="flex items-center justify-between p-6 border-b border-border bg-secondary/20 rounded-t-2xl shrink-0">
@@ -562,12 +495,12 @@ export default function BitsightPanel() {
             <h3 className="text-xl font-black flex items-center gap-2 text-foreground"><Globe className="w-6 h-6 text-blue-500" /> Inventaire de la surface d'attaque</h3>
             <p className="text-sm text-muted-foreground mt-1">Affichage de {modalFilteredAssets.length} actifs sur un total de {data.attackSurface.riskyAssets.length}.</p>
           </div>
-          <button type="button" onClick={() => setIsAssetsModalOpen(false)} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5" /></button>
+          <button type="button" onClick={onClose} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5" /></button>
         </div>
         <div className="flex flex-wrap gap-4 p-4 border-b border-border bg-secondary/5 shrink-0">
-          <div className="relative flex-1 min-w-[250px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input type="text" placeholder="Rechercher une IP, un domaine ou une techno..." value={modalAssetSearch} onChange={(e) => setModalAssetSearch(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
-          <select value={modalAssetTypeFilter} onChange={(e) => setModalAssetTypeFilter(e.target.value)} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Tous les types</option><option value="Domaine">Domaine</option><option value="IP Publique">IP Publique</option></select>
-          <select value={modalAssetRiskFilter} onChange={(e) => setModalAssetRiskFilter(e.target.value)} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Toutes les criticités</option><option value="Critique">Critique</option><option value="Élevé">Élevé</option><option value="Moyen">Moyen</option><option value="Faible">Faible</option></select>
+          <div className="relative flex-1 min-w-[250px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input type="text" placeholder="Rechercher une IP, un domaine ou une techno..." value={filters.modalAssetSearch} onChange={(e) => setFilters({...filters, modalAssetSearch: e.target.value})} className="w-full pl-9 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+          <select value={filters.modalAssetTypeFilter} onChange={(e) => setFilters({...filters, modalAssetTypeFilter: e.target.value})} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Tous les types</option><option value="Domaine">Domaine</option><option value="IP Publique">IP Publique</option></select>
+          <select value={filters.modalAssetRiskFilter} onChange={(e) => setFilters({...filters, modalAssetRiskFilter: e.target.value})} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Toutes les criticités</option><option value="Critique">Critique</option><option value="Élevé">Élevé</option><option value="Moyen">Moyen</option><option value="Faible">Faible</option></select>
         </div>
         <div className="overflow-y-auto flex-1 p-0">
           <Table>
@@ -592,17 +525,20 @@ export default function BitsightPanel() {
       </div>
     </div>
   );
+};
 
-  const renderSpecificAssetFindingsModal = () => (
+const SpecificAssetFindingsModal = ({ asset, specificAssetFindings, onClose }: any) => {
+  if (!asset) return null;
+  return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 transition-opacity">
       <div className="w-full max-w-4xl bg-card rounded-2xl shadow-2xl border border-border flex flex-col animate-in fade-in zoom-in-95 duration-200 h-[85vh]">
         <div className="flex items-center justify-between p-6 border-b border-border bg-secondary/20 rounded-t-2xl shrink-0">
           <div>
             <Badge variant="outline" className="mb-2 bg-background">Ciblage d'actif</Badge>
             <h3 className="text-xl font-black flex items-center gap-2 text-foreground"><Target className="w-6 h-6 text-indigo-500" /> Détail des vulnérabilités</h3>
-            <p className="text-sm font-mono text-indigo-500 font-bold mt-1">{selectedAssetForFindings}</p>
+            <p className="text-sm font-mono text-indigo-500 font-bold mt-1">{asset}</p>
           </div>
-          <button type="button" onClick={() => setSelectedAssetForFindings(null)} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5 text-foreground" /></button>
+          <button type="button" onClick={onClose} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5 text-foreground" /></button>
         </div>
         <div className="overflow-y-auto flex-1 p-0">
           <Table>
@@ -625,8 +561,11 @@ export default function BitsightPanel() {
       </div>
     </div>
   );
+};
 
-  const renderFindingsModal = () => (
+const FindingsModal = ({ isOpen, onClose, modalFilteredFindings, data, filters, setFilters, setSelectedAssetForFindings }: any) => {
+  if (!isOpen) return null;
+  return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 transition-opacity">
       <div className="w-full max-w-[90vw] bg-card rounded-2xl shadow-2xl border border-border flex flex-col animate-in fade-in zoom-in-95 duration-200 h-[90vh]">
         <div className="flex items-center justify-between p-6 border-b border-border bg-secondary/20 rounded-t-2xl shrink-0">
@@ -634,12 +573,12 @@ export default function BitsightPanel() {
             <h3 className="text-xl font-black flex items-center gap-2 text-foreground"><ShieldAlert className="w-6 h-6 text-orange-500" /> Inventaire exhaustif des vulnérabilités</h3>
             <p className="text-sm text-muted-foreground mt-1">Affichage de {modalFilteredFindings.length} failles sur un total de {data.findings.list.length} (dédoublonnées par actif).</p>
           </div>
-          <button type="button" onClick={() => setIsFindingsModalOpen(false)} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5" /></button>
+          <button type="button" onClick={onClose} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5" /></button>
         </div>
         <div className="flex flex-wrap gap-4 p-4 border-b border-border bg-secondary/5 shrink-0">
-          <div className="relative flex-1 min-w-[250px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input type="text" placeholder="Rechercher par faille ou par actif..." value={modalFindingSearch} onChange={(e) => setModalFindingSearch(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-orange-500 outline-none" /></div>
-          <select value={findingSeverityFilter} onChange={(e) => setFindingSeverityFilter(e.target.value)} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Toutes les sévérités</option><option value="severe">Critique</option><option value="material">Matériel</option><option value="moderate">Modéré</option><option value="minor">Mineur</option></select>
-          <select value={findingVectorFilter} onChange={(e) => setFindingVectorFilter(e.target.value)} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer max-w-[200px] truncate"><option value="all">Tous les vecteurs</option>{Object.entries(BITSIGHT_VECTOR_NAMES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
+          <div className="relative flex-1 min-w-[250px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input type="text" placeholder="Rechercher par faille ou par actif..." value={filters.modalFindingSearch} onChange={(e) => setFilters({...filters, modalFindingSearch: e.target.value})} className="w-full pl-9 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-orange-500 outline-none" /></div>
+          <select value={filters.findingSeverityFilter} onChange={(e) => setFilters({...filters, findingSeverityFilter: e.target.value})} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Toutes les sévérités</option><option value="severe">Critique</option><option value="material">Matériel</option><option value="moderate">Modéré</option><option value="minor">Mineur</option></select>
+          <select value={filters.findingVectorFilter} onChange={(e) => setFilters({...filters, findingVectorFilter: e.target.value})} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer max-w-[200px] truncate"><option value="all">Tous les vecteurs</option>{Object.entries(BITSIGHT_VECTOR_NAMES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
         </div>
         <div className="overflow-y-auto flex-1 p-0">
           <Table>
@@ -664,8 +603,11 @@ export default function BitsightPanel() {
       </div>
     </div>
   );
+};
 
-  const renderTechModal = () => (
+const TechModal = ({ isOpen, onClose, modalFilteredTechs, data, filters, setFilters }: any) => {
+  if (!isOpen) return null;
+  return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 transition-opacity">
       <div className="w-full max-w-[90vw] bg-card rounded-2xl shadow-2xl border border-border flex flex-col animate-in fade-in zoom-in-95 duration-200 h-[90vh]">
         <div className="flex items-center justify-between p-6 border-b border-border bg-secondary/20 rounded-t-2xl shrink-0">
@@ -673,103 +615,154 @@ export default function BitsightPanel() {
             <h3 className="text-xl font-black flex items-center gap-2 text-foreground"><Cpu className="w-6 h-6 text-purple-500" /> Inventaire des technologies</h3>
             <p className="text-sm text-muted-foreground mt-1">Affichage de {modalFilteredTechs.length} technologies sur un total de {data.techShadowIt.technologies.length}.</p>
           </div>
-          <button type="button" onClick={() => setIsTechModalOpen(false)} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5" /></button>
+          <button type="button" onClick={onClose} className="p-2 bg-background border border-border hover:bg-secondary rounded-full transition-colors"><X className="w-5 h-5" /></button>
         </div>
         <div className="flex flex-wrap gap-4 p-4 border-b border-border bg-secondary/5 shrink-0">
-          <div className="relative flex-1 min-w-[250px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input type="text" placeholder="Rechercher une technologie, version ou actif..." value={modalTechSearch} onChange={(e) => setModalTechSearch(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none" /></div>
-          <select value={modalTechRiskFilter} onChange={(e) => setModalTechRiskFilter(e.target.value)} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Tous les risques</option><option value="Élevé">Élevé</option><option value="Normal">Normal</option></select>
+          <div className="relative flex-1 min-w-[250px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><input type="text" placeholder="Rechercher une technologie, version ou actif..." value={filters.modalTechSearch} onChange={(e) => setFilters({...filters, modalTechSearch: e.target.value})} className="w-full pl-9 pr-4 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none" /></div>
+          <select value={filters.modalTechRiskFilter} onChange={(e) => setFilters({...filters, modalTechRiskFilter: e.target.value})} className="bg-background border border-border text-sm rounded-lg px-4 py-2 outline-none cursor-pointer"><option value="all">Tous les risques</option><option value="Élevé">Élevé</option><option value="Normal">Normal</option></select>
         </div>
         <div className="overflow-y-auto flex-1 p-0">
           <Table>
             <TableHeader className="sticky top-0 bg-card z-10 shadow-sm"><TableRow><TableHead className="pl-6">Technologie / Logiciel</TableHead><TableHead>Version</TableHead><TableHead>Actif Associé</TableHead><TableHead className="pr-6">Niveau de Risque</TableHead></TableRow></TableHeader>
             <TableBody>
               {modalFilteredTechs.length === 0 ? <TableRow><TableCell colSpan={4} className="text-center py-8 text-sm text-muted-foreground">Aucune technologie ne correspond.</TableCell></TableRow> : null}
-              {modalFilteredTechs.map((t: any) => {
-                const badgeProps = getSeverityBadgeProps(t.risk); // Reuse similar logic or custom
-                return (
-                  <TableRow key={t.id} className="hover:bg-secondary/40">
-                    <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
-                    <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
-                    <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
-                    <TableCell className="pr-6"><Badge variant={t.risk === 'Élevé' ? 'destructive' : 'secondary'}>{t.risk}</Badge></TableCell>
-                  </TableRow>
-                );
-              })}
+              {modalFilteredTechs.map((t: any) => (
+                <TableRow key={t.id} className="hover:bg-secondary/40">
+                  <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
+                  <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
+                  <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
+                  <TableCell className="pr-6"><Badge variant={getTechRiskBadgeVariant(t.risk)}>{t.risk}</Badge></TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         </div>
       </div>
     </div>
   );
+};
+
+const ExecutiveSummary = ({ data }: { data: any }) => {
+  const scoreStyles = getScoreCardStyles(data.executive.score);
+  const d30Style = getTrendStyle(data.executive.trends.d30);
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+      <Card className={`lg:col-span-2 border-l-4 ${scoreStyles.borderClass} bg-card shadow-sm flex flex-col justify-between`}>
+        <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">BitSight Rating</CardTitle>
+          <ShieldCheck className={`w-5 h-5 ${scoreStyles.iconClass}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-baseline gap-2">
+            <span className="text-5xl font-black tracking-tight text-foreground">{data.executive.score}</span>
+            <span className="text-sm text-muted-foreground font-medium">/ {data.executive.maxScore}</span>
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <Badge className={`${d30Style.bg} ${d30Style.color} font-bold border-none`}>
+              <d30Style.Icon className="w-3.5 h-3.5 mr-1" /> {data.executive.trends.d30} {data.executive.trends.d30 !== "N/A" && data.executive.trends.d30 !== "0" ? "pts (30j)" : ""}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="lg:col-span-1 bg-card shadow-sm flex flex-col justify-between">
+        <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Tendance</CardTitle></CardHeader>
+        <CardContent className="space-y-2 text-xs">
+          {['d7', 'd30', 'd90'].map(d => {
+            const trendStr = data.executive.trends[d as keyof typeof data.executive.trends];
+            const tStyle = getTrendStyle(trendStr);
+            return (
+              <div key={d} className="flex justify-between items-center">
+                <span>{d === 'd7' ? '7' : d === 'd30' ? '30' : '90'} jours:</span>
+                <span className={`font-bold flex items-center gap-1 ${tStyle.color}`}><tStyle.Icon className="w-3 h-3" /> {trendStr}</span>
+              </div>
+            );
+          })}
+        </CardContent>
+      </Card>
+
+      <Card className="lg:col-span-1 bg-card shadow-sm flex flex-col justify-between">
+        <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Benchmark</CardTitle></CardHeader>
+        <CardContent>
+          <div className={`text-2xl font-black ${data.executive.percentile === 'Sous la moyenne' ? 'text-orange-500' : 'text-blue-500'}`}>{data.executive.percentile}</div>
+          <p className="text-[11px] text-muted-foreground mt-1">Secteur: <strong className="uppercase">{data.executive.industryName}</strong></p>
+        </CardContent>
+      </Card>
+
+      <Card className="lg:col-span-1 bg-card shadow-sm flex flex-col justify-between">
+        <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Actifs Exposés</CardTitle></CardHeader>
+        <CardContent>
+          <div className="text-2xl font-black text-foreground">{data.executive.monitoredAssets.toLocaleString()}</div>
+          <p className="text-[11px] text-muted-foreground mt-1">Empreinte globale</p>
+        </CardContent>
+      </Card>
+
+      <Card className={`lg:col-span-1 border-t-4 ${data.executive.criticalRisks > 0 ? 'border-t-destructive' : 'border-t-emerald-500'} bg-card shadow-sm flex flex-col justify-between`}>
+        <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Risques Actifs</CardTitle></CardHeader>
+        <CardContent>
+          <div className={`text-2xl font-black ${data.executive.criticalRisks > 0 ? 'text-destructive' : 'text-emerald-500'}`}>{data.executive.criticalRisks} <span className="text-xs text-muted-foreground font-normal">sévères</span></div>
+          <p className="text-[11px] text-muted-foreground mt-1">Findings: {data.executive.totalFindings}</p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+// ============================================================================
+// COMPOSANT PRINCIPAL
+// ============================================================================
+
+export default function BitsightPanel() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['bitsight-real-data-v45'],
+    queryFn: fetchBitsightDetails,
+    refetchInterval: 1000 * 60 * 15,
+  });
+
+  const [selectedRisk, setSelectedRisk] = useState<any>(null);
+  const [isAssetsModalOpen, setIsAssetsModalOpen] = useState(false);
+  const [isFindingsModalOpen, setIsFindingsModalOpen] = useState(false);
+  const [selectedAssetForFindings, setSelectedAssetForFindings] = useState<string | null>(null);
+  const [isTechModalOpen, setIsTechModalOpen] = useState(false);
+
+  // Regroupement des filtres
+  const [filters, setFilters] = useState({
+    assetFilter: 'all' as 'all' | 'domains' | 'ips' | 'critical',
+    modalAssetSearch: "",
+    modalAssetTypeFilter: "all",
+    modalAssetRiskFilter: "all",
+    findingSeverityFilter: "all",
+    findingVectorFilter: "all",
+    modalFindingSearch: "",
+    modalTechSearch: "",
+    modalTechRiskFilter: "all"
+  });
+
+  const {
+    top10Assets, modalFilteredAssets, activeTopTechnologies,
+    top10Techs, modalFilteredTechs, displayFindings, dynamicSeverityDistribution, dynamicCategoryDistribution,
+    modalFilteredFindings, specificAssetFindings
+  } = useBitsightDataProcessing(data, filters, selectedAssetForFindings);
+
+  if (isLoading || !data) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 space-y-4">
+        <Globe className="w-10 h-10 text-emerald-500 animate-spin opacity-50" />
+        <p className="text-muted-foreground font-medium animate-pulse">Extraction des données brutes depuis BitSight...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 relative">
-      {selectedRisk && renderRiskModal()}
-      {isAssetsModalOpen && renderAssetsModal()}
-      {selectedAssetForFindings && renderSpecificAssetFindingsModal()}
-      {isFindingsModalOpen && renderFindingsModal()}
-      {isTechModalOpen && renderTechModal()}
+      <RiskModal selectedRisk={selectedRisk} onClose={() => setSelectedRisk(null)} />
+      <AssetsModal isOpen={isAssetsModalOpen} onClose={() => setIsAssetsModalOpen(false)} modalFilteredAssets={modalFilteredAssets} data={data} filters={filters} setFilters={setFilters} />
+      <SpecificAssetFindingsModal asset={selectedAssetForFindings} specificAssetFindings={specificAssetFindings} onClose={() => setSelectedAssetForFindings(null)} />
+      <FindingsModal isOpen={isFindingsModalOpen} onClose={() => setIsFindingsModalOpen(false)} modalFilteredFindings={modalFilteredFindings} data={data} filters={filters} setFilters={setFilters} setSelectedAssetForFindings={setSelectedAssetForFindings} />
+      <TechModal isOpen={isTechModalOpen} onClose={() => setIsTechModalOpen(false)} modalFilteredTechs={modalFilteredTechs} data={data} filters={filters} setFilters={setFilters} />
 
-      {/* 1. Bandeau Exécutif */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
-        <Card className={`lg:col-span-2 border-l-4 ${scoreStyles.borderClass} bg-card shadow-sm flex flex-col justify-between`}>
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">BitSight Rating</CardTitle>
-            <ShieldCheck className={`w-5 h-5 ${scoreStyles.iconClass}`} />
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-baseline gap-2">
-              <span className="text-5xl font-black tracking-tight text-foreground">{data.executive.score}</span>
-              <span className="text-sm text-muted-foreground font-medium">/ {data.executive.maxScore}</span>
-            </div>
-            <div className="mt-2 flex items-center gap-2">
-              <Badge className={`${d30Style.bg} ${d30Style.color} font-bold border-none`}>
-                <d30Style.Icon className="w-3.5 h-3.5 mr-1" /> {data.executive.trends.d30} {data.executive.trends.d30 !== "N/A" && data.executive.trends.d30 !== "0" ? "pts (30j)" : ""}
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-1 bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Tendance</CardTitle></CardHeader>
-          <CardContent className="space-y-2 text-xs">
-            {['d7', 'd30', 'd90'].map(d => {
-              const trendStr = data.executive.trends[d as keyof typeof data.executive.trends];
-              const tStyle = getTrendStyle(trendStr);
-              return (
-                <div key={d} className="flex justify-between items-center">
-                  <span>{d === 'd7' ? '7' : d === 'd30' ? '30' : '90'} jours:</span>
-                  <span className={`font-bold flex items-center gap-1 ${tStyle.color}`}><tStyle.Icon className="w-3 h-3" /> {trendStr}</span>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-1 bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Benchmark</CardTitle></CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-black ${data.executive.percentile === 'Sous la moyenne' ? 'text-orange-500' : 'text-blue-500'}`}>{data.executive.percentile}</div>
-            <p className="text-[11px] text-muted-foreground mt-1">Secteur: <strong className="uppercase">{data.executive.industryName}</strong></p>
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-1 bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Actifs Exposés</CardTitle></CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-foreground">{data.executive.monitoredAssets.toLocaleString()}</div>
-            <p className="text-[11px] text-muted-foreground mt-1">Empreinte globale</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`lg:col-span-1 border-t-4 ${data.executive.criticalRisks > 0 ? 'border-t-destructive' : 'border-t-emerald-500'} bg-card shadow-sm flex flex-col justify-between`}>
-          <CardHeader className="pb-2"><CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Risques Actifs</CardTitle></CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-black ${data.executive.criticalRisks > 0 ? 'text-destructive' : 'text-emerald-500'}`}>{data.executive.criticalRisks} <span className="text-xs text-muted-foreground font-normal">sévères</span></div>
-            <p className="text-[11px] text-muted-foreground mt-1">Findings: {data.executive.totalFindings}</p>
-          </CardContent>
-        </Card>
-      </div>
+      <ExecutiveSummary data={data} />
 
       {/* 2. Score & Posture */}
       <Card className="border border-border shadow-sm">
@@ -886,18 +879,18 @@ export default function BitsightPanel() {
           </AccordionTrigger>
           <AccordionContent className="p-6 space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-              <div role="button" tabIndex={0} onClick={() => setAssetFilter(prev => prev === 'domains' ? 'all' : 'domains')} onKeyDown={(e) => { if (e.key === 'Enter') setAssetFilter(prev => prev === 'domains' ? 'all' : 'domains'); }} className={`p-4 border rounded-xl cursor-pointer transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 ${assetFilter === 'domains' ? 'bg-blue-500/20 border-blue-500 ring-2 ring-blue-500/50' : 'bg-secondary/20 border-border hover:bg-secondary/40'}`}>
+              <button type="button" onClick={() => setFilters(p => ({...p, assetFilter: p.assetFilter === 'domains' ? 'all' : 'domains'}))} className={`p-4 border rounded-xl cursor-pointer transition-all focus:outline-none w-full text-center flex flex-col items-center justify-center ${getAssetFilterStyle(filters.assetFilter, 'domains')}`}>
                 <span className="block text-2xl font-black text-foreground">{data.attackSurface.domainsCount || 0}</span>
                 <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Domaines & Sous-domaines</span>
-              </div>
-              <div role="button" tabIndex={0} onClick={() => setAssetFilter(prev => prev === 'ips' ? 'all' : 'ips')} onKeyDown={(e) => { if (e.key === 'Enter') setAssetFilter(prev => prev === 'ips' ? 'all' : 'ips'); }} className={`p-4 border rounded-xl cursor-pointer transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 ${assetFilter === 'ips' ? 'bg-blue-500/20 border-blue-500 ring-2 ring-blue-500/50' : 'bg-secondary/20 border-border hover:bg-secondary/40'}`}>
+              </button>
+              <button type="button" onClick={() => setFilters(p => ({...p, assetFilter: p.assetFilter === 'ips' ? 'all' : 'ips'}))} className={`p-4 border rounded-xl cursor-pointer transition-all focus:outline-none w-full text-center flex flex-col items-center justify-center ${getAssetFilterStyle(filters.assetFilter, 'ips')}`}>
                 <span className="block text-2xl font-black text-foreground">{data.attackSurface.publicIpsCount || 0}</span>
                 <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">IPs Publiques</span>
-              </div>
-              <div role="button" tabIndex={0} onClick={() => setAssetFilter(prev => prev === 'critical' ? 'all' : 'critical')} onKeyDown={(e) => { if (e.key === 'Enter') setAssetFilter(prev => prev === 'critical' ? 'all' : 'critical'); }} className={`p-4 border rounded-xl cursor-pointer transition-all focus:outline-none focus:ring-2 focus:ring-destructive ${assetFilter === 'critical' ? 'bg-destructive/20 border-destructive ring-2 ring-destructive/50' : 'bg-destructive/10 border-destructive/20 hover:bg-destructive/20'}`}>
+              </button>
+              <button type="button" onClick={() => setFilters(p => ({...p, assetFilter: p.assetFilter === 'critical' ? 'all' : 'critical'}))} className={`p-4 border rounded-xl cursor-pointer transition-all focus:outline-none w-full text-center flex flex-col items-center justify-center ${getAssetFilterStyle(filters.assetFilter, 'critical')}`}>
                 <span className="block text-2xl font-black text-destructive">{data.attackSurface.criticalAssetsCount || 0}</span>
                 <span className="text-[11px] font-bold text-destructive uppercase tracking-wider">Actifs Critiques</span>
-              </div>
+              </button>
             </div>
             <div className="p-5 border border-border rounded-xl">
               <h5 className="text-xs font-bold text-muted-foreground uppercase mb-4">Top 5 Technologies Exposées</h5>
@@ -937,7 +930,7 @@ export default function BitsightPanel() {
                         <TableRow key={a.id}>
                           <TableCell className="font-mono text-xs font-bold text-foreground">{a.asset}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{a.type}</TableCell>
-                          <TableCell className="text-xs font-mono text-muted-foreground uppercase">{a.vendors && a.vendors.length > 0 ? a.vendors.slice(0, 2).join(', ') : "-"}</TableCell>
+                          <TableCell className="text-xs font-mono text-muted-foreground uppercase">{a.vendors?.length > 0 ? a.vendors.slice(0, 2).join(', ') : "-"}</TableCell>
                           <TableCell><Badge variant={badgeProps.variant} className={badgeProps.className}>{a.riskLevel}</Badge></TableCell>
                           <TableCell className="font-bold text-sm text-right text-destructive">{a.findings}</TableCell>
                         </TableRow>
@@ -974,8 +967,8 @@ export default function BitsightPanel() {
               <div className="p-4 border border-border rounded-xl flex flex-col">
                 <div className="flex justify-between items-center mb-4">
                   <h5 className="text-xs font-bold text-muted-foreground uppercase">Répartition Sévérité</h5>
-                  {findingSeverityFilter !== "all" && (
-                    <button type="button" className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold cursor-pointer bg-red-500/10 text-red-500 hover:bg-red-500/20 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-red-500" onClick={() => setFindingSeverityFilter("all")}>
+                  {filters.findingSeverityFilter !== "all" && (
+                    <button type="button" className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold cursor-pointer bg-red-500/10 text-red-500 hover:bg-red-500/20 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-red-500" onClick={() => setFilters(p => ({...p, findingSeverityFilter: "all"}))}>
                       Effacer <X className="w-3 h-3 ml-1" />
                     </button>
                   )}
@@ -994,11 +987,11 @@ export default function BitsightPanel() {
                           barSize={40}
                           style={{ cursor: 'pointer' }}
                           onClick={(chartData) => {
-                            setFindingSeverityFilter(prev => prev === chartData.key ? "all" : chartData.key);
+                            setFilters(p => ({...p, findingSeverityFilter: p.findingSeverityFilter === chartData.key ? "all" : chartData.key}));
                           }}
                         >
                           {dynamicSeverityDistribution.map((entry: any) => {
-                            const isSelected = findingSeverityFilter === "all" || findingSeverityFilter === entry.key;
+                            const isSelected = filters.findingSeverityFilter === "all" || filters.findingSeverityFilter === entry.key;
                             return <Cell key={`cell-${entry.key}`} fill={entry.color} opacity={isSelected ? 1 : 0.3} className="transition-opacity duration-300" />;
                           })}
                         </Bar>
@@ -1011,8 +1004,8 @@ export default function BitsightPanel() {
               <div className="p-4 border border-border rounded-xl md:col-span-2 flex flex-col">
                 <div className="flex justify-between items-center mb-4">
                   <h5 className="text-xs font-bold text-muted-foreground uppercase">Top 10 Catégories (Cliquez pour filtrer)</h5>
-                  {findingVectorFilter !== "all" && (
-                    <button type="button" className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold cursor-pointer bg-orange-500/10 text-orange-500 hover:bg-orange-500/20 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500" onClick={() => setFindingVectorFilter("all")}>
+                  {filters.findingVectorFilter !== "all" && (
+                    <button type="button" className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold cursor-pointer bg-orange-500/10 text-orange-500 hover:bg-orange-500/20 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500" onClick={() => setFilters(p => ({...p, findingVectorFilter: "all"}))}>
                       Effacer <X className="w-3 h-3 ml-1" />
                     </button>
                   )}
@@ -1030,11 +1023,11 @@ export default function BitsightPanel() {
                           barSize={15}
                           style={{ cursor: 'pointer' }}
                           onClick={(chartData) => {
-                            setFindingVectorFilter(prev => prev === chartData.vectorKey ? "all" : chartData.vectorKey);
+                            setFilters(p => ({...p, findingVectorFilter: p.findingVectorFilter === chartData.vectorKey ? "all" : chartData.vectorKey}));
                           }}
                         >
                           {dynamicCategoryDistribution.map((entry: any) => {
-                            const isSelected = findingVectorFilter === "all" || findingVectorFilter === entry.vectorKey;
+                            const isSelected = filters.findingVectorFilter === "all" || filters.findingVectorFilter === entry.vectorKey;
                             return <Cell key={`cell-${entry.vectorKey}`} fill="#f97316" opacity={isSelected ? 1 : 0.3} className="transition-opacity duration-300" />;
                           })}
                         </Bar>
@@ -1047,14 +1040,14 @@ export default function BitsightPanel() {
 
             <div className="flex flex-wrap items-center gap-4 py-4 border-t border-b border-border bg-secondary/5 px-4 rounded-lg">
               <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium"><Filter className="w-4 h-4" /> Filtres Tableau :</div>
-              <select value={findingSeverityFilter} onChange={(e) => setFindingSeverityFilter(e.target.value)} className="bg-background border border-border text-foreground text-sm rounded-md px-3 py-1.5 focus:ring-2 focus:ring-orange-500 outline-none cursor-pointer">
+              <select value={filters.findingSeverityFilter} onChange={(e) => setFilters(p => ({...p, findingSeverityFilter: e.target.value}))} className="bg-background border border-border text-foreground text-sm rounded-md px-3 py-1.5 focus:ring-2 focus:ring-orange-500 outline-none cursor-pointer">
                 <option value="all">Sévérité : Toutes</option>
                 <option value="severe">Sévérité : Critique</option>
                 <option value="material">Sévérité : Matériel</option>
                 <option value="moderate">Sévérité : Modéré</option>
                 <option value="minor">Sévérité : Mineur</option>
               </select>
-              <select value={findingVectorFilter} onChange={(e) => setFindingVectorFilter(e.target.value)} className="bg-background border border-border text-foreground text-sm rounded-md px-3 py-1.5 focus:ring-2 focus:ring-orange-500 outline-none cursor-pointer max-w-[200px] truncate">
+              <select value={filters.findingVectorFilter} onChange={(e) => setFilters(p => ({...p, findingVectorFilter: e.target.value}))} className="bg-background border border-border text-foreground text-sm rounded-md px-3 py-1.5 focus:ring-2 focus:ring-orange-500 outline-none cursor-pointer max-w-[200px] truncate">
                 <option value="all">Vecteur : Tous</option>
                 {Object.entries(BITSIGHT_VECTOR_NAMES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
               </select>
@@ -1106,13 +1099,13 @@ export default function BitsightPanel() {
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10"><div className="flex items-center gap-3 text-base font-bold"><Lock className="w-5 h-5 text-emerald-500" /> 6. Hygiène Internet</div></AccordionTrigger>
           <AccordionContent className="p-6">
              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className={`p-5 border rounded-xl space-y-4 ${data.hygiene.ssl.grade === 'A' || data.hygiene.ssl.grade === 'B' ? 'border-emerald-500/20 bg-emerald-500/5' : data.hygiene.ssl.grade === 'N/A' ? 'border-border bg-secondary/10' : 'border-destructive/20 bg-destructive/5'}`}>
+                <div className={`p-5 border rounded-xl space-y-4 ${getHygieneCardClass(data.hygiene.ssl.grade)}`}>
                   <div className="flex justify-between items-start">
                     <div>
                       <span className="font-black text-base flex items-center gap-2"><Lock className="w-4 h-4"/> SSL / TLS</span>
                       <span className="text-xs font-bold text-muted-foreground mt-1 block uppercase tracking-wide">{data.hygiene.ssl.status}</span>
                     </div>
-                    <Badge className={`text-lg font-black ${data.hygiene.ssl.grade === 'A' || data.hygiene.ssl.grade === 'B' ? 'bg-emerald-500' : data.hygiene.ssl.grade === 'N/A' ? 'bg-slate-500' : 'bg-destructive'}`}>
+                    <Badge className={`text-lg font-black ${getHygieneBadgeClass(data.hygiene.ssl.grade)}`}>
                       {data.hygiene.ssl.grade}
                     </Badge>
                   </div>
@@ -1123,13 +1116,13 @@ export default function BitsightPanel() {
                   </div>
                 </div>
 
-                <div className={`p-5 border rounded-xl space-y-4 ${data.hygiene.dns.grade === 'A' || data.hygiene.dns.grade === 'B' ? 'border-emerald-500/20 bg-emerald-500/5' : data.hygiene.dns.grade === 'N/A' ? 'border-border bg-secondary/10' : 'border-destructive/20 bg-destructive/5'}`}>
+                <div className={`p-5 border rounded-xl space-y-4 ${getHygieneCardClass(data.hygiene.dns.grade)}`}>
                   <div className="flex justify-between items-start">
                     <div>
                       <span className="font-black text-base flex items-center gap-2"><Mail className="w-4 h-4"/> Sécurité Email (DNS)</span>
                       <span className="text-xs font-bold text-muted-foreground mt-1 block uppercase tracking-wide">{data.hygiene.dns.status}</span>
                     </div>
-                    <Badge className={`text-lg font-black ${data.hygiene.dns.grade === 'A' || data.hygiene.dns.grade === 'B' ? 'bg-emerald-500' : data.hygiene.dns.grade === 'N/A' ? 'bg-slate-500' : 'bg-destructive'}`}>
+                    <Badge className={`text-lg font-black ${getHygieneBadgeClass(data.hygiene.dns.grade)}`}>
                       {data.hygiene.dns.grade}
                     </Badge>
                   </div>
@@ -1140,13 +1133,13 @@ export default function BitsightPanel() {
                   </div>
                 </div>
 
-                <div className={`p-5 border rounded-xl space-y-4 ${data.hygiene.ports.grade === 'A' || data.hygiene.ports.grade === 'B' ? 'border-emerald-500/20 bg-emerald-500/5' : data.hygiene.ports.grade === 'N/A' ? 'border-border bg-secondary/10' : 'border-destructive/20 bg-destructive/5'}`}>
+                <div className={`p-5 border rounded-xl space-y-4 ${getHygieneCardClass(data.hygiene.ports.grade)}`}>
                   <div className="flex justify-between items-start">
                     <div>
                       <span className="font-black text-base flex items-center gap-2"><Network className="w-4 h-4"/> Services & Ports</span>
                       <span className="text-xs font-bold text-muted-foreground mt-1 block uppercase tracking-wide">{data.hygiene.ports.status}</span>
                     </div>
-                    <Badge className={`text-lg font-black ${data.hygiene.ports.grade === 'A' || data.hygiene.ports.grade === 'B' ? 'bg-emerald-500' : data.hygiene.ports.grade === 'N/A' ? 'bg-slate-500' : 'bg-destructive'}`}>
+                    <Badge className={`text-lg font-black ${getHygieneBadgeClass(data.hygiene.ports.grade)}`}>
                       {data.hygiene.ports.grade}
                     </Badge>
                   </div>
@@ -1181,21 +1174,18 @@ export default function BitsightPanel() {
                   </TableHeader>
                   <TableBody>
                     {top10Techs.length === 0 ? <TableRow><TableCell colSpan={4} className="text-center py-6 text-xs text-muted-foreground">Aucune technologie recensée</TableCell></TableRow> : null}
-                    {top10Techs.map((t: any) => {
-                      const badgeProps = getSeverityBadgeProps(t.risk);
-                      return (
-                        <TableRow key={t.id}>
-                          <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
-                          <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
-                          <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
-                          <TableCell>
-                            <Badge variant={badgeProps.variant} className={badgeProps.className}>
-                              {t.risk}
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
+                    {top10Techs.map((t: any) => (
+                      <TableRow key={t.id}>
+                        <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
+                        <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
+                        <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
+                        <TableCell>
+                          <Badge variant={getTechRiskBadgeVariant(t.risk)}>
+                            {t.risk}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
              </div>
