@@ -2,9 +2,9 @@ import React from "react";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import {
-  Globe, ServerCrash, Cloud, Database,
+  Globe, ServerCrash, Cloud,
   TrendingUp, TrendingDown, BadgeEuro,
-  Lock, Scale, ArrowUpRight, ShieldCheck, Cpu, AlertTriangle
+  Lock, Scale, ArrowUpRight, ShieldCheck, Cpu
 } from "lucide-react";
 
 export default function ExecutivePanel() {
@@ -132,10 +132,10 @@ export default function ExecutivePanel() {
 
       {/* 2. SYNTHÈSE PAR GRAND PILIER MÉTIER */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {executiveData.pillars.map((pillar, index) => {
+        {executiveData.pillars.map((pillar) => {
           const IconComp = pillar.icon;
           return (
-            <div key={index} className={`p-6 rounded-2xl border border-border bg-card shadow-sm border-l-4 ${pillar.color} flex flex-col justify-between space-y-4`}>
+            <div key={pillar.title} className={`p-6 rounded-2xl border border-border bg-card shadow-sm border-l-4 ${pillar.color} flex flex-col justify-between space-y-4`}>
               <div className="space-y-3">
                 <div className="flex justify-between items-start">
                   <span className="text-xs font-bold uppercase tracking-wide flex items-center gap-2 text-foreground">
@@ -163,8 +163,8 @@ export default function ExecutivePanel() {
              <Scale className="w-5 h-5 text-primary" /> Notes d'Arbitrage & Décisions Requises (Comité des Risques)
            </h3>
            <div className="space-y-4 pt-2">
-             {executiveData.decisions.map((dec, i) => (
-               <div key={i} className="p-4 rounded-xl border border-border bg-secondary/5 space-y-2">
+             {executiveData.decisions.map((dec) => (
+               <div key={dec.axis} className="p-4 rounded-xl border border-border bg-secondary/5 space-y-2">
                  <div className="flex justify-between items-center">
                    <span className="font-bold text-sm text-foreground flex items-center gap-2">
                      <ArrowUpRight className="w-4 h-4 text-blue-500"/> {dec.axis}
