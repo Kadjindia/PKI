@@ -443,9 +443,8 @@ export default function CortexPanel() {
 
   const uniqueOSList = useMemo(() => {
     if (!inventoryData) return [];
-    // Correction SonarQube : Typage explicite stringify-safe pour le tri alphabétique
-    const osSet = new Set(inventoryData.map(ep => ep.operating_system).filter(Boolean));
-    return Array.from(osSet).sort((a: unknown, b: unknown) => String(a).localeCompare(String(b)));
+    const osSet = new Set(inventoryData.map(ep => ep.operating_system).filter((os): os is string => typeof os === 'string' && os.trim() !== ""));
+    return Array.from(osSet).sort((a, b) => a.localeCompare(b));
   }, [inventoryData]);
 
   const filteredInventory = useMemo(() => {
