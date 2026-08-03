@@ -1,4 +1,7 @@
 import React from "react";
+import { useQuery } from "@tanstack/react-query";
+import { callQradarApi } from "@/services/qradarService";
+
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger
 } from "@/components/ui/accordion";
@@ -11,7 +14,7 @@ import { Progress } from "@/components/ui/progress";
 
 import {
   Radar, Activity, ShieldAlert, Target, Database, Network,
-  Clock, AlertTriangle, AlertOctagon, CheckCircle2, TrendingDown, TrendingUp
+  Clock, AlertTriangle, AlertOctagon, CheckCircle2, TrendingDown, TrendingUp, Loader2
 } from "lucide-react";
 
 import {
@@ -19,84 +22,102 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend
 } from "recharts";
 
-export default function QradarPanel() {
-  // --- MOCK DATA ENTERPRISE (Scale : 4000 collaborateurs) ---
-  const data = {
-    // 1. Executive Summary SOC
-    kpis: {
-      mttd: "14m", mttr: "2.5h",
-      mttrTrend: "-15m",
-      falsePositiveRate: 18,
-      epsAvg: "14 500",
-      epsPeak: "22 400",
-      logsVolume: "4.5 TB / jour",
-      activeCriticalOffenses: 34,
-      totalOffenses30d: 1749
-    },
-
-    // 2. Tendances & Volumes
-    trends: {
-      offensesOverTime: [
-        { day: '01', alerts: 120, critical: 1 }, { day: '05', alerts: 250, critical: 5 },
-        { day: '10', alerts: 180, critical: 2 }, { day: '15', alerts: 450, critical: 12 },
-        { day: '20', alerts: 200, critical: 3 }, { day: '25', alerts: 300, critical: 8 },
-        { day: '30', alerts: 150, critical: 3 }
-      ],
-      resolutionFunnel: [
-        { step: 'Alertes Brutes', value: 850000 },
-        { step: 'Événements Corrélés', value: 45000 },
-        { step: 'Offenses Générées', value: 1749 },
-        { step: 'Escalades N2/N3', value: 145 },
-        { step: 'Incidents Majeurs', value: 34 }
-      ]
-    },
-
-    // 3. Offenses Actives Prioritaires
-    priorityOffenses: [
-      { id: "OFF-10452", description: "Mouvement Latéral Improbable (AD)", magnitude: 8, source: "10.50.2.14", target: "10.10.1.5 (SRV-DB)", status: "Assigné (SOC N2)", time: "Il y a 2h" },
-      { id: "OFF-10453", description: "Exfiltration massive suspectée vers IP Tor", magnitude: 9, source: "10.50.3.88", target: "185.20.3.4", status: "Investigation", time: "Il y a 4h" },
-      { id: "OFF-10454", description: "Multiples échecs d'auth. VPN (Brute Force)", magnitude: 7, source: "89.123.45.6", target: "VPN Gateway", status: "Nouveau", time: "Il y a 30m" }
+// --- MOCK DATA ENTERPRISE (Fallback si l'API ne répond pas ou en mode démo) ---
+const MOCK_QRADAR_DATA = {
+  kpis: {
+    mttd: "14m", mttr: "2.5h",
+    mttrTrend: "-15m",
+    falsePositiveRate: 18,
+    epsAvg: "14 500",
+    epsPeak: "22 400",
+    logsVolume: "4.5 TB / jour",
+    activeCriticalOffenses: 34,
+    totalOffenses30d: 1749
+  },
+  trends: {
+    offensesOverTime: [
+      { day: '01', alerts: 120, critical: 1 }, { day: '05', alerts: 250, critical: 5 },
+      { day: '10', alerts: 180, critical: 2 }, { day: '15', alerts: 450, critical: 12 },
+      { day: '20', alerts: 200, critical: 3 }, { day: '25', alerts: 300, critical: 8 },
+      { day: '30', alerts: 150, critical: 3 }
     ],
-
-    // 4. Couverture MITRE ATT&CK
-    mitreHeatmap: [
-      { tactic: "Initial Access", score: 85, color: "bg-destructive" },
-      { tactic: "Execution", score: 40, color: "bg-orange-500" },
-      { tactic: "Persistence", score: 20, color: "bg-yellow-500" },
-      { tactic: "Privilege Esc.", score: 60, color: "bg-orange-500" },
-      { tactic: "Defense Evasion", score: 30, color: "bg-yellow-500" },
-      { tactic: "Credential Access", score: 95, color: "bg-destructive" },
-      { tactic: "Discovery", score: 50, color: "bg-orange-500" },
-      { tactic: "Lateral Movement", score: 75, color: "bg-destructive" },
-      { tactic: "Collection", score: 15, color: "bg-emerald-500" },
-      { tactic: "Exfiltration", score: 25, color: "bg-yellow-500" }
-    ],
-
-    // 5. Santé des Sources de Logs
-    logSources: [
-      { type: "Firewalls (Palo Alto)", count: 12, eps: "8 500", volume: "2.1 TB", status: "100% (Sain)" },
-      { type: "Active Directory (DCs)", count: 4, eps: "3 200", volume: "850 GB", status: "100% (Sain)" },
-      { type: "EDR (Trend Micro)", count: 4000, eps: "1 500", volume: "450 GB", status: "100% (Sain)" },
-      { type: "Serveurs Linux (DMZ)", count: 145, eps: "300", volume: "85 GB", status: "Angle mort (60%)" },
-      { type: "Applications Métier", count: 8, eps: "1000", volume: "1.0 TB", status: "Erreurs de parsing" }
-    ],
-
-    // 6. Top Règles de Corrélation
-    topRules: [
-      { name: "Multiples échecs d'authentification suivis d'un succès", category: "Credential Access", count: 450, fpRate: "25%" },
-      { name: "Connexion VPN depuis une IP géolocalisée à risque", category: "Initial Access", count: 320, fpRate: "5%" },
-      { name: "Exécution de PowerShell encodé", category: "Execution", count: 145, fpRate: "12%" },
-      { name: "Découverte de réseau / Scan de ports", category: "Discovery", count: 85, fpRate: "45%" }
-    ],
-
-    // 7. Statistiques par Segment / Asset
-    segments: [
-      { name: "LAN Utilisateurs (VLAN 10-50)", alerts: 1050, critical: 12, risk: "Moyen", trend: "Stable" },
-      { name: "DMZ Web (VLAN 100)", alerts: 420, critical: 18, risk: "Élevé", trend: "En hausse" },
-      { name: "Datacenter Core (VLAN 200)", alerts: 145, critical: 4, risk: "Moyen", trend: "En baisse" },
-      { name: "Réseau Invités", alerts: 134, critical: 0, risk: "Faible", trend: "Stable" }
+    resolutionFunnel: [
+      { step: 'Alertes Brutes', value: 850000 },
+      { step: 'Événements Corrélés', value: 45000 },
+      { step: 'Offenses Générées', value: 1749 },
+      { step: 'Escalades N2/N3', value: 145 },
+      { step: 'Incidents Majeurs', value: 34 }
     ]
-  };
+  },
+  priorityOffenses: [
+    { id: "OFF-10452", description: "Mouvement Latéral Improbable (AD)", magnitude: 8, source: "10.50.2.14", target: "10.10.1.5 (SRV-DB)", status: "Assigné (SOC N2)", time: "Il y a 2h" },
+    { id: "OFF-10453", description: "Exfiltration massive suspectée vers IP Tor", magnitude: 9, source: "10.50.3.88", target: "185.20.3.4", status: "Investigation", time: "Il y a 4h" },
+    { id: "OFF-10454", description: "Multiples échecs d'auth. VPN (Brute Force)", magnitude: 7, source: "89.123.45.6", target: "VPN Gateway", status: "Nouveau", time: "Il y a 30m" }
+  ],
+  mitreHeatmap: [
+    { tactic: "Initial Access", score: 85, color: "bg-destructive" },
+    { tactic: "Execution", score: 40, color: "bg-orange-500" },
+    { tactic: "Persistence", score: 20, color: "bg-yellow-500" },
+    { tactic: "Privilege Esc.", score: 60, color: "bg-orange-500" },
+    { tactic: "Defense Evasion", score: 30, color: "bg-yellow-500" },
+    { tactic: "Credential Access", score: 95, color: "bg-destructive" },
+    { tactic: "Discovery", score: 50, color: "bg-orange-500" },
+    { tactic: "Lateral Movement", score: 75, color: "bg-destructive" },
+    { tactic: "Collection", score: 15, color: "bg-emerald-500" },
+    { tactic: "Exfiltration", score: 25, color: "bg-yellow-500" }
+  ],
+  logSources: [
+    { type: "Firewalls (Palo Alto)", count: 12, eps: "8 500", volume: "2.1 TB", status: "100% (Sain)" },
+    { type: "Active Directory (DCs)", count: 4, eps: "3 200", volume: "850 GB", status: "100% (Sain)" },
+    { type: "EDR (Trend Micro)", count: 4000, eps: "1 500", volume: "450 GB", status: "100% (Sain)" },
+    { type: "Serveurs Linux (DMZ)", count: 145, eps: "300", volume: "85 GB", status: "Angle mort (60%)" },
+    { type: "Applications Métier", count: 8, eps: "1000", volume: "1.0 TB", status: "Erreurs de parsing" }
+  ],
+  topRules: [
+    { name: "Multiples échecs d'authentification suivis d'un succès", category: "Credential Access", count: 450, fpRate: "25%" },
+    { name: "Connexion VPN depuis une IP géolocalisée à risque", category: "Initial Access", count: 320, fpRate: "5%" },
+    { name: "Exécution de PowerShell encodé", category: "Execution", count: 145, fpRate: "12%" },
+    { name: "Découverte de réseau / Scan de ports", category: "Discovery", count: 85, fpRate: "45%" }
+  ],
+  segments: [
+    { name: "LAN Utilisateurs (VLAN 10-50)", alerts: 1050, critical: 12, risk: "Moyen", trend: "Stable" },
+    { name: "DMZ Web (VLAN 100)", alerts: 420, critical: 18, risk: "Élevé", trend: "En hausse" },
+    { name: "Datacenter Core (VLAN 200)", alerts: 145, critical: 4, risk: "Moyen", trend: "En baisse" },
+    { name: "Réseau Invités", alerts: 134, critical: 0, risk: "Faible", trend: "Stable" }
+  ]
+};
+
+// Fonction de récupération fetch via l'Edge Function QRadar
+const fetchQradarData = async () => {
+  try {
+    // Exemple d'appel vers l'API QRadar /siem/offenses (à adapter selon vos endpoints réels)
+    const offenses = await callQradarApi('/siem/offenses', 'GET', { range: '0-9' });
+
+    // Si l'API répond, vous pouvez mapper les vraies données ici.
+    // Si vous préférez utiliser le mock en attendant que vos routes QRadar soient prêtes,
+    // vous pouvez retourner MOCK_QRADAR_DATA directement ou fusionner les deux.
+    return MOCK_QRADAR_DATA;
+  } catch (error) {
+    console.warn("⚠️ Impossible de joindre l'API QRadar en direct, bascule sur les données de démonstration.", error);
+    return MOCK_QRADAR_DATA;
+  }
+};
+
+export default function QradarPanel() {
+  const { data = MOCK_QRADAR_DATA, isLoading } = useQuery({
+    queryKey: ['qradar-secure-data'],
+    queryFn: fetchQradarData,
+    refetchInterval: 1000 * 60 * 15, // Actualisation toutes les 15 minutes
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 space-y-4">
+        <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
+        <p className="text-muted-foreground font-medium animate-pulse">Connexion sécurisée au SIEM QRadar...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -185,7 +206,7 @@ export default function QradarPanel() {
       </div>
 
       {/* ==============================================================================
-          2. SECTION : PERFORMANCE & TENDANCE (OUVERTE PAR DÉFAUT)
+          2. SECTION : PERFORMANCE & TENDANCE
           ============================================================================== */}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10">
@@ -196,7 +217,6 @@ export default function QradarPanel() {
         <CardContent className="p-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-            {/* Graphique d'évolution des offenses */}
             <div className="lg:col-span-2 space-y-2">
               <h4 className="text-xs font-bold text-muted-foreground uppercase">Volume d'Offenses (30 jours)</h4>
               <div className="h-64 w-full pt-4">
@@ -214,7 +234,6 @@ export default function QradarPanel() {
               </div>
             </div>
 
-            {/* Entonnoir de Résolution */}
             <div className="space-y-4">
               <h4 className="text-xs font-bold text-muted-foreground uppercase">Entonnoir de Résolution (Funnel)</h4>
               <div className="space-y-2">
@@ -233,7 +252,7 @@ export default function QradarPanel() {
       </Card>
 
       {/* ==============================================================================
-          3. SECTION : OFFENSES ACTIVES PRIORITAIRES (OUVERTE PAR DÉFAUT)
+          3. SECTION : OFFENSES ACTIVES PRIORITAIRES
           ============================================================================== */}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">

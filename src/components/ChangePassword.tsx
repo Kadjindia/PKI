@@ -16,6 +16,15 @@ interface ValidationItemProps {
   text: string;
 }
 
+function ValidationItem({ isValid, text }: ValidationItemProps) {
+  return (
+    <li className={`flex items-center text-sm mt-1 transition-colors duration-200 ${isValid ? 'text-green-600' : 'text-gray-400'}`}>
+      {isValid ? <FaCheckCircle className="mr-2" /> : <FaRegCircle className="mr-2" />}
+      {text}
+    </li>
+  );
+}
+
 export default function ChangePassword() {
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -39,7 +48,7 @@ export default function ChangePassword() {
       length: newPassword.length >= 15,
       cases: /[A-Z]/.test(newPassword) && /[a-z]/.test(newPassword),
       number: /\d/.test(newPassword),
-      special: /[@$!%*?&_#\-]/.test(newPassword),
+      special: /[@$!%*?&_#-]/.test(newPassword),
     });
   }, [newPassword]);
 
@@ -64,7 +73,7 @@ export default function ChangePassword() {
 
     const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (userError || !user || !user.email) {
+    if (userError || !user?.email) {
       setError("Erreur : Impossible d'identifier l'utilisateur.");
       setLoading(false);
       return;
@@ -99,13 +108,6 @@ export default function ChangePassword() {
     }
   };
 
-  const ValidationItem = ({ isValid, text }: ValidationItemProps) => (
-    <li className={`flex items-center text-sm mt-1 transition-colors duration-200 ${isValid ? 'text-green-600' : 'text-gray-400'}`}>
-      {isValid ? <FaCheckCircle className="mr-2" /> : <FaRegCircle className="mr-2" />}
-      {text}
-    </li>
-  );
-
   return (
     <div className="w-full">
       <h2 className="text-xl font-semibold text-gray-800 mb-4">Modifier mon mot de passe</h2>
@@ -115,10 +117,11 @@ export default function ChangePassword() {
 
       <form onSubmit={handleUpdatePassword} className="space-y-4">
         <div>
-          <label className="block text-gray-600 text-sm mb-1">Mot de passe actuel</label>
+          <label htmlFor="old-password" className="block text-gray-600 text-sm mb-1">Mot de passe actuel</label>
           <div className="relative">
             <FaUnlockAlt className="absolute left-3 top-3 text-gray-400" />
             <input
+              id="old-password"
               type="password"
               value={oldPassword}
               onChange={(e) => setOldPassword(e.target.value)}
@@ -131,10 +134,11 @@ export default function ChangePassword() {
         <hr className="border-gray-200 my-4" />
 
         <div>
-          <label className="block text-gray-600 text-sm mb-1">Nouveau mot de passe</label>
+          <label htmlFor="new-password" className="block text-gray-600 text-sm mb-1">Nouveau mot de passe</label>
           <div className="relative">
             <FaLock className="absolute left-3 top-3 text-gray-400" />
             <input
+              id="new-password"
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
@@ -152,10 +156,11 @@ export default function ChangePassword() {
         </div>
 
         <div>
-          <label className="block text-gray-600 text-sm mb-1">Confirmer le nouveau mot de passe</label>
+          <label htmlFor="confirm-password" className="block text-gray-600 text-sm mb-1">Confirmer le nouveau mot de passe</label>
           <div className="relative">
             <FaLock className="absolute left-3 top-3 text-gray-400" />
             <input
+              id="confirm-password"
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
