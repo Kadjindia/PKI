@@ -77,7 +77,7 @@ const HR_MAPPING_STORAGE_KEY = "cortex_hr_mapping_v1";
 const HR_MAPPING_META_STORAGE_KEY = "cortex_hr_mapping_meta_v1";
 
 // ----------------------------------------------------------------------------
-// Fonctions API & Logiques
+// Fonctions API & Logiques (Complexité réduite)
 // ----------------------------------------------------------------------------
 
 const apiCall = async (endpoint: string, payload: any) => {
@@ -90,6 +90,19 @@ const apiCall = async (endpoint: string, payload: any) => {
     return { ok: false, status: 500, json: async () => ({}) };
   }
   return { ok: true, status: 200, json: async () => data };
+};
+
+const pollSingleQueryAttempt = async (queryId: string) => {
+  const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
+  if ([450, 429, 500].includes(pollRes.status)) {
+    await new Promise(r => setTimeout(r, 3000));
+    return { status: "RETRY" };
+  }
+  if (!pollRes.ok) return { status: "RETRY" };
+  const pollData = await pollRes.json();
+  if (pollData.reply?.status === "SUCCESS") return { status: "SUCCESS", data: pollData.reply.results?.data || [] };
+  if (["FAIL", "FAILED"].includes(pollData.reply?.status)) return { status: "FAIL" };
+  return { status: "PENDING" };
 };
 
 const executeXql = async (query: string, fromTimestamp: number, toTimestamp: number, withTimeframe: boolean, checkCancelled: () => boolean) => {
@@ -114,15 +127,9 @@ const executeXql = async (query: string, fromTimestamp: number, toTimestamp: num
   for (let i = 0; i < 20; i++) {
     if (checkCancelled()) break;
     await new Promise(res => setTimeout(res, 3000));
-    const pollRes = await apiCall(`/public_api/v1/xql/get_query_results/`, { request_data: { query_id: queryId } });
-    if ([450, 429, 500].includes(pollRes.status)) {
-      await new Promise(r => setTimeout(r, 3000));
-      continue;
-    }
-    if (!pollRes.ok) continue;
-    const pollData = await pollRes.json();
-    if (pollData.reply?.status === "SUCCESS") return pollData.reply.results?.data || [];
-    if (["FAIL", "FAILED"].includes(pollData.reply?.status)) break;
+    const result = await pollSingleQueryAttempt(queryId);
+    if (result.status === "SUCCESS") return result.data;
+    if (result.status === "FAIL") break;
   }
   return null;
 };
@@ -184,7 +191,7 @@ const formatBinLabel = (t: number, binGranularity: string): string => {
 };
 
 // ============================================================================
-// SOUS-COMPOSANT PUR : TABLEAU DE L'INVENTAIRE (Élimine le ternaire imbriqué)
+// SOUS-COMPOSANT PUR : TABLEAU DE L'INVENTAIRE
 // ============================================================================
 
 const InventoryTableContent = ({ inventoryError, inventoryLoading, paginatedInventory, filteredInventory, inventoryData }: any) => {
@@ -392,7 +399,6 @@ export default function CortexPanel() {
 
     try {
       const BATCH_SIZE = 100;
-      // Correction SonarQube : Utilisation de Math.max
       const totalExpected = Math.max(0, kpis.coverageTotal);
 
       if (totalExpected === 0) {
@@ -432,9 +438,9 @@ export default function CortexPanel() {
 
   const uniqueOSList = useMemo(() => {
     if (!inventoryData) return [];
-    // Correction SonarQube : Fonction de comparaison explicite
+    // Correction SonarQube : Typage explicite des paramètres de comparaison stringify-safe
     const osSet = new Set(inventoryData.map(ep => ep.operating_system).filter(Boolean));
-    return Array.from(osSet).sort((a, b) => String(a).localeCompare(String(b)));
+    return Array.from(osSet).sort((a: unknown, b: unknown) => String(a).localeCompare(String(b)));
   }, [inventoryData]);
 
   const filteredInventory = useMemo(() => {
@@ -442,7 +448,6 @@ export default function CortexPanel() {
     return inventoryData.filter(ep => {
       const searchLower = searchTerm.toLowerCase();
       const usersStr = Array.isArray(ep.users) ? ep.users.join(" ") : (ep.users || "");
-      // Correction SonarQube : Chaînage optionnel `?.`
       const matchesSearch = searchTerm === "" || ep.endpoint_name?.toLowerCase().includes(searchLower) || usersStr.toLowerCase().includes(searchLower);
       const matchesStatus = statusFilter === "ALL" || ep.endpoint_status?.toLowerCase() === statusFilter.toLowerCase();
       const matchesOS = osFilter === "ALL" || ep.operating_system === osFilter;
