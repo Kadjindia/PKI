@@ -2,11 +2,10 @@ import { useState, useMemo, useRef } from "react";
 import { useKpi } from "@/context/KpiContext";
 import { toast } from "sonner";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Line, ComposedChart } from "recharts";
+import { Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Line, ComposedChart } from "recharts";
 import { addKpiEntry } from "@/lib/supabase-kpi";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
-
 // --- COMPOSANTS UI ---
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +14,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
 // --- ICÔNES ---
 import { Mail, AlertTriangle, ShieldCheck, Inbox, Plus, Activity, AlertCircle, ArrowUpRight, ArrowDownRight, Globe, Upload, Loader2, CalendarDays } from "lucide-react";
 
@@ -23,15 +21,24 @@ import { Mail, AlertTriangle, ShieldCheck, Inbox, Plus, Activity, AlertCircle, A
 const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
-  return isNaN(n) ? 0 : n;
+  return Number.isNaN(n) ? 0 : n;
 };
-
 const calculatePercentage = (part: number, total: number) => {
   const p = safeNum(part);
   const t = safeNum(total);
   if (t === 0) return 0;
   return Math.round((p / t) * 100);
 };
+
+// Convertit une valeur de cellule (CSV/Excel, typée unknown) en string de façon sûre,
+// sans risquer un "[object Object]" si la cellule contient un type inattendu.
+function cellToString(val: unknown): string {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
+    return String(val);
+  }
+  return "";
+}
 
 // Analyseur universel de dates (extrait YYYY-MM)
 function parsePeriod(rawVal: any): string | null {
@@ -41,51 +48,68 @@ function parsePeriod(rawVal: any): string | null {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   }
   const s = String(rawVal).trim();
-  const frMatch = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  const frMatch = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(s);
   if (frMatch) return `${frMatch[3]}-${frMatch[2]}`;
-  const isoMatch = s.match(/^(\d{4})-(\d{2})/);
+  const isoMatch = /^(\d{4})-(\d{2})/.exec(s);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}`;
   const d = new Date(s);
-  if (!isNaN(d.getTime())) {
+  if (!Number.isNaN(d.getTime())) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   }
   return null;
 }
 
+// Extrait pour éliminer le ternaire imbriqué de la carte "Erreurs Adressage"
+function getErreurCardClasses(erreur: number | undefined) {
+  const value = erreur ?? 0;
+  if (value > 25) {
+    return { border: 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10', text: 'text-rose-600 dark:text-rose-400' };
+  }
+  if (value > 10) {
+    return { border: 'border-l-amber-500', text: 'text-amber-600 dark:text-amber-500' };
+  }
+  return { border: 'border-l-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' };
+}
+
+// Extrait pour éliminer le ternaire imbriqué du badge "Erreurs" dans le tableau
+function ErreurBadge({ erreur }: Readonly<{ erreur: number }>) {
+  if (erreur > 25) {
+    return <Badge variant="destructive" className="font-bold">{erreur}</Badge>;
+  }
+  if (erreur > 10) {
+    return <Badge variant="outline" className="bg-amber-500 text-white border-transparent">{erreur}</Badge>;
+  }
+  return <span className="text-emerald-600 font-medium">{erreur}</span>;
+}
+
 export default function MessagerieView() {
   const { entries } = useKpi();
   const queryClient = useQueryClient();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --- ÉTATS ---
   const [isAddStatsOpen, setIsAddStatsOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-
   // État pour la saisie manuelle (1 mois)
   const [newStats, setNewStats] = useState({
     period: new Date().toISOString().substring(0, 7),
     total: 0, fraude: 0, interne1212: 0, externe: 0, erreur: 0
   });
-
-  // NOUVEAU : État pour l'import de fichier (Plusieurs mois)
+  // État pour l'import de fichier (Plusieurs mois)
   const [parsedMonths, setParsedMonths] = useState<Record<string, typeof newStats>>({});
 
   // --- PRÉPARATION DES DONNÉES GLOBALES ---
   const msgEntries = entries.filter(e => e.kpiId.startsWith('msg-'));
   const availablePeriods = useMemo(() => {
-    return [...new Set(msgEntries.map((e) => e.period))].sort();
+    return [...new Set(msgEntries.map((e) => e.period))].sort((a, b) => a.localeCompare(b));
   }, [msgEntries]);
-
   const monthlyData = useMemo(() => {
     return availablePeriods.map(period => {
       const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === period)?.value);
-
       const total = getVal('msg-total');
       const fraude = getVal('msg-fraude');
       const interne = getVal('msg-1212');
       const externe = getVal('msg-externe');
       const erreur = getVal('msg-erreur');
-
       return {
         period,
         formatPeriod: new Date(period + "-01").toLocaleDateString("fr-FR", { month: "short", year: "numeric" }),
@@ -95,7 +119,6 @@ export default function MessagerieView() {
       };
     });
   }, [availablePeriods, msgEntries]);
-
   const currentMonthData = monthlyData.length > 0 ? monthlyData[monthlyData.length - 1] : null;
   const previousMonthData = monthlyData.length > 1 ? monthlyData[monthlyData.length - 2] : null;
 
@@ -108,6 +131,8 @@ export default function MessagerieView() {
     return <span className="text-slate-500 text-xs">=</span>;
   };
 
+  const erreurCardClasses = getErreurCardClasses(currentMonthData?.erreur);
+
   // ============================================================================
   // LOGIQUE D'ANALYSE DU FICHIER (VENTILATION PAR MOIS)
   // ============================================================================
@@ -117,49 +142,37 @@ export default function MessagerieView() {
       setIsAnalyzing(false);
       return;
     }
-
     const columns = Object.keys(data[0]);
-    // Détection des colonnes
     const dateCol = columns.find(c => c.toLowerCase().includes("date") || c.toLowerCase().includes("reçu") || c.toLowerCase().includes("time"));
     const emailCol = columns.find(c => c.toLowerCase().includes("email") || c.toLowerCase().includes("mail"));
     const typeCol = columns.find(c => c.toLowerCase() === "type");
     const dossierCol = columns.find(c => c.toLowerCase().includes("dossier"));
 
     const groups: Record<string, typeof newStats> = {};
-
     data.forEach(row => {
-      // 1. Déterminer la période de cette ligne
-      let period = newStats.period; // Par défaut : le mois sélectionné dans l'interface
+      let period = newStats.period;
       if (dateCol && row[dateCol]) {
         const extracted = parsePeriod(row[dateCol]);
         if (extracted) period = extracted;
       }
-
-      // 2. Initialiser le compteur du mois s'il n'existe pas encore
       if (!groups[period]) {
         groups[period] = { period, total: 0, fraude: 0, interne1212: 0, externe: 0, erreur: 0 };
       }
-
-      // 3. Incrémenter les compteurs
-      groups[period].total++; // +1 message
-
+      groups[period].total++;
       if (emailCol) {
-        const email = String(row[emailCol] || "").toLowerCase().trim();
+        const email = cellToString(row[emailCol]).toLowerCase().trim();
         if (email === "le1212@actionlogement.fr") groups[period].interne1212++;
         if (email === "fraude.als@actionlogement.fr") groups[period].fraude++;
       }
-
       if (typeCol) {
-        const type = String(row[typeCol] || "").toUpperCase().trim();
+        const type = cellToString(row[typeCol]).toUpperCase().trim();
         if (type === "EXTERNE") groups[period].externe++;
       }
-
       if (dossierCol) {
-        const dossier = String(row[dossierCol] || "").trim();
+        const dossier = cellToString(row[dossierCol]).trim();
         if (dossier === "05 - Erreur d'adressage") groups[period].erreur++;
       }
     });
-
     setParsedMonths(groups);
     toast.success(`Fichier analysé ! ${Object.keys(groups).length} mois détecté(s).`);
     setIsAnalyzing(false);
@@ -168,10 +181,8 @@ export default function MessagerieView() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setIsAnalyzing(true);
     const ext = file.name.split(".").pop()?.toLowerCase();
-
     if (ext === "csv") {
       Papa.parse(file, {
         header: true,
@@ -184,10 +195,10 @@ export default function MessagerieView() {
         const wb = XLSX.read(buffer, { type: "array" });
         const wsName = wb.SheetNames[0];
         const ws = wb.Sheets[wsName];
-        // Important: raw: false permet de récupérer le texte des dates Excel
         const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "", raw: false });
         processRawData(data);
       } catch (error) {
+        console.error(error);
         toast.error("Impossible de lire le fichier Excel.");
         setIsAnalyzing(false);
       }
@@ -205,33 +216,30 @@ export default function MessagerieView() {
     mutationFn: async () => {
       const sourceLabel = "Bilan Messagerie (Import)";
       const promises: Promise<any>[] = [];
-
-      // Si on a un fichier analysé avec plusieurs mois :
       if (Object.keys(parsedMonths).length > 0) {
         Object.values(parsedMonths).forEach((stats) => {
-          promises.push(addKpiEntry({ kpiId: 'msg-total', value: stats.total, period: stats.period, sourceLabel }));
-          promises.push(addKpiEntry({ kpiId: 'msg-fraude', value: stats.fraude, period: stats.period, sourceLabel }));
-          promises.push(addKpiEntry({ kpiId: 'msg-1212', value: stats.interne1212, period: stats.period, sourceLabel }));
-          promises.push(addKpiEntry({ kpiId: 'msg-externe', value: stats.externe, period: stats.period, sourceLabel }));
-          promises.push(addKpiEntry({ kpiId: 'msg-erreur', value: stats.erreur, period: stats.period, sourceLabel }));
+          promises.push(
+            addKpiEntry({ kpiId: 'msg-total', value: stats.total, period: stats.period, sourceLabel }),
+            addKpiEntry({ kpiId: 'msg-fraude', value: stats.fraude, period: stats.period, sourceLabel }),
+            addKpiEntry({ kpiId: 'msg-1212', value: stats.interne1212, period: stats.period, sourceLabel }),
+            addKpiEntry({ kpiId: 'msg-externe', value: stats.externe, period: stats.period, sourceLabel }),
+            addKpiEntry({ kpiId: 'msg-erreur', value: stats.erreur, period: stats.period, sourceLabel }),
+          );
         });
+      } else {
+        promises.push(
+          addKpiEntry({ kpiId: 'msg-total', value: newStats.total, period: newStats.period, sourceLabel: "Saisie Manuelle" }),
+          addKpiEntry({ kpiId: 'msg-fraude', value: newStats.fraude, period: newStats.period, sourceLabel: "Saisie Manuelle" }),
+          addKpiEntry({ kpiId: 'msg-1212', value: newStats.interne1212, period: newStats.period, sourceLabel: "Saisie Manuelle" }),
+          addKpiEntry({ kpiId: 'msg-externe', value: newStats.externe, period: newStats.period, sourceLabel: "Saisie Manuelle" }),
+          addKpiEntry({ kpiId: 'msg-erreur', value: newStats.erreur, period: newStats.period, sourceLabel: "Saisie Manuelle" }),
+        );
       }
-      // Si saisie manuelle d'un seul mois :
-      else {
-        promises.push(addKpiEntry({ kpiId: 'msg-total', value: newStats.total, period: newStats.period, sourceLabel: "Saisie Manuelle" }));
-        promises.push(addKpiEntry({ kpiId: 'msg-fraude', value: newStats.fraude, period: newStats.period, sourceLabel: "Saisie Manuelle" }));
-        promises.push(addKpiEntry({ kpiId: 'msg-1212', value: newStats.interne1212, period: newStats.period, sourceLabel: "Saisie Manuelle" }));
-        promises.push(addKpiEntry({ kpiId: 'msg-externe', value: newStats.externe, period: newStats.period, sourceLabel: "Saisie Manuelle" }));
-        promises.push(addKpiEntry({ kpiId: 'msg-erreur', value: newStats.erreur, period: newStats.period, sourceLabel: "Saisie Manuelle" }));
-      }
-
       await Promise.all(promises);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['kpi-entries'] });
       toast.success("Bilan(s) enregistré(s) avec succès !");
-
-      // RESET TOTAL
       setIsAddStatsOpen(false);
       setParsedMonths({});
       setNewStats({
@@ -247,7 +255,6 @@ export default function MessagerieView() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-
       {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -263,10 +270,8 @@ export default function MessagerieView() {
           <Plus className="w-4 h-4 mr-2" /> Intégrer des données
         </Button>
       </div>
-
       {/* KPI CARDS */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
-
         <Card className="border-l-4 border-l-blue-500 shadow-sm">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -281,7 +286,6 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
-
         <Card className={`border-l-4 shadow-sm ${currentMonthData && currentMonthData.tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -298,7 +302,6 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
-
         <Card className="border-l-4 border-l-emerald-500 shadow-sm">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -315,7 +318,6 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
-
         <Card className="border-l-4 border-l-slate-400 shadow-sm">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
@@ -330,8 +332,7 @@ export default function MessagerieView() {
             </div>
           </CardContent>
         </Card>
-
-        <Card className={`border-l-4 shadow-sm ${currentMonthData && currentMonthData.erreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : currentMonthData && currentMonthData.erreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
+        <Card className={`border-l-4 shadow-sm ${erreurCardClasses.border}`}>
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground uppercase flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -341,7 +342,7 @@ export default function MessagerieView() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0">
-            <div className={`text-2xl font-bold ${currentMonthData && currentMonthData.erreur > 25 ? 'text-rose-600 dark:text-rose-400' : currentMonthData && currentMonthData.erreur > 10 ? 'text-amber-600 dark:text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+            <div className={`text-2xl font-bold ${erreurCardClasses.text}`}>
               {currentMonthData?.erreur || 0}
             </div>
             <div className="flex items-center justify-between mt-1">
@@ -351,7 +352,6 @@ export default function MessagerieView() {
           </CardContent>
         </Card>
       </div>
-
       {/* GRAPHIQUE */}
       <Card className="shadow-sm">
         <CardHeader className="border-b border-border/50 pb-4">
@@ -374,11 +374,9 @@ export default function MessagerieView() {
                     itemStyle={{ color: "hsl(var(--foreground))", fontSize: "12px", fontWeight: 500 }}
                   />
                   <Legend wrapperStyle={{ paddingTop: "20px", fontSize: "12px" }} />
-
                   <Bar dataKey="interne" name="Remontées 1212" stackId="a" fill="#10b981" radius={[0, 0, 4, 4]} />
                   <Bar dataKey="fraude" name="Fraude" stackId="a" fill="#f59e0b" />
                   <Bar dataKey="externe" name="Externe" stackId="a" fill="#64748b" radius={[4, 4, 0, 0]} />
-
                   <Line type="monotone" dataKey="total" name="Volume Total" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
                 </ComposedChart>
               </ResponsiveContainer>
@@ -386,7 +384,6 @@ export default function MessagerieView() {
           )}
         </CardContent>
       </Card>
-
       {/* TABLEAU */}
       <Card className="shadow-sm">
         <CardHeader className="border-b border-border/50 pb-4">
@@ -425,13 +422,7 @@ export default function MessagerieView() {
                   </TableCell>
                   <TableCell className="text-muted-foreground">{row.externe}</TableCell>
                   <TableCell className="text-right">
-                    {row.erreur > 25 ? (
-                      <Badge variant="destructive" className="font-bold">{row.erreur}</Badge>
-                    ) : row.erreur > 10 ? (
-                      <Badge variant="outline" className="bg-amber-500 text-white border-transparent">{row.erreur}</Badge>
-                    ) : (
-                      <span className="text-emerald-600 font-medium">{row.erreur}</span>
-                    )}
+                    <ErreurBadge erreur={row.erreur} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -444,21 +435,18 @@ export default function MessagerieView() {
           </Table>
         </CardContent>
       </Card>
-
       {/* ============================================================================ */}
       {/* MODALE D'AJOUT ET D'IMPORT AUTOMATIQUE                                        */}
       {/* ============================================================================ */}
       <Dialog open={isAddStatsOpen} onOpenChange={(open) => {
         setIsAddStatsOpen(open);
-        if (!open) setParsedMonths({}); // Reset l'import si on ferme
+        if (!open) setParsedMonths({});
       }}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Intégrer les données de Messagerie SSI</DialogTitle>
             <DialogDescription>Glissez un export brut (Excel/CSV) pour que l'algorithme ventile les données par mois, ou saisissez-les manuellement.</DialogDescription>
           </DialogHeader>
-
-          {/* VUE 1 : RÉSULTAT DE L'IMPORT (Plusieurs mois détectés) */}
           {Object.keys(parsedMonths).length > 0 ? (
             <div className="space-y-4 mt-2">
               <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
@@ -493,7 +481,6 @@ export default function MessagerieView() {
                   </Table>
                 </div>
               </div>
-
               <DialogFooter className="pt-2">
                 <Button type="button" variant="outline" onClick={() => setParsedMonths({})}>
                   Annuler le fichier
@@ -504,8 +491,6 @@ export default function MessagerieView() {
               </DialogFooter>
             </div>
           ) : (
-
-            /* VUE 2 : ZONE D'IMPORT ET SAISIE MANUELLE */
             <>
               <div className="mt-4 mb-2">
                 <Label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-primary/50 rounded-lg cursor-pointer bg-primary/5 hover:bg-primary/10 transition-colors">
@@ -521,46 +506,40 @@ export default function MessagerieView() {
                   <Input type="file" accept=".csv, .xlsx, .xls" className="hidden" disabled={isAnalyzing} onChange={handleFileUpload} />
                 </Label>
               </div>
-
               <div className="relative flex items-center py-2">
                 <div className="flex-grow border-t border-border"></div>
                 <span className="flex-shrink-0 mx-4 text-muted-foreground text-[10px] font-bold uppercase tracking-wider">Ou Saisie Manuelle (1 mois)</span>
                 <div className="flex-grow border-t border-border"></div>
               </div>
-
               <form onSubmit={(e) => { e.preventDefault(); saveStatsMutation.mutate(); }} className="space-y-4">
                 <div className="space-y-2">
                   <Label>Mois concerné</Label>
                   <Input type="month" required value={newStats.period} onChange={(e) => setNewStats({...newStats, period: e.target.value})} />
                 </div>
-
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label className="text-blue-600 dark:text-blue-400">Volume Total</Label>
-                    <Input type="number" min="0" required value={newStats.total} onChange={(e) => setNewStats({...newStats, total: parseInt(e.target.value) || 0})} />
+                    <Input type="number" min="0" required value={newStats.total} onChange={(e) => setNewStats({...newStats, total: Number.parseInt(e.target.value, 10) || 0})} />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-amber-600 dark:text-amber-500">Menaces Fraude</Label>
-                    <Input type="number" min="0" required value={newStats.fraude} onChange={(e) => setNewStats({...newStats, fraude: parseInt(e.target.value) || 0})} />
+                    <Input type="number" min="0" required value={newStats.fraude} onChange={(e) => setNewStats({...newStats, fraude: Number.parseInt(e.target.value, 10) || 0})} />
                   </div>
                 </div>
-
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label className="text-emerald-600 dark:text-emerald-400">Remontées 1212</Label>
-                    <Input type="number" min="0" required value={newStats.interne1212} onChange={(e) => setNewStats({...newStats, interne1212: parseInt(e.target.value) || 0})} />
+                    <Input type="number" min="0" required value={newStats.interne1212} onChange={(e) => setNewStats({...newStats, interne1212: Number.parseInt(e.target.value, 10) || 0})} />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-slate-600 dark:text-slate-400">Mails Externes</Label>
-                    <Input type="number" min="0" required value={newStats.externe} onChange={(e) => setNewStats({...newStats, externe: parseInt(e.target.value) || 0})} />
+                    <Input type="number" min="0" required value={newStats.externe} onChange={(e) => setNewStats({...newStats, externe: Number.parseInt(e.target.value, 10) || 0})} />
                   </div>
                 </div>
-
                 <div className="space-y-2">
                   <Label className="text-rose-600 dark:text-rose-400">Erreurs d'adressage (Bruit)</Label>
-                  <Input type="number" min="0" required value={newStats.erreur} onChange={(e) => setNewStats({...newStats, erreur: parseInt(e.target.value) || 0})} />
+                  <Input type="number" min="0" required value={newStats.erreur} onChange={(e) => setNewStats({...newStats, erreur: Number.parseInt(e.target.value, 10) || 0})} />
                 </div>
-
                 <DialogFooter className="pt-4 border-t border-border/50">
                   <Button type="button" variant="outline" onClick={() => setIsAddStatsOpen(false)}>Annuler</Button>
                   <Button type="submit" disabled={saveStatsMutation.isPending || isAnalyzing}>
@@ -572,7 +551,6 @@ export default function MessagerieView() {
           )}
         </DialogContent>
       </Dialog>
-
     </div>
   );
 }

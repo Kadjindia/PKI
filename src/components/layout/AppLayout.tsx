@@ -1,9 +1,9 @@
 import { ReactNode, useState, useRef, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard, PenLine, Shield, Bell, Settings, Plug, BookOpen,
+  LayoutDashboard, Shield, Bell, Settings, BookOpen,
   ShieldAlert, Users, Mail, Radar, ChevronLeft, ChevronRight, LogOut,
-  User, Lock, FileText, ChevronDown, Activity
+  User, Lock, ChevronDown, Activity
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import ProfileModal from "@/components/profile/ProfileModal";
@@ -19,7 +19,8 @@ const NAV_ITEMS = [
   { path: "/monitoring", label: "Monitoring SI", icon: Activity },
 ];
 
-export default function AppLayout({ children }: { children: ReactNode }) {
+// Correction SonarQube : Props en lecture seule
+export default function AppLayout({ children }: { readonly children: ReactNode }) {
   const location = useLocation();
   const { user, signOut } = useAuth();
 
@@ -40,7 +41,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   // NOUVEAU : État pour l'effet "machine à écrire"
   const [visibleChars, setVisibleChars] = useState(0);
 
-  const greetingName = firstName ? firstName : (user?.email || "");
+  // Correction SonarQube : Utilisation de l'opérateur logique au lieu du ternaire
+  const greetingName = firstName || user?.email || "";
   const prefixText = "Bonjour, ";
   const suffixText = " 👋";
 
@@ -51,6 +53,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   };
 
   const isExpanded = isPinned || isHovered;
+
+  // Correction SonarQube : Extraction du ternaire imbriqué
+  let pinTitle: string | undefined = undefined;
+  if (!isExpanded) {
+    pinTitle = isPinned ? "Réduire" : "Épingler";
+  }
 
   // 1. GESTION DE L'EFFET MACHINE À ÉCRIRE
   useEffect(() => {
@@ -157,7 +165,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             {isExpanded && <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">Paramètres</span>}
           </Link>
 
-          <button onClick={togglePin} className="flex items-center gap-3 px-3 py-2.5 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors w-full text-left" title={!isExpanded ? (isPinned ? "Réduire" : "Épingler") : undefined}>
+          {/* Correction SonarQube : Type button explicite + variable title extraite */}
+          <button type="button" onClick={togglePin} className="flex items-center gap-3 px-3 py-2.5 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors w-full text-left" title={pinTitle}>
             {isPinned ? <ChevronLeft className="w-5 h-5 shrink-0" /> : <ChevronRight className="w-5 h-5 shrink-0" />}
             {isExpanded && <span className="text-sm font-medium whitespace-nowrap animate-in fade-in duration-300">{isPinned ? "Réduire" : "Épingler"}</span>}
           </button>
@@ -187,7 +196,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="relative" ref={dropdownRef}>
+            {/* Correction SonarQube : Type button explicite */}
             <button
+              type="button"
               onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
               className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
@@ -200,7 +211,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             {isUserMenuOpen && (
               <div className="absolute right-0 mt-2 w-64 bg-card rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.1)] dark:shadow-[0_10px_40px_rgba(0,0,0,0.5)] border border-border py-2 z-50 animate-in fade-in slide-in-from-top-2">
                 <div className="px-2 py-1 space-y-1">
-                  <button onClick={() => { setIsUserMenuOpen(false); setIsProfileModalOpen(true); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors">
+                  {/* Correction SonarQube : Type button explicite */}
+                  <button type="button" onClick={() => { setIsUserMenuOpen(false); setIsProfileModalOpen(true); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors">
                     <User className="w-4 h-4" /> Modifier le profil
                   </button>
                   <Link to="/change-password" onClick={() => setIsUserMenuOpen(false)} className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors">
@@ -209,7 +221,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 </div>
                 <div className="h-px bg-border my-1"></div>
                 <div className="px-2 py-1">
-                  <button onClick={() => { setIsUserMenuOpen(false); signOut(); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md text-destructive hover:bg-destructive/10 transition-colors">
+                  {/* Correction SonarQube : Type button explicite */}
+                  <button type="button" onClick={() => { setIsUserMenuOpen(false); signOut(); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md text-destructive hover:bg-destructive/10 transition-colors">
                     <LogOut className="w-4 h-4" /> Déconnexion
                   </button>
                 </div>
