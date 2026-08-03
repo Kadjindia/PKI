@@ -9,23 +9,35 @@ import { fetchProjects, fetchApplications, fetchVulnerabilities } from "@/lib/su
 import { fetchPolicies, fetchGaps } from "@/lib/supabase-governance";
 import { fetchPhishingCampaigns, fetchPhishingProfiles, fetchElearningModules } from "@/lib/supabase-awareness";
 
-// Utilitaires de calcul
+// 1. CORRECTION : Utilisation de Number.isNaN au lieu de isNaN global
 const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
-  return isNaN(n) ? 0 : n;
+  return Number.isNaN(n) ? 0 : n;
 };
 
+// 2. CORRECTION : Utilisation de Date.now() au lieu de new Date().getTime()
 const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualStatus: string) => {
   if (manualStatus === "draft") return "draft";
   if (!lastDate) return "warning";
   const nextDate = new Date(lastDate);
   nextDate.setMonth(nextDate.getMonth() + (freqMonths || 24));
-  const diffDays = Math.ceil((nextDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.ceil((nextDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
   if (diffDays < 0) return "expired";
   if (diffDays <= 60) return "warning";
   return "ok";
 };
+
+// 4. CORRECTION : Fonction dédiée pour éviter les ternaires imbriqués sur les couleurs
+function getScoreStyles(score: number): { color: string; ring: string } {
+  if (score >= 75) {
+    return { color: "text-emerald-500", ring: "stroke-emerald-500" };
+  }
+  if (score >= 50) {
+    return { color: "text-amber-500", ring: "stroke-amber-500" };
+  }
+  return { color: "text-rose-500", ring: "stroke-rose-500" };
+}
 
 export default function ExecutiveSummary() {
   const { selectedPeriod } = useKpi();
@@ -76,7 +88,8 @@ export default function ExecutiveSummary() {
     // ---------------------------------------------------------
     // C. SENSIBILISATION
     // ---------------------------------------------------------
-    const selectedYear = selectedPeriod ? parseInt(selectedPeriod.split("-")[0]) : new Date().getFullYear();
+    // 3. CORRECTION : Utilisation de Number.parseInt au lieu de parseInt
+    const selectedYear = selectedPeriod ? Number.parseInt(selectedPeriod.split("-")[0], 10) : new Date().getFullYear();
 
     const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
     const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
@@ -115,9 +128,8 @@ export default function ExecutiveSummary() {
     ? Math.round(categoryHealth.reduce((acc, cat) => acc + cat.score, 0) / categoryHealth.length)
     : 0;
 
-  // Design dynamique
-  const scoreColor = securityScore >= 75 ? "text-emerald-500" : securityScore >= 50 ? "text-amber-500" : "text-rose-500";
-  const scoreRing = securityScore >= 75 ? "stroke-emerald-500" : securityScore >= 50 ? "stroke-amber-500" : "stroke-rose-500";
+  // Design dynamique (utilisant notre fonction helper propre)
+  const { color: scoreColor, ring: scoreRing } = getScoreStyles(securityScore);
 
   const circumference = 2 * Math.PI * 54;
   const dashOffset = circumference - (securityScore / 100) * circumference;

@@ -600,7 +600,7 @@ function CoverageChart({ data }: Readonly<{ data: { name: string; value: number;
               <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} formatter={(val) => `${val}%`} />
               <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={24}>
                 {data.map((entry, index) => (
-                  <<Cell key={entry.name} fill={entry.fill} />
+                  <Cell key={entry.name} fill={entry.fill} />
                 ))}
               </Bar>
             </BarChart>
