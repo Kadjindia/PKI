@@ -15,6 +15,7 @@ export default function PeriodFilterBar() {
       {FILTERS.map((f) => (
         <button
           key={f.value}
+          type="button"
           onClick={() => setPeriodFilter(f.value)}
           className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${
             periodFilter === f.value

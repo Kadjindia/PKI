@@ -79,11 +79,18 @@ function TrendIcon({ trend }: Readonly<{ trend: number }>) {
   return <Minus className="w-3.5 h-3.5 text-muted-foreground" />;
 }
 
-// Correction SonarQube : Empêche l'affichage de "[object Object]"
+// Correction SonarQube : Empêche strictement l'affichage de "[object Object]"
 function safeStringify(val: unknown): string {
   if (val === null || val === undefined) return "";
-  if (typeof val === "object") return JSON.stringify(val);
-  return String(val);
+  if (typeof val === "string") return val;
+  if (typeof val === "number" || typeof val === "boolean") return val.toString();
+
+  // Pour tout le reste (objets, tableaux, fonctions...), on utilise JSON.stringify
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return ""; // Sécurité supplémentaire si l'objet n'est pas sérialisable
+  }
 }
 
 // --- SOUS-COMPOSANTS DES ONGLETS (Pour réduire la complexité cognitive globale) ---
@@ -118,8 +125,10 @@ function DetailsTabContent({ details, source }: Readonly<{ details: any[]; sourc
                 <TableCell className="text-xs font-medium">{row.label}</TableCell>
                 <TableCell className="text-xs text-right font-mono">{row.value}</TableCell>
                 {row.metadata && Object.entries(row.metadata).map(([metaKey, val]) => (
-                  // Correction SonarQube : metaKey utilisé comme key au lieu de l'index j
-                  <TableCell key={metaKey} className="text-xs text-muted-foreground">{String(val)}</TableCell>
+                  // Correction SonarQube : metaKey utilisé comme key au lieu de l'index j + safeStringify
+                  <TableCell key={metaKey} className="text-xs text-muted-foreground">
+                    {safeStringify(val)}
+                  </TableCell>
                 ))}
               </TableRow>
             ))}
@@ -471,6 +480,7 @@ export default function KpiDetailDialog({ kpi, open, onClose }: Props) {
   );
 }
 
+// Correction SonarQube : Props explicites en readonly
 function SummaryCard({ label, value, icon }: Readonly<{ label: string; value: string; icon?: React.ReactNode }>) {
   return (
     <div className="glass-panel p-3 space-y-1">
