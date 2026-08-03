@@ -6,12 +6,11 @@ import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import KpiDetailDialog from "./KpiDetailDialog";
 import FileUploadDialog from "../data-sources/FileUploadDialog";
 
-// Correction SonarQube: Props en lecture seule (Read-only props)
 interface KpiCardProps {
   readonly kpi: KpiDefinition;
 }
 
-// --- FONCTIONS UTILITAIRES POUR RÉDUIRE LA COMPLEXITÉ COGNITIVE ---
+// --- Fonctions extraites pour la lisibilité ---
 
 function getDisplayValue(value: number | undefined, isPercentage: boolean): string {
   if (value === undefined) return "—";
@@ -21,15 +20,12 @@ function getDisplayValue(value: number | undefined, isPercentage: boolean): stri
 
 function getStatusClass(value: number | undefined, kpi: KpiDefinition, isPercentage: boolean): string {
   if (kpi.thresholdDanger === undefined || value === undefined) return "";
-
   const isDanger = isPercentage ? value <= kpi.thresholdDanger : value >= kpi.thresholdDanger;
   if (isDanger) return "danger";
-
   if (kpi.thresholdWarning !== undefined) {
     const isWarning = isPercentage ? value <= kpi.thresholdWarning : value >= kpi.thresholdWarning;
     if (isWarning) return "warning";
   }
-
   return "success";
 }
 
@@ -46,8 +42,6 @@ function getStatusBadgeText(statusClass: string): string {
   return "";
 }
 
-// --- SOUS-COMPOSANTS POUR RÉDUIRE LA COMPLEXITÉ COGNITIVE ---
-
 function SourceBadge({ latestEntry, isManualSource, isFileSource }: Readonly<{ latestEntry: any, isManualSource: boolean, isFileSource: boolean }>) {
   if (isManualSource) {
     return (
@@ -57,7 +51,6 @@ function SourceBadge({ latestEntry, isManualSource, isFileSource }: Readonly<{ l
       </>
     );
   }
-
   if (latestEntry?.source) {
     return (
       <>
@@ -71,7 +64,6 @@ function SourceBadge({ latestEntry, isManualSource, isFileSource }: Readonly<{ l
       </>
     );
   }
-
   return null;
 }
 
@@ -79,7 +71,6 @@ function TrendIndicator({ trend, trendPercent, value }: Readonly<{ trend: number
   if (trend !== 0) {
     const isPositive = trend > 0;
     const textColor = isPositive ? "text-success" : "text-destructive";
-
     return (
       <div className="flex items-center gap-1 text-xs">
         {isPositive ? <TrendingUp className="w-3 h-3 text-success" /> : <TrendingDown className="w-3 h-3 text-destructive" />}
@@ -89,7 +80,6 @@ function TrendIndicator({ trend, trendPercent, value }: Readonly<{ trend: number
       </div>
     );
   }
-
   if (value !== undefined) {
     return (
       <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -97,11 +87,8 @@ function TrendIndicator({ trend, trendPercent, value }: Readonly<{ trend: number
       </div>
     );
   }
-
   return null;
 }
-
-// --- COMPOSANT PRINCIPAL ---
 
 export default function KpiCard({ kpi }: KpiCardProps) {
   const { getLatestValue, getPreviousValue, getEntriesForKpi } = useKpi();
@@ -119,14 +106,12 @@ export default function KpiCard({ kpi }: KpiCardProps) {
   const trendPercent = prev ? Math.round((trend / prev) * 100) : 0;
   const isPercentage = kpi.unit === "pourcentage" || kpi.unit === "taux";
 
-  // Utilisation des fonctions utilitaires pour supprimer les ternaires imbriqués
   const displayValue = getDisplayValue(value, isPercentage);
   const statusClass = getStatusClass(value, kpi, isPercentage);
   const categoryColor = CATEGORY_COLORS[kpi.category];
   const trendColor = getTrendColor(trend, categoryColor);
   const statusBadgeText = getStatusBadgeText(statusClass);
 
-  // Détermination de la source
   const sourceType = latestEntry?.source?.type;
   const isFileSource = sourceType === "excel" || sourceType === "csv";
   const isManualSource = !sourceType || sourceType === "manual";
@@ -135,15 +120,24 @@ export default function KpiCard({ kpi }: KpiCardProps) {
 
   return (
     <>
-      <div
-        className="kpi-card animate-slide-up group cursor-pointer relative"
-        onClick={() => setDetailOpen(true)}
-        // Correction SonarQube: Suppression des attributs role="button" et tabIndex sur la div
-      >
-        {/* Action buttons */}
-        <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/*
+        Le onClick, le rôle et le tabindex ont été retirés de la div principale
+        pour satisfaire les règles SonarQube.
+      */}
+      <div className="kpi-card animate-slide-up group relative">
+
+        {/* BOUTON OVERLAY INVISIBLE POUR L'ACCESSIBILITÉ */}
+        <button
+          type="button"
+          onClick={() => setDetailOpen(true)}
+          className="absolute inset-0 w-full h-full z-10 opacity-0 focus:opacity-100 focus:ring-2 focus:ring-primary rounded-xl cursor-pointer outline-none"
+          aria-label={`Afficher les détails de l'indicateur ${kpi.name}`}
+        />
+
+        {/* Action buttons (z-20 pour rester cliquables par-dessus le bouton overlay) */}
+        <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-20">
           <button
-            type="button" // Correction SonarQube: type="button" explicite
+            type="button"
             onClick={(e) => {
               e.stopPropagation();
               setUploadOpen(true);
@@ -153,10 +147,12 @@ export default function KpiCard({ kpi }: KpiCardProps) {
           >
             <Upload className="w-3.5 h-3.5 text-primary" />
           </button>
-          <Search className="w-3.5 h-3.5 text-primary" />
+          <div className="p-1.5">
+            <Search className="w-3.5 h-3.5 text-primary" />
+          </div>
         </div>
 
-        <div className="flex items-start justify-between mb-1">
+        <div className="flex items-start justify-between mb-1 relative">
           <div className="flex items-center gap-2 min-w-0">
             <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: categoryColor }} />
             <span className="text-xs text-muted-foreground font-medium truncate">{kpi.name}</span>
@@ -168,7 +164,7 @@ export default function KpiCard({ kpi }: KpiCardProps) {
           )}
         </div>
 
-        <div className="flex items-end justify-between gap-2">
+        <div className="flex items-end justify-between gap-2 relative">
           <div>
             <div className="kpi-value mb-1">{displayValue}</div>
             <TrendIndicator trend={trend} trendPercent={trendPercent} value={value} />
@@ -191,8 +187,7 @@ export default function KpiCard({ kpi }: KpiCardProps) {
           )}
         </div>
 
-        {/* Source badge with type distinction */}
-        <div className="mt-2 flex items-center justify-between">
+        <div className="mt-2 flex items-center justify-between relative">
           <div className="flex items-center gap-1.5">
             <SourceBadge latestEntry={latestEntry} isManualSource={isManualSource} isFileSource={isFileSource} />
           </div>
@@ -201,9 +196,8 @@ export default function KpiCard({ kpi }: KpiCardProps) {
           )}
         </div>
 
-        {/* Correction SonarQube: booléen forcé avec `!!` pour éviter de leaker un "0" */}
         {!!kpi.target && isPercentage && (
-          <div className="mt-3">
+          <div className="mt-3 relative">
             <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
               <span>Obj. {kpi.target}%</span>
               <span>{value ?? 0}%</span>
