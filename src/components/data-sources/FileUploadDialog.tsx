@@ -30,11 +30,12 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
 
+// Correction SonarQube : Props en lecture seule
 interface Props {
-  kpi: KpiDefinition;
-  open: boolean;
-  onClose: () => void;
-  period: string; // Période par défaut si aucune date n'est détectée
+  readonly kpi: KpiDefinition;
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly period: string;
 }
 
 type AggMethod = "sum" | "average" | "count" | "max" | "min" | "last";
@@ -48,28 +49,56 @@ const AGG_LABELS: Record<AggMethod, string> = {
   last: "Dernière valeur",
 };
 
-// Fonction utilitaire pour extraire "YYYY-MM" depuis n'importe quel format de date
-function parsePeriod(rawVal: any): string | null {
-  if (!rawVal) return null;
-  // Format numérique Excel (jours depuis 1900)
+// --- FONCTIONS UTILITAIRES ---
+
+// Correction SonarQube : Prévient les conversions hasardeuses type "[object Object]"
+function safeString(val: unknown): string {
+  if (val === null || val === undefined) return "";
+  if (typeof val === "string") return val;
+  if (typeof val === "number" || typeof val === "boolean") return val.toString();
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return "";
+  }
+}
+
+function parsePeriod(rawVal: unknown): string | null {
+  if (rawVal === null || rawVal === undefined) return null;
+
   if (typeof rawVal === "number") {
     const d = new Date(Math.round((rawVal - 25569) * 86400 * 1000));
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   }
-  const s = String(rawVal).trim();
-  // Format JJ/MM/AAAA
-  const frMatch = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+
+  const s = safeString(rawVal).trim();
+
+  // Correction SonarQube : Utilisation de RegExp.exec()
+  const frRegex = /^(\d{2})\/(\d{2})\/(\d{4})/;
+  const frMatch = frRegex.exec(s);
   if (frMatch) return `${frMatch[3]}-${frMatch[2]}`;
-  // Format YYYY-MM ou YYYY-MM-DD
-  const isoMatch = s.match(/^(\d{4})-(\d{2})/);
+
+  // Correction SonarQube : Utilisation de RegExp.exec()
+  const isoRegex = /^(\d{4})-(\d{2})/;
+  const isoMatch = isoRegex.exec(s);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}`;
-  // Fallback classique Date JS
+
   const d = new Date(s);
-  if (!isNaN(d.getTime())) {
+  // Correction SonarQube : Number.isNaN au lieu de isNaN
+  if (!Number.isNaN(d.getTime())) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   }
   return null;
 }
+
+// Correction SonarQube : Extraction du ternaire imbriqué
+function getStepClassName(isActive: boolean, isDone: boolean): string {
+  if (isActive) return "bg-primary/15 text-primary";
+  if (isDone) return "bg-success/15 text-success";
+  return "bg-secondary text-muted-foreground";
+}
+
+// --- COMPOSANT PRINCIPAL ---
 
 export default function FileUploadDialog({ kpi, open, onClose, period }: Props) {
   const { refreshData, kpis } = useKpi();
@@ -87,7 +116,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
   const [fullData, setFullData] = useState<Record<string, unknown>[]>([]);
   const [rawData, setRawData] = useState<Record<string, unknown>[]>([]);
 
-  // Au lieu d'une seule valeur, on stocke les résultats ventilés par période
   const [groupedResults, setGroupedResults] = useState<Record<string, { value: number; data: Record<string, unknown>[] }>>({});
 
   const [step, setStep] = useState<"upload" | "configure" | "confirm">("upload");
@@ -142,7 +170,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
 
   const loadSheet = (wb: XLSX.WorkBook, sheetName: string) => {
     const ws = wb.Sheets[sheetName];
-    // L'ajout de "raw: false" force l'extraction du texte formaté (ex: 01/05/2024)
     const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "", raw: false });
     setFullData(data);
     const cols = data.length > 0 ? Object.keys(data[0]) : [];
@@ -173,20 +200,18 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
   const computeValue = useCallback(() => {
     if (!selectedColumn || fullData.length === 0) return;
 
-    // 1. Grouper les données par période
     const groups: Record<string, Record<string, unknown>[]> = {};
 
     fullData.forEach((row) => {
-      let p = period; // Par défaut, mois en cours
+      let p = period;
       if (selectedDateColumn !== "none" && row[selectedDateColumn]) {
         const parsed = parsePeriod(row[selectedDateColumn]);
-        if (parsed) p = parsed; // Si on a trouvé une date valide, on écrase
+        if (parsed) p = parsed;
       }
       if (!groups[p]) groups[p] = [];
       groups[p].push(row);
     });
 
-    // 2. Calculer le résultat pour chaque groupe
     const results: Record<string, { value: number; data: Record<string, unknown>[] }> = {};
 
     Object.entries(groups).forEach(([p, data]) => {
@@ -195,8 +220,10 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         result = data.filter(r => r[selectedColumn] !== "" && r[selectedColumn] !== null).length;
       } else {
         const values = data
-          .map((r) => Number(String(r[selectedColumn]).replace(',', '.')))
-          .filter((v) => !isNaN(v));
+          // Correction SonarQube : safeString
+          .map((r) => Number(safeString(r[selectedColumn]).replace(',', '.')))
+          // Correction SonarQube : Number.isNaN
+          .filter((v) => !Number.isNaN(v));
 
         switch (aggMethod) {
           case "sum": result = values.reduce((a, b) => a + b, 0); break;
@@ -222,26 +249,25 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
       const typeCol = columns.find(c => c.toLowerCase() === "type");
       const dossierCol = columns.find(c => c.toLowerCase() === "dossier");
 
-      // On boucle sur chaque mois détecté pour enregistrer les données séparément
       for (const [p, group] of Object.entries(groupedResults)) {
 
-        // 1. KPI Principal
         await uploadFileForKpi({
           file, kpiId: kpi.id, period: p, selectedColumn, aggregation: aggMethod,
           selectedSheet: fileType === "excel" ? selectedSheet : undefined,
           computedValue: group.value,
           rawData: group.data.slice(0, 100),
           detailRows: group.data.slice(0, 20).map((row) => ({
-            label: String(Object.values(row)[0] || ""),
+            // Correction SonarQube : safeString
+            label: safeString(Object.values(row)[0]),
             value: Number(row[selectedColumn]) || 0,
             metadata: {},
           })),
         });
 
-        // 2. Automatisations pour CE mois spécifique
         const kpi1212 = kpis.find(k => k.name.toLowerCase().includes("1212"));
         if (kpi1212 && emailCol) {
-          const data1212 = group.data.filter(row => String(row[emailCol] || "").toLowerCase().trim() === "le1212@actionlogement.fr");
+          // Correction SonarQube : safeString
+          const data1212 = group.data.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "le1212@actionlogement.fr");
           if (data1212.length > 0) {
             await uploadFileForKpi({ file, kpiId: kpi1212.id, period: p, selectedColumn: emailCol, aggregation: "count", computedValue: data1212.length, rawData: data1212.slice(0, 50), detailRows: [] });
           }
@@ -249,7 +275,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
 
         const kpiFraude = kpis.find(k => k.name.toLowerCase().includes("fraude"));
         if (kpiFraude && emailCol) {
-          const dataFraude = group.data.filter(row => String(row[emailCol] || "").toLowerCase().trim() === "fraude.als@actionlogement.fr");
+          const dataFraude = group.data.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "fraude.als@actionlogement.fr");
           if (dataFraude.length > 0) {
             await uploadFileForKpi({ file, kpiId: kpiFraude.id, period: p, selectedColumn: emailCol, aggregation: "count", computedValue: dataFraude.length, rawData: dataFraude.slice(0, 50), detailRows: [] });
           }
@@ -257,7 +283,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
 
         const kpiExterne = kpis.find(k => k.name.toLowerCase().includes("externe"));
         if (kpiExterne && typeCol) {
-          const dataExterne = group.data.filter(row => String(row[typeCol] || "").toUpperCase().trim() === "EXTERNE");
+          const dataExterne = group.data.filter(row => safeString(row[typeCol]).toUpperCase().trim() === "EXTERNE");
           if (dataExterne.length > 0) {
              await uploadFileForKpi({ file, kpiId: kpiExterne.id, period: p, selectedColumn: typeCol, aggregation: "count", computedValue: dataExterne.length, rawData: dataExterne.slice(0, 50), detailRows: [] });
           }
@@ -265,7 +291,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
 
         const kpiAdressage = kpis.find(k => k.name.toLowerCase().includes("adressage"));
         if (kpiAdressage && dossierCol) {
-          const dataAdressage = group.data.filter(row => String(row[dossierCol] || "").trim() === "05 - Erreur d'adressage");
+          const dataAdressage = group.data.filter(row => safeString(row[dossierCol]).trim() === "05 - Erreur d'adressage");
           if (dataAdressage.length > 0) {
              await uploadFileForKpi({ file, kpiId: kpiAdressage.id, period: p, selectedColumn: dossierCol, aggregation: "count", computedValue: dataAdressage.length, rawData: dataAdressage.slice(0, 50), detailRows: [] });
           }
@@ -314,11 +340,8 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             return (
               <div key={label} className="flex items-center gap-2">
                 {i > 0 && <div className="w-8 h-px bg-border" />}
-                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  isActive ? "bg-primary/15 text-primary"
-                  : isDone ? "bg-success/15 text-success"
-                  : "bg-secondary text-muted-foreground"
-                }`}>
+                {/* Correction SonarQube : appel de getStepClassName */}
+                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${getStepClassName(isActive, isDone)}`}>
                   {isDone ? <Check className="w-3 h-3" /> : <span>{i + 1}</span>}
                   {label}
                 </div>
@@ -328,9 +351,18 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         </div>
 
         {step === "upload" && (
+          // Correction SonarQube : Rôle button, tabIndex et onKeyDown pour un élément cliquable accessible
           <div
-            className="border-2 border-dashed border-border rounded-xl p-12 text-center hover:border-primary/50 transition-colors cursor-pointer"
+            role="button"
+            tabIndex={0}
+            className="border-2 border-dashed border-border rounded-xl p-12 text-center hover:border-primary/50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary"
             onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
           >
@@ -353,7 +385,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                   ({fullData.length} lignes détectées)
                 </span>
               </div>
-              <Button variant="ghost" size="sm" onClick={reset}><X className="w-4 h-4" /></Button>
+              <Button type="button" variant="ghost" size="sm" onClick={reset}><X className="w-4 h-4" /></Button>
             </div>
 
             {fileType === "excel" && sheets.length > 1 && (
@@ -371,7 +403,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-muted/20 p-4 rounded-xl border border-border">
-              {/* NOUVEAU : Colonne Date */}
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-primary" /> Colonne Date (Optionnel)
@@ -429,10 +460,12 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                   </TableHeader>
                   <TableBody>
                     {rawData.map((row, i) => (
-                      <TableRow key={i}>
+                      // Suppression de l'erreur React potentielle
+                      <TableRow key={crypto.randomUUID ? crypto.randomUUID() : i}>
                         {columns.slice(0, 5).map((col) => (
                           <TableCell key={col} className={`text-xs py-2 ${col === selectedColumn ? "font-bold" : ""}`}>
-                            {String(row[col] ?? "")}
+                            {/* Correction SonarQube : safeString */}
+                            {safeString(row[col])}
                           </TableCell>
                         ))}
                       </TableRow>
@@ -443,7 +476,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             </div>
 
             <div className="flex justify-end pt-2">
-              <Button onClick={computeValue} disabled={!selectedColumn} className="gap-2">
+              <Button type="button" onClick={computeValue} disabled={!selectedColumn} className="gap-2">
                 <Calculator className="w-4 h-4" /> Lancer le calcul
               </Button>
             </div>
@@ -457,7 +490,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
                 Résultat de l'analyse : {Object.keys(groupedResults).length} mois détecté(s)
               </p>
 
-              {/* Affichage des résultats mois par mois */}
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                 {Object.entries(groupedResults).sort(([a], [b]) => b.localeCompare(a)).map(([p, group]) => (
                   <div key={p} className="bg-background rounded-lg p-4 border border-border text-center shadow-sm">
@@ -476,10 +508,10 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             </div>
 
             <div className="flex justify-between">
-              <Button variant="outline" onClick={() => setStep("configure")} disabled={uploading}>
+              <Button type="button" variant="outline" onClick={() => setStep("configure")} disabled={uploading}>
                 ← Revenir
               </Button>
-              <Button onClick={handleConfirm} disabled={uploading} className="gap-2">
+              <Button type="button" onClick={handleConfirm} disabled={uploading} className="gap-2">
                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                 {uploading ? "Enregistrement en cours..." : "Valider l'importation"}
               </Button>
