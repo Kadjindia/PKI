@@ -33,8 +33,37 @@ const CUSTOM_LABELS: Record<string, string> = {
 const getPeriodFromDate = (dateStr: string | null | undefined) => {
   if (!dateStr) return null;
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return null;
+  // Correction SonarQube : Number.isNaN au lieu de isNaN
+  if (Number.isNaN(d.getTime())) return null;
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+// Correction SonarQube : Extraction du composant pour éviter de le recréer à chaque rendu parent
+const CustomTooltip = ({ active, payload, label, dynamicKpis }: any) => {
+  // Correction SonarQube : Optional chaining pour plus de lisibilité
+  if (active && payload?.length) {
+    return (
+      <div className="bg-popover border border-border rounded-lg shadow-lg p-3 text-xs min-w-[150px] z-50">
+        <p className="font-semibold mb-2 capitalize text-foreground border-b pb-1">{label}</p>
+        {payload.map((entry: any) => {
+          const kpiDef = dynamicKpis.find((k: any) => k.id === entry.dataKey);
+          const unit = kpiDef?.unit === "pourcentage" ? "%" : "";
+
+          return (
+            // Correction SonarQube : Pas d'index dans la key
+            <div key={entry.dataKey} className="flex items-center justify-between gap-4 py-1">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></span>
+                <span className="text-muted-foreground">{entry.name}</span>
+              </div>
+              <span className="font-bold text-foreground">{entry.value}{unit}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  return null;
 };
 
 export default function KpiChartTabs() {
@@ -54,14 +83,14 @@ export default function KpiChartTabs() {
   const dynamicKpis = useMemo(() => {
     if (activeCategory === "sensibilisation") {
       return [
-        { id: "taux-clic", name: "Taux de Clic Moyen", unit: "pourcentage", color: "#f59e0b" }, // Ambre
-        { id: "taux-compromission", name: "Taux de Compromission", unit: "pourcentage", color: "#ef4444" } // Rouge
+        { id: "taux-clic", name: "Taux de Clic Moyen", unit: "pourcentage", color: "#f59e0b" },
+        { id: "taux-compromission", name: "Taux de Compromission", unit: "pourcentage", color: "#ef4444" }
       ];
     }
     if (activeCategory === "risques") {
       return [
-        { id: "demandes-pas", name: "Nouvelles Demandes de PAS", unit: "nombre", color: "#3b82f6" }, // Bleu
-        { id: "pentests-realises", name: "Pentests Réalisés", unit: "nombre", color: "#10b981" } // Vert
+        { id: "demandes-pas", name: "Nouvelles Demandes de PAS", unit: "nombre", color: "#3b82f6" },
+        { id: "pentests-realises", name: "Pentests Réalisés", unit: "nombre", color: "#10b981" }
       ];
     }
     if (activeCategory === "messagerie") {
@@ -75,7 +104,7 @@ export default function KpiChartTabs() {
     }
     if (activeCategory === "gouvernance") {
       return [
-        { id: "politiques-revues", name: "Politiques Mises à Jour", unit: "nombre", color: "#8b5cf6" } // Violet
+        { id: "politiques-revues", name: "Politiques Mises à Jour", unit: "nombre", color: "#8b5cf6" }
       ];
     }
     return [];
@@ -180,48 +209,24 @@ export default function KpiChartTabs() {
     const { payload } = props;
     return (
       <div className="flex flex-wrap justify-center gap-4 pt-4">
-        {payload.map((entry: any, index: number) => {
+        {payload.map((entry: any) => {
           const isHidden = hiddenKpis[entry.dataKey];
           return (
-            <div
-              key={`item-${index}`}
-              className={`flex items-center gap-1.5 cursor-pointer transition-all duration-200 ${isHidden ? 'opacity-40 grayscale' : 'opacity-100 hover:opacity-80'}`}
+            // Correction SonarQube : bouton au lieu de div, et utilisation de la dataKey au lieu de l'index
+            <button
+              key={entry.dataKey}
+              type="button"
+              className={`flex items-center gap-1.5 cursor-pointer transition-all duration-200 border-none bg-transparent p-0 ${isHidden ? 'opacity-40 grayscale' : 'opacity-100 hover:opacity-80'}`}
               onClick={() => toggleKpi(entry.dataKey)}
               title="Cliquez pour masquer/afficher"
             >
               <span className="w-3 h-3 rounded-full shadow-sm" style={{ backgroundColor: entry.color }}></span>
               <span className="text-xs font-medium text-foreground">{entry.value}</span>
-            </div>
+            </button>
           );
         })}
       </div>
     );
-  };
-
-  // 4. TOOLTIP SUR MESURE
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-popover border border-border rounded-lg shadow-lg p-3 text-xs min-w-[150px] z-50">
-          <p className="font-semibold mb-2 capitalize text-foreground border-b pb-1">{label}</p>
-          {payload.map((entry: any, index: number) => {
-            const kpiDef = dynamicKpis.find(k => k.id === entry.dataKey);
-            const unit = kpiDef?.unit === "pourcentage" ? "%" : "";
-
-            return (
-              <div key={index} className="flex items-center justify-between gap-4 py-1">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></span>
-                  <span className="text-muted-foreground">{entry.name}</span>
-                </div>
-                <span className="font-bold text-foreground">{entry.value}{unit}</span>
-              </div>
-            );
-          })}
-        </div>
-      );
-    }
-    return null;
   };
 
   return (
@@ -234,16 +239,19 @@ export default function KpiChartTabs() {
           </p>
         </div>
         <div className="flex gap-1 p-0.5 rounded-md bg-secondary/50">
-          <button onClick={() => setChartType("area")} className={`px-2.5 py-1.5 rounded text-[10px] font-medium transition-all ${chartType === "area" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>Courbes</button>
-          <button onClick={() => setChartType("bar")} className={`px-2.5 py-1.5 rounded text-[10px] font-medium transition-all ${chartType === "bar" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>Barres</button>
+          {/* Correction SonarQube : Ajout du type="button" */}
+          <button type="button" onClick={() => setChartType("area")} className={`px-2.5 py-1.5 rounded text-[10px] font-medium transition-all ${chartType === "area" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>Courbes</button>
+          <button type="button" onClick={() => setChartType("bar")} className={`px-2.5 py-1.5 rounded text-[10px] font-medium transition-all ${chartType === "bar" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>Barres</button>
         </div>
       </div>
 
       {/* SÉLECTION DE LA CATÉGORIE */}
       <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-thin">
         {CATEGORIES.map((cat) => (
+          // Correction SonarQube : Ajout du type="button"
           <button
             key={cat}
+            type="button"
             onClick={() => handleCategoryChange(cat)}
             className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap transition-all border ${
               activeCategory === cat
@@ -268,7 +276,8 @@ export default function KpiChartTabs() {
               <YAxis yAxisId="left" orientation="left" hide={!hasNumbers} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
               <YAxis yAxisId="right" orientation="right" hide={!hasPercentages} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
 
-              <Tooltip content={<CustomTooltip />} cursor={{ stroke: 'hsl(var(--muted-foreground))', strokeWidth: 1, strokeDasharray: '3 3' }} />
+              {/* Utilisation de notre Tooltip extrait avec passage des props supplémentaires */}
+              <Tooltip content={<CustomTooltip dynamicKpis={dynamicKpis} />} cursor={{ stroke: 'hsl(var(--muted-foreground))', strokeWidth: 1, strokeDasharray: '3 3' }} />
               <Legend content={renderLegend} verticalAlign="bottom" height={36} />
 
               {dynamicKpis.map((kpi) => (
@@ -295,7 +304,7 @@ export default function KpiChartTabs() {
               <YAxis yAxisId="left" orientation="left" hide={!hasNumbers} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
               <YAxis yAxisId="right" orientation="right" hide={!hasPercentages} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} domain={[0, 100]} />
 
-              <Tooltip content={<CustomTooltip />} cursor={{ fill: "hsl(var(--muted) / 0.5)" }} />
+              <Tooltip content={<CustomTooltip dynamicKpis={dynamicKpis} />} cursor={{ fill: "hsl(var(--muted) / 0.5)" }} />
               <Legend content={renderLegend} verticalAlign="bottom" height={36} />
 
               {dynamicKpis.map((kpi) => (

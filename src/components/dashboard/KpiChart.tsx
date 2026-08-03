@@ -2,8 +2,9 @@ import { useKpi } from "@/context/KpiContext";
 import { KpiCategory, CATEGORY_LABELS, CATEGORY_COLORS } from "@/types/kpi";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 
+// Correction SonarQube : Ajout du modificateur "readonly" sur la propriété
 interface KpiChartProps {
-  category: KpiCategory;
+  readonly category: KpiCategory;
 }
 
 export default function KpiChart({ category }: KpiChartProps) {
