@@ -10,7 +10,7 @@ import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,24 +35,20 @@ const formatFrDate = (dateStr: string | null) => {
 
 /**
  * Détermine le statut dynamique de la politique en fonction des dates.
- * Compare la date de prochaine revue avec la date du jour.
  */
 const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualStatus: string) => {
-  if (manualStatus === "draft") return "draft"; // Forcé par l'utilisateur
-  if (!lastDate) return "warning"; // Pas de date = Attention
+  if (manualStatus === "draft") return "draft";
+  if (!lastDate) return "warning";
 
-  // Ajoute la fréquence (ex: 24 mois) à la date de dernière revue
   const nextDate = new Date(lastDate);
   nextDate.setMonth(nextDate.getMonth() + (freqMonths || 24));
 
-  // Différence en jours entre aujourd'hui et la prochaine échéance
-  const today = new Date();
-  const diffTime = nextDate.getTime() - today.getTime();
+  const diffTime = nextDate.getTime() - Date.now();
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-  if (diffDays < 0) return "expired"; // Dépassé
-  if (diffDays <= 60) return "warning"; // Reste 30 jours ou moins
-  return "ok"; // Tout va bien
+  if (diffDays < 0) return "expired";
+  if (diffDays <= 60) return "warning";
+  return "ok";
 };
 
 /**
@@ -66,18 +62,14 @@ const calculateNextReview = (lastDate: string | null, freqMonths: number) => {
 };
 
 /**
- * NOUVEAU : Calcule le score de conformité d'une politique.
- * Règle 1 : Si expirée -> 0%
- * Règle 2 : Sinon, 100% - pénalités des écarts ouverts.
+ * Calcule le score de conformité d'une politique.
  */
 const calculateDynamicCompliance = (policy: Policy, allGaps: PolicyGap[]) => {
-  // Règle 1 : La politique a expiré
   const status = getDynamicStatus(policy.lastReviewDate, policy.reviewFrequencyMonths, policy.status);
   if (status === "expired") {
-    return 0; // Sanction immédiate
+    return 0;
   }
 
-  // Règle 2 : Déduction selon les écarts
   let score = 100;
   const openGaps = allGaps.filter(g => g.policyId === policy.id && g.status !== 'resolu');
 
@@ -90,10 +82,11 @@ const calculateDynamicCompliance = (policy: Policy, allGaps: PolicyGap[]) => {
     }
   });
 
-  return Math.max(0, score); // Le score ne descend pas sous 0
+  return Math.max(0, score);
 };
 
-// --- Utilitaires de design (Badges) ---
+// --- Utilitaires de design (Badges et Couleurs) ---
+
 const getStatusBadge = (status: string) => {
   switch (status) {
     case "ok": return <Badge className="bg-emerald-500/15 text-emerald-600 border-emerald-200">À jour</Badge>;
@@ -113,23 +106,35 @@ const getSeverityBadge = (severity: string) => {
   }
 };
 
+const getProgressColorClass = (compliance: number) => {
+  if (compliance < 50) return '[&>div]:bg-rose-500';
+  if (compliance < 80) return '[&>div]:bg-amber-500';
+  return '[&>div]:bg-emerald-500';
+};
+
+const getComplianceTextColor = (compliance: number) => {
+  if (compliance < 50) return 'var(--destructive)';
+  if (compliance < 80) return '#f59e0b';
+  return '#10b981';
+};
+
 // ============================================================================
 // 2. COMPOSANT PRINCIPAL (La Vue)
 // ============================================================================
 export default function GovernanceView() {
   const queryClient = useQueryClient();
 
-  // --- ÉTATS GLOBAUX (Ce qui est affiché ou sélectionné) ---
+  // --- ÉTATS GLOBAUX ---
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
 
-  // --- ÉTATS DES MODALES (Ouvert / Fermé) ---
+  // --- ÉTATS DES MODALES ---
   const [isAddPolicyOpen, setIsAddPolicyOpen] = useState(false);
   const [isAddGapOpen, setIsAddGapOpen] = useState(false);
   const [policyToUpdate, setPolicyToUpdate] = useState<Policy | null>(null);
   const [policyToDelete, setPolicyToDelete] = useState<Policy | null>(null);
   const [gapToClose, setGapToClose] = useState<string | null>(null);
 
-  // --- ÉTATS DES FORMULAIRES (Les données saisies par l'utilisateur) ---
+  // --- ÉTATS DES FORMULAIRES ---
   const [newPolicy, setNewPolicy] = useState({ name: "", lastReviewDate: "", status: "ok" });
   const [newGap, setNewGap] = useState({ description: "", severity: "moyen", status: "ouvert" });
 
@@ -137,22 +142,19 @@ export default function GovernanceView() {
   // 3. SYNCHRONISATION AVEC LA BASE DE DONNÉES (Supabase)
   // ============================================================================
 
-  // LECTURE : Récupération des politiques et des écarts
   const { data: policies = [], isLoading: isLoadingPolicies } = useQuery({ queryKey: ['policies'], queryFn: fetchPolicies });
   const { data: gaps = [], isLoading: isLoadingGaps } = useQuery({ queryKey: ['gaps'], queryFn: fetchGaps });
 
-  // ÉCRITURE : Créer une politique
   const createPolicyMutation = useMutation({
     mutationFn: createPolicy,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['policies'] }); // Rafraîchit les données
+      queryClient.invalidateQueries({ queryKey: ['policies'] });
       toast.success("Politique ajoutée");
-      setIsAddPolicyOpen(false); // Ferme la modale
-      setNewPolicy({ name: "", lastReviewDate: "", status: "ok" }); // Vide le formulaire
+      setIsAddPolicyOpen(false);
+      setNewPolicy({ name: "", lastReviewDate: "", status: "ok" });
     }
   });
 
-  // ÉCRITURE : Mettre à jour une politique (ex: Date de revue)
   const updatePolicyMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string, updates: Partial<Policy> }) => updatePolicy(id, updates),
     onSuccess: () => {
@@ -161,7 +163,6 @@ export default function GovernanceView() {
     }
   });
 
-  // ÉCRITURE : Supprimer une politique
   const deletePolicyMutation = useMutation({
     mutationFn: deletePolicy,
     onSuccess: () => {
@@ -172,7 +173,6 @@ export default function GovernanceView() {
     }
   });
 
-  // ÉCRITURE : Déclarer un écart
   const createGapMutation = useMutation({
     mutationFn: createGap,
     onSuccess: () => {
@@ -184,7 +184,6 @@ export default function GovernanceView() {
     }
   });
 
-  // ÉCRITURE : Clôturer un écart
   const updateGapMutation = useMutation({
     mutationFn: ({ id, status }: { id: string, status: any }) => updateGapStatus(id, status),
     onSuccess: () => {
@@ -194,30 +193,26 @@ export default function GovernanceView() {
   });
 
   // ============================================================================
-  // 4. CALCULS GLOBAUX (Pour les cartes du haut)
+  // 4. CALCULS GLOBAUX
   // ============================================================================
   const totalPolicies = policies.length;
 
-  // Moyenne de conformité de tout le référentiel
   const avgCompliance = totalPolicies > 0
     ? Math.round(policies.reduce((acc, p) => acc + calculateDynamicCompliance(p, gaps), 0) / totalPolicies)
     : 0;
 
-  // Comptage des écarts (uniquement ceux qui ne sont pas résolus)
   const activeGaps = gaps.filter(g => g.status !== 'resolu');
   const openGapsCount = activeGaps.length;
   const criticalGapsCount = activeGaps.filter(g => g.severity === "critique").length;
 
-  // Comptage des politiques saines (Statut 'ok')
   const okPoliciesCount = policies.filter(p =>
     getDynamicStatus(p.lastReviewDate, p.reviewFrequencyMonths, p.status) === 'ok'
   ).length;
 
-  // Score de la politique actuellement ouverte dans le panneau
   const selectedPolicyCompliance = selectedPolicy ? calculateDynamicCompliance(selectedPolicy, gaps) : 0;
 
   // ============================================================================
-  // 5. GESTION DES SOUMISSIONS DE FORMULAIRES
+  // 5. GESTION DES SOUMISSIONS
   // ============================================================================
   const handleCreatePolicy = (e: React.FormEvent) => {
     e.preventDefault();
@@ -226,7 +221,7 @@ export default function GovernanceView() {
       name: newPolicy.name,
       lastReviewDate: newPolicy.lastReviewDate || new Date().toISOString().split('T')[0],
       status: newPolicy.status as any,
-      reviewFrequencyMonths: 24 // Fixé à 2 ans par défaut
+      reviewFrequencyMonths: 24
     });
   };
 
@@ -242,20 +237,18 @@ export default function GovernanceView() {
     });
   };
 
-  // Affichage d'un loader pendant que Supabase répond
   if (isLoadingPolicies || isLoadingGaps) {
     return <div className="flex justify-center p-12"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
   }
 
   // ============================================================================
-  // 6. RENDU DE L'INTERFACE UTILISATEUR (JSX)
+  // 6. RENDU DE L'INTERFACE UTILISATEUR
   // ============================================================================
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
 
       {/* --- ZONE A : CARTES DE SYNTHÈSE EXECUTIVE --- */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Carte : Référentiel */}
         <Card className="border-l-4 border-l-primary shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Santé du Référentiel</CardTitle>
@@ -267,7 +260,6 @@ export default function GovernanceView() {
           </CardContent>
         </Card>
 
-        {/* Carte : Score Global */}
         <Card className={`border-l-4 shadow-sm ${avgCompliance >= 80 ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Score Conformité</CardTitle>
@@ -279,7 +271,6 @@ export default function GovernanceView() {
           </CardContent>
         </Card>
 
-        {/* Carte : Écarts globaux */}
         <Card className="border-l-4 border-l-blue-500 shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Plan d'Action</CardTitle>
@@ -291,7 +282,6 @@ export default function GovernanceView() {
           </CardContent>
         </Card>
 
-        {/* Carte : Urgences */}
         <Card className={`border-l-4 shadow-sm ${criticalGapsCount > 0 ? 'border-l-rose-600 bg-rose-50/50' : 'border-l-slate-200'}`}>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className={`text-sm font-medium ${criticalGapsCount > 0 ? 'text-rose-600' : 'text-muted-foreground'}`}>Urgences</CardTitle>
@@ -304,10 +294,9 @@ export default function GovernanceView() {
         </Card>
       </div>
 
-      {/* --- ZONE B & C : CORPS PRINCIPAL (Onglets Tableau/Écarts) --- */}
+      {/* --- ZONE B & C : CORPS PRINCIPAL --- */}
       <Card className="shadow-sm">
         <Tabs defaultValue="policies" className="w-full">
-          {/* En-tête des onglets */}
           <div className="px-6 pt-4 border-b border-border flex justify-between items-end">
             <TabsList className="bg-transparent space-x-4">
               <TabsTrigger value="policies" className="data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-0 pb-3">
@@ -317,12 +306,11 @@ export default function GovernanceView() {
                 Registre des Écarts ({openGapsCount})
               </TabsTrigger>
             </TabsList>
-            <Button className="mb-2" size="sm" onClick={() => setIsAddPolicyOpen(true)}>
+            <Button type="button" className="mb-2" size="sm" onClick={() => setIsAddPolicyOpen(true)}>
               <Plus className="w-4 h-4 mr-2" /> Ajouter une politique
             </Button>
           </div>
 
-          {/* ONGLET 1 : Liste des politiques (Le Tableau) */}
           <TabsContent value="policies" className="m-0">
             {policies.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground">Aucune politique dans le référentiel.</div>
@@ -342,7 +330,7 @@ export default function GovernanceView() {
                   {policies.map((policy) => {
                     const policyGapsCount = gaps.filter(g => g.policyId === policy.id && g.status !== 'resolu').length;
                     const dynamicStatus = getDynamicStatus(policy.lastReviewDate, policy.reviewFrequencyMonths, policy.status);
-                    const dynamicCompliance = calculateDynamicCompliance(policy, gaps); // Recalculé avec la nouvelle règle
+                    const dynamicCompliance = calculateDynamicCompliance(policy, gaps);
 
                     return (
                       <TableRow key={policy.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedPolicy(policy)}>
@@ -355,7 +343,7 @@ export default function GovernanceView() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Progress value={dynamicCompliance} className={`h-2 ${dynamicCompliance < 50 ? '[&>div]:bg-rose-500' : dynamicCompliance < 80 ? '[&>div]:bg-amber-500' : '[&>div]:bg-emerald-500'}`} />
+                            <Progress value={dynamicCompliance} className={`h-2 ${getProgressColorClass(dynamicCompliance)}`} />
                             <span className="text-xs font-medium w-8">{dynamicCompliance}%</span>
                           </div>
                         </TableCell>
@@ -372,7 +360,6 @@ export default function GovernanceView() {
             )}
           </TabsContent>
 
-          {/* ONGLET 2 : Liste de TOUS les écarts ouverts */}
           <TabsContent value="gaps" className="m-0 p-4">
             {activeGaps.length === 0 ? (
               <div className="p-12 text-center text-muted-foreground"><p>Aucun écart actif ! Tout est conforme.</p></div>
@@ -391,7 +378,7 @@ export default function GovernanceView() {
                       </div>
                       <div className="flex items-center gap-3">
                         <Badge variant="outline">{gap.status}</Badge>
-                        <Button variant="ghost" size="sm" onClick={() => setGapToClose(gap.id)}>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => setGapToClose(gap.id)}>
                           <CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2" /> Clôturer
                         </Button>
                       </div>
@@ -404,18 +391,17 @@ export default function GovernanceView() {
         </Tabs>
       </Card>
 
-      {/* --- ZONE D : PANNEAU LATÉRAL COULISSANT (Détails d'une politique) --- */}
+      {/* --- ZONE D : PANNEAU LATÉRAL COULISSANT --- */}
       <Sheet open={!!selectedPolicy} onOpenChange={(open) => !open && setSelectedPolicy(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
             <SheetTitle className="text-xl">{selectedPolicy?.name}</SheetTitle>
-            <SheetDescription>Détails et suivi</SheetDescription>
+            <SheetDescription>Détails et suivi de la politique de gouvernance</SheetDescription>
           </SheetHeader>
 
           {selectedPolicy && (
             <div className="space-y-6">
 
-              {/* En-tête du panneau : Statut & Score */}
               <div className="flex items-center gap-4 p-4 rounded-lg bg-secondary/50">
                 <div className="space-y-1">
                   <p className="text-xs text-muted-foreground">Statut</p>
@@ -423,13 +409,12 @@ export default function GovernanceView() {
                 </div>
                 <div className="space-y-1 border-l pl-4 border-border">
                   <p className="text-xs text-muted-foreground">Conformité</p>
-                  <p className="text-lg font-bold" style={{ color: selectedPolicyCompliance < 50 ? 'var(--destructive)' : selectedPolicyCompliance < 80 ? '#f59e0b' : '#10b981' }}>
+                  <p className="text-lg font-bold" style={{ color: getComplianceTextColor(selectedPolicyCompliance) }}>
                     {selectedPolicyCompliance}%
                   </p>
                 </div>
               </div>
 
-              {/* Bloc Calendrier */}
               <div className="space-y-3">
                 <h4 className="text-sm font-semibold">Calendrier</h4>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
@@ -447,31 +432,30 @@ export default function GovernanceView() {
                   </div>
                 </div>
 
-                {/* Bouton pour réviser rapidement */}
                 <Button
+                  type="button"
                   variant="outline"
                   size="sm"
                   className="w-full mt-3 bg-emerald-50 hover:bg-emerald-100 hover:text-emerald-700 border-emerald-200 text-emerald-600"
                   disabled={updatePolicyMutation.isPending}
-                  onClick={() => setPolicyToUpdate(selectedPolicy)} // Déclenche la modale de confirmation
+                  onClick={() => setPolicyToUpdate(selectedPolicy)}
                 >
                   <CheckCircle2 className="w-4 h-4 mr-2" />
                   Marquer comme révisée aujourd'hui
                 </Button>
               </div>
 
-              {/* Bloc Écarts liés à cette politique */}
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
                   <h4 className="text-sm font-semibold flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-500" /> Écarts associés
                   </h4>
-                  <Button size="sm" variant="outline" onClick={() => setIsAddGapOpen(true)}>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setIsAddGapOpen(true)}>
                     <Plus className="w-3 h-3 mr-1" /> Déclarer
                   </Button>
                 </div>
 
-                {gaps.filter(g => g.policyId === selectedPolicy.id && g.status !== 'resolu').length > 0 ? (
+                {gaps.some(g => g.policyId === selectedPolicy.id && g.status !== 'resolu') ? (
                   <div className="space-y-2">
                     {gaps.filter(g => g.policyId === selectedPolicy.id && g.status !== 'resolu').map(gap => (
                       <div key={gap.id} className="p-3 text-sm border border-border rounded-md bg-card">
@@ -480,7 +464,7 @@ export default function GovernanceView() {
                             {getSeverityBadge(gap.severity)}
                             <span className="text-[10px] text-muted-foreground uppercase">{gap.status}</span>
                           </div>
-                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setGapToClose(gap.id)}>
+                          <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => setGapToClose(gap.id)}>
                             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                           </Button>
                         </div>
@@ -493,9 +477,8 @@ export default function GovernanceView() {
                 )}
               </div>
 
-              {/* Zone de Danger (Suppression) */}
               <div className="mt-12 pt-6 border-t border-border">
-                <Button variant="destructive" className="w-full" onClick={() => setPolicyToDelete(selectedPolicy)}>
+                <Button type="button" variant="destructive" className="w-full" onClick={() => setPolicyToDelete(selectedPolicy)}>
                   <Trash2 className="w-4 h-4 mr-2" />
                   Supprimer du référentiel
                 </Button>
@@ -509,10 +492,12 @@ export default function GovernanceView() {
       {/* 7. MODALES DE FORMULAIRES ET CONFIRMATIONS */}
       {/* ============================================================================ */}
 
-      {/* Créer Politique */}
       <Dialog open={isAddPolicyOpen} onOpenChange={setIsAddPolicyOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Nouvelle Politique</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Nouvelle Politique</DialogTitle>
+            <DialogDescription>Renseignez les informations de la nouvelle politique de gouvernance à ajouter au référentiel.</DialogDescription>
+          </DialogHeader>
           <form onSubmit={handleCreatePolicy} className="space-y-4">
             <div className="space-y-2">
               <Label>Nom</Label>
@@ -530,10 +515,12 @@ export default function GovernanceView() {
         </DialogContent>
       </Dialog>
 
-      {/* Créer Écart */}
       <Dialog open={isAddGapOpen} onOpenChange={setIsAddGapOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Déclarer un écart</DialogTitle><SheetDescription>Sur : {selectedPolicy?.name}</SheetDescription></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Déclarer un écart</DialogTitle>
+            <DialogDescription>Enregistrez un nouvel écart de conformité rattaché à la politique : {selectedPolicy?.name}</DialogDescription>
+          </DialogHeader>
           <form onSubmit={handleCreateGap} className="space-y-4">
             <div className="space-y-2">
               <Label>Description de la non-conformité</Label>
@@ -559,9 +546,6 @@ export default function GovernanceView() {
         </DialogContent>
       </Dialog>
 
-      {/* --- CONFIRMATIONS D'ACTIONS CRITIQUES --- */}
-
-      {/* Confirmation : Révision documentaire */}
       <AlertDialog open={!!policyToUpdate} onOpenChange={(open) => !open && setPolicyToUpdate(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -579,7 +563,7 @@ export default function GovernanceView() {
                 if (!policyToUpdate) return;
                 const today = new Date().toISOString().split('T')[0];
                 updatePolicyMutation.mutate({ id: policyToUpdate.id, updates: { lastReviewDate: today } });
-                setSelectedPolicy({ ...policyToUpdate, lastReviewDate: today }); // MAJ locale immédiate
+                setSelectedPolicy({ ...policyToUpdate, lastReviewDate: today } as Policy);
                 setPolicyToUpdate(null);
               }}
             >
@@ -589,7 +573,6 @@ export default function GovernanceView() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Confirmation : Clôture d'écart */}
       <AlertDialog open={!!gapToClose} onOpenChange={(open) => !open && setGapToClose(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -615,7 +598,6 @@ export default function GovernanceView() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Confirmation : Suppression d'une politique */}
       <AlertDialog open={!!policyToDelete} onOpenChange={(open) => !open && setPolicyToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

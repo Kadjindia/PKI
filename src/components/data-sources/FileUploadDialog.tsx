@@ -92,6 +92,37 @@ function getStepClassName(isActive: boolean, isDone: boolean): string {
   return "bg-secondary text-muted-foreground";
 }
 
+// Helper pour réduire la complexité cognitive. Gère une seule règle d'automatisation.
+async function processSingleAutomatedKpi(
+  groupData: Record<string, unknown>[],
+  period: string,
+  file: File,
+  kpis: KpiDefinition[],
+  column: string | undefined,
+  kpiKeyword: string,
+  matchCondition: (val: string) => boolean
+) {
+  if (!column) return;
+
+  const kpi = kpis.find((k) => k.name.toLowerCase().includes(kpiKeyword));
+  if (!kpi) return;
+
+  const matchedData = groupData.filter((row) => matchCondition(safeString(row[column])));
+
+  if (matchedData.length > 0) {
+    await uploadFileForKpi({
+      file,
+      kpiId: kpi.id,
+      period,
+      selectedColumn: column,
+      aggregation: "count",
+      computedValue: matchedData.length,
+      rawData: matchedData.slice(0, 50),
+      detailRows: [],
+    });
+  }
+}
+
 // Correction SonarQube : Extraction de la logique complexe pour réduire la complexité cognitive
 async function processAutomatedKpis(
   groupData: Record<string, unknown>[],
@@ -100,47 +131,29 @@ async function processAutomatedKpis(
   columns: string[],
   kpis: KpiDefinition[]
 ) {
-  const emailCol = columns.find(c => c.toLowerCase() === "email");
-  const typeCol = columns.find(c => c.toLowerCase() === "type");
-  const dossierCol = columns.find(c => c.toLowerCase() === "dossier");
+  const emailCol = columns.find((c) => c.toLowerCase() === "email");
+  const typeCol = columns.find((c) => c.toLowerCase() === "type");
+  const dossierCol = columns.find((c) => c.toLowerCase() === "dossier");
 
-  if (emailCol) {
-    const kpi1212 = kpis.find(k => k.name.toLowerCase().includes("1212"));
-    if (kpi1212) {
-      const data1212 = groupData.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "le1212@actionlogement.fr");
-      if (data1212.length > 0) {
-        await uploadFileForKpi({ file, kpiId: kpi1212.id, period, selectedColumn: emailCol, aggregation: "count", computedValue: data1212.length, rawData: data1212.slice(0, 50), detailRows: [] });
-      }
-    }
+  // Règle 1 : Signalements 1212
+  await processSingleAutomatedKpi(groupData, period, file, kpis, emailCol, "1212",
+    (val) => val.toLowerCase().trim() === "le1212@actionlogement.fr"
+  );
 
-    const kpiFraude = kpis.find(k => k.name.toLowerCase().includes("fraude"));
-    if (kpiFraude) {
-      const dataFraude = groupData.filter(row => safeString(row[emailCol]).toLowerCase().trim() === "fraude.als@actionlogement.fr");
-      if (dataFraude.length > 0) {
-        await uploadFileForKpi({ file, kpiId: kpiFraude.id, period, selectedColumn: emailCol, aggregation: "count", computedValue: dataFraude.length, rawData: dataFraude.slice(0, 50), detailRows: [] });
-      }
-    }
-  }
+  // Règle 2 : Fraudes
+  await processSingleAutomatedKpi(groupData, period, file, kpis, emailCol, "fraude",
+    (val) => val.toLowerCase().trim() === "fraude.als@actionlogement.fr"
+  );
 
-  if (typeCol) {
-    const kpiExterne = kpis.find(k => k.name.toLowerCase().includes("externe"));
-    if (kpiExterne) {
-      const dataExterne = groupData.filter(row => safeString(row[typeCol]).toUpperCase().trim() === "EXTERNE");
-      if (dataExterne.length > 0) {
-        await uploadFileForKpi({ file, kpiId: kpiExterne.id, period, selectedColumn: typeCol, aggregation: "count", computedValue: dataExterne.length, rawData: dataExterne.slice(0, 50), detailRows: [] });
-      }
-    }
-  }
+  // Règle 3 : Mails Externes
+  await processSingleAutomatedKpi(groupData, period, file, kpis, typeCol, "externe",
+    (val) => val.toUpperCase().trim() === "EXTERNE"
+  );
 
-  if (dossierCol) {
-    const kpiAdressage = kpis.find(k => k.name.toLowerCase().includes("adressage"));
-    if (kpiAdressage) {
-      const dataAdressage = groupData.filter(row => safeString(row[dossierCol]).trim() === "05 - Erreur d'adressage");
-      if (dataAdressage.length > 0) {
-        await uploadFileForKpi({ file, kpiId: kpiAdressage.id, period, selectedColumn: dossierCol, aggregation: "count", computedValue: dataAdressage.length, rawData: dataAdressage.slice(0, 50), detailRows: [] });
-      }
-    }
-  }
+  // Règle 4 : Erreurs d'adressage
+  await processSingleAutomatedKpi(groupData, period, file, kpis, dossierCol, "adressage",
+    (val) => val.trim() === "05 - erreur d'adressage" // Minuscules pour une vérification plus robuste si besoin
+  );
 }
 
 // --- COMPOSANT PRINCIPAL ---
@@ -289,7 +302,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
 
     try {
       for (const [p, group] of Object.entries(groupedResults)) {
-        // Enregistrement du KPI principal
         await uploadFileForKpi({
           file, kpiId: kpi.id, period: p, selectedColumn, aggregation: aggMethod,
           selectedSheet: fileType === "excel" ? selectedSheet : undefined,
@@ -302,7 +314,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
           })),
         });
 
-        // Appel de la fonction extraite pour gérer les automatisations complexes (Fraude, 1212, Externe...)
+        // Appel propre de la fonction d'automatisation
         await processAutomatedKpis(group.data, p, file, columns, kpis);
       }
 
@@ -342,7 +354,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
 
         <div className="flex items-center gap-2 mb-4">
           {["Upload", "Configuration", "Validation"].map((label, i) => {
-            // Correction SonarQube : Remplacement du ternaire imbriqué par un tableau
             const stepsArray = ["upload", "configure", "confirm"];
             const stepIdx = stepsArray[i];
 
@@ -362,7 +373,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         </div>
 
         {step === "upload" && (
-          // Correction SonarQube : Utilisation d'un vrai <button> pour l'accessibilité
           <button
             type="button"
             className="block w-full border-2 border-dashed border-border rounded-xl p-12 text-center hover:border-primary/50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary bg-transparent"
@@ -450,7 +460,6 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
             </div>
 
             <div className="space-y-1.5">
-              {/* Correction SonarQube : Remplacement de <label> par un <p> vu qu'il n'y a pas d'input associé */}
               <p className="text-xs font-medium text-muted-foreground">Aperçu (10 premières lignes)</p>
               <div className="rounded-lg border border-border overflow-hidden">
                 <Table>
