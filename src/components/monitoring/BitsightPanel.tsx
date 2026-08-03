@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Globe, TrendingUp, TrendingDown, CheckCircle2, ShieldCheck,
+  Globe, TrendingUp, TrendingDown, ShieldCheck,
   Activity, ArrowUpRight, ArrowDownRight, AlertOctagon,
   ShieldAlert, Lock, Cpu, X, Info, Server, ExternalLink, Filter, Search, Target, Mail, Network
 } from "lucide-react";
@@ -43,12 +43,47 @@ const BITSIGHT_VECTOR_NAMES: Record<string, string> = {
   tls_ssl: "SSL/TLS"
 };
 
-// Utilitaire de génération d'ID unique natif
+// Utilitaire de génération d'ID unique sécurisé (Correction SonarQube)
 const generateId = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  return Math.random().toString(36).substring(2, 9);
+  return `id-${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`;
+};
+
+// ============================================================================
+// SOUS-FONCTIONS UTILITAIRES (Évite les ternaires imbriqués)
+// ============================================================================
+
+const isAssetMatchingFilter = (asset: any, filter: string) => {
+  if (filter === 'domains') return asset.type === 'Domaine';
+  if (filter === 'ips') return asset.type === 'IP Publique';
+  if (filter === 'critical') return asset.riskLevel === 'Critique';
+  return true;
+};
+
+const sortTechsByRisk = (a: any, b: any) => {
+  if (a.risk === 'Élevé' && b.risk !== 'Élevé') return -1;
+  if (a.risk !== 'Élevé' && b.risk === 'Élevé') return 1;
+  return 0;
+};
+
+const getSeverityBadgeProps = (severity: string): { variant: "destructive" | "default" | "secondary" | "outline", className: string } => {
+  if (severity === 'Critique' || severity === 'Matériel') return { variant: 'destructive', className: '' };
+  if (severity === 'Modéré') return { variant: 'default', className: 'bg-yellow-500 hover:bg-yellow-600 text-white' };
+  return { variant: 'secondary', className: '' };
+};
+
+const getScoreCardStyles = (score: number) => {
+  if (score < 600) return { borderClass: 'border-l-destructive', iconClass: 'text-destructive' };
+  if (score < 700) return { borderClass: 'border-l-orange-500', iconClass: 'text-orange-500' };
+  return { borderClass: 'border-l-emerald-500', iconClass: 'text-emerald-500' };
+};
+
+const getTrendStyle = (trend: string) => {
+  if (trend.startsWith('+')) return { color: "text-emerald-500", bg: "bg-emerald-500/10", Icon: TrendingUp };
+  if (trend.startsWith('-')) return { color: "text-destructive", bg: "bg-destructive/10", Icon: TrendingDown };
+  return { color: "text-slate-500", bg: "bg-slate-500/10", Icon: Activity };
 };
 
 // ============================================================================
@@ -80,7 +115,7 @@ const processScoreAndPosture = (ratingData: any, realData: any) => {
         progressScore = 95;
         positiveList.push({ factor: officialName, impact: "Conforme (A)" });
       } else if (grade === 'B' || grade === 'WARN') {
-        // Maintenu à 70 par défaut
+        // Default 70
       } else {
         progressScore = 40;
         negativeList.push({ factor: officialName, impact: `Risque (${grade})` });
@@ -342,6 +377,72 @@ const fetchBitsightDetails = async () => {
   return realData;
 };
 
+// ============================================================================
+// HOOK DE TRAITEMENT (Extrait du composant principal)
+// ============================================================================
+
+function useBitsightDataProcessing(data: any, filters: any) {
+  return useMemo(() => {
+    if (!data) return {} as any;
+    const {
+      assetFilter, modalAssetSearch, modalAssetTypeFilter, modalAssetRiskFilter,
+      modalTechSearch, modalTechRiskFilter, findingSeverityFilter, findingVectorFilter,
+      modalFindingSearch, selectedAssetForFindings
+    } = filters;
+
+    const allAssets = [...(data.attackSurface.riskyAssets || [])].sort((a, b) => (b.findings || 0) - (a.findings || 0));
+    const fAssets = allAssets.filter(a => isAssetMatchingFilter(a, assetFilter));
+
+    const mAssets = allAssets.filter(a => {
+      const ms = modalAssetSearch.toLowerCase();
+      return (a.asset.toLowerCase().includes(ms) || a.vendors?.join(' ').toLowerCase().includes(ms)) &&
+             (modalAssetTypeFilter === "all" || a.type === modalAssetTypeFilter) &&
+             (modalAssetRiskFilter === "all" || a.riskLevel === modalAssetRiskFilter);
+    });
+
+    const counts: Record<string, number> = {};
+    fAssets.forEach(a => a.vendors?.forEach((v: string) => {
+      const label = v.charAt(0).toUpperCase() + v.slice(1);
+      counts[label] = (counts[label] || 0) + 1;
+    }));
+    const aTechs = Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5);
+
+    const sTechs = [...(data.techShadowIt.technologies || [])].sort(sortTechsByRisk);
+    const mTechs = sTechs.filter(t => (t.name.toLowerCase().includes(modalTechSearch.toLowerCase()) || t.asset.toLowerCase().includes(modalTechSearch.toLowerCase())) && (modalTechRiskFilter === "all" || t.risk === modalTechRiskFilter));
+
+    const rFind = data.findings.list || [];
+    const fFind = rFind.filter((f: any) => (findingSeverityFilter === "all" || f.severityKey === findingSeverityFilter) && (findingVectorFilter === "all" || f.vectorKey === findingVectorFilter));
+
+    const sc = { Critique: 0, Matériel: 0, Modéré: 0, Mineur: 0 };
+    rFind.filter((f: any) => findingVectorFilter === "all" || f.vectorKey === findingVectorFilter).forEach((f: any) => sc[f.severity as keyof typeof sc]++);
+    const sevDist = [
+      { name: 'Critique', value: sc.Critique, color: '#ef4444', key: 'severe' },
+      { name: 'Matériel', value: sc.Matériel, color: '#f97316', key: 'material' },
+      { name: 'Modéré', value: sc.Modéré, color: '#eab308', key: 'moderate' },
+      { name: 'Mineur', value: sc.Mineur, color: '#3b82f6', key: 'minor' }
+    ];
+
+    const cm: Record<string, any> = {};
+    // Correction SonarQube : Condition avec bloc d'accolades strict
+    rFind.filter((f: any) => findingSeverityFilter === "all" || f.severityKey === findingSeverityFilter).forEach((f: any) => {
+      if (!cm[f.finding]) {
+        cm[f.finding] = { count: 0, key: f.vectorKey };
+      }
+      cm[f.finding].count++;
+    });
+
+    const catDist = Object.entries(cm).map(([category, details]) => ({ category, count: details.count, vectorKey: details.key })).sort((a, b) => b.count - a.count).slice(0, 10);
+
+    const mFind = fFind.filter((f: any) => f.asset.toLowerCase().includes(modalFindingSearch.toLowerCase()) || f.finding.toLowerCase().includes(modalFindingSearch.toLowerCase()));
+    const spFind = rFind.filter((f: any) => selectedAssetForFindings && f.asset.includes(selectedAssetForFindings));
+
+    return {
+      top10Assets: fAssets.slice(0, 10), modalFilteredAssets: mAssets, activeTopTechnologies: aTechs,
+      top10Techs: sTechs.slice(0, 10), modalFilteredTechs: mTechs, displayFindings: fFind.slice(0, 10), dynamicSeverityDistribution: sevDist,
+      dynamicCategoryDistribution: catDist, modalFilteredFindings: mFind, specificAssetFindings: spFind
+    };
+  }, [data, filters]);
+}
 
 // ============================================================================
 // COMPOSANT PRINCIPAL
@@ -371,56 +472,17 @@ export default function BitsightPanel() {
   const [modalTechSearch, setModalTechSearch] = useState("");
   const [modalTechRiskFilter, setModalTechRiskFilter] = useState("all");
 
+  const filters = {
+    assetFilter, modalAssetSearch, modalAssetTypeFilter, modalAssetRiskFilter,
+    modalTechSearch, modalTechRiskFilter, findingSeverityFilter, findingVectorFilter,
+    modalFindingSearch, selectedAssetForFindings
+  };
+
   const {
-    filteredAssets, top10Assets, modalFilteredAssets, activeTopTechnologies,
+    top10Assets, modalFilteredAssets, activeTopTechnologies,
     top10Techs, modalFilteredTechs, displayFindings, dynamicSeverityDistribution, dynamicCategoryDistribution,
     modalFilteredFindings, specificAssetFindings
-  } = useMemo(() => {
-    if (!data) return {} as any;
-
-    const allAssets = [...(data.attackSurface.riskyAssets || [])].sort((a, b) => (b.findings || 0) - (a.findings || 0));
-    const fAssets = allAssets.filter(a => assetFilter === 'domains' ? a.type === 'Domaine' : assetFilter === 'ips' ? a.type === 'IP Publique' : assetFilter === 'critical' ? a.riskLevel === 'Critique' : true);
-
-    const mAssets = allAssets.filter(a => {
-      const ms = modalAssetSearch.toLowerCase();
-      return (a.asset.toLowerCase().includes(ms) || a.vendors?.join(' ').toLowerCase().includes(ms)) &&
-             (modalAssetTypeFilter === "all" || a.type === modalAssetTypeFilter) &&
-             (modalAssetRiskFilter === "all" || a.riskLevel === modalAssetRiskFilter);
-    });
-
-    const counts: Record<string, number> = {};
-    fAssets.forEach(a => a.vendors?.forEach((v: string) => { counts[v.charAt(0).toUpperCase() + v.slice(1)] = (counts[v.charAt(0).toUpperCase() + v.slice(1)] || 0) + 1; }));
-    const aTechs = Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5);
-
-    const sTechs = [...(data.techShadowIt.technologies || [])].sort((a, b) => a.risk === 'Élevé' && b.risk !== 'Élevé' ? -1 : a.risk !== 'Élevé' && b.risk === 'Élevé' ? 1 : 0);
-    const mTechs = sTechs.filter(t => (t.name.toLowerCase().includes(modalTechSearch.toLowerCase()) || t.asset.toLowerCase().includes(modalTechSearch.toLowerCase())) && (modalTechRiskFilter === "all" || t.risk === modalTechRiskFilter));
-
-    const rFind = data.findings.list || [];
-    const fFind = rFind.filter((f: any) => (findingSeverityFilter === "all" || f.severityKey === findingSeverityFilter) && (findingVectorFilter === "all" || f.vectorKey === findingVectorFilter));
-
-    const sc = { Critique: 0, Matériel: 0, Modéré: 0, Mineur: 0 };
-    rFind.filter((f: any) => findingVectorFilter === "all" || f.vectorKey === findingVectorFilter).forEach((f: any) => sc[f.severity as keyof typeof sc]++);
-    const sevDist = [
-      { name: 'Critique', value: sc.Critique, color: '#ef4444', key: 'severe' },
-      { name: 'Matériel', value: sc.Matériel, color: '#f97316', key: 'material' },
-      { name: 'Modéré', value: sc.Modéré, color: '#eab308', key: 'moderate' },
-      { name: 'Mineur', value: sc.Mineur, color: '#3b82f6', key: 'minor' }
-    ];
-
-    const cm: Record<string, any> = {};
-    rFind.filter((f: any) => findingSeverityFilter === "all" || f.severityKey === findingSeverityFilter).forEach((f: any) => { if (!cm[f.finding]) cm[f.finding] = { count: 0, key: f.vectorKey }; cm[f.finding].count++; });
-    const catDist = Object.entries(cm).map(([category, details]) => ({ category, count: details.count, vectorKey: details.key })).sort((a, b) => b.count - a.count).slice(0, 10);
-
-    const mFind = fFind.filter((f: any) => f.asset.toLowerCase().includes(modalFindingSearch.toLowerCase()) || f.finding.toLowerCase().includes(modalFindingSearch.toLowerCase()));
-    const spFind = rFind.filter((f: any) => selectedAssetForFindings && f.asset.includes(selectedAssetForFindings));
-
-    return {
-      filteredAssets: fAssets, top10Assets: fAssets.slice(0, 10), modalFilteredAssets: mAssets, activeTopTechnologies: aTechs,
-      top10Techs: sTechs.slice(0, 10), modalFilteredTechs: mTechs, displayFindings: fFind.slice(0, 10), dynamicSeverityDistribution: sevDist,
-      dynamicCategoryDistribution: catDist, modalFilteredFindings: mFind, specificAssetFindings: spFind
-    };
-  }, [data, assetFilter, modalAssetSearch, modalAssetTypeFilter, modalAssetRiskFilter, modalTechSearch, modalTechRiskFilter, findingSeverityFilter, findingVectorFilter, modalFindingSearch, selectedAssetForFindings]);
-
+  } = useBitsightDataProcessing(data, filters);
 
   if (isLoading || !data) {
     return (
@@ -431,7 +493,12 @@ export default function BitsightPanel() {
     );
   }
 
-  // --- SOUS-FONCTIONS DE RENDU (Modales extraites pour réduire la complexité) ---
+  const scoreStyles = getScoreCardStyles(data.executive.score);
+  const d7Style = getTrendStyle(data.executive.trends.d7);
+  const d30Style = getTrendStyle(data.executive.trends.d30);
+  const d90Style = getTrendStyle(data.executive.trends.d90);
+
+  // --- SOUS-FONCTIONS DE RENDU ---
 
   const renderRiskModal = () => (
     <div className="fixed inset-0 z-[60] flex justify-end bg-background/50 backdrop-blur-sm transition-opacity">
@@ -507,15 +574,18 @@ export default function BitsightPanel() {
             <TableHeader className="sticky top-0 bg-card z-10 shadow-sm"><TableRow><TableHead className="pl-6">Actif</TableHead><TableHead>Type</TableHead><TableHead>Technologies Détectées</TableHead><TableHead>Criticité</TableHead><TableHead className="text-right pr-6">Failles (Findings)</TableHead></TableRow></TableHeader>
             <TableBody>
               {modalFilteredAssets.length === 0 ? <TableRow><TableCell colSpan={5} className="text-center py-8 text-sm text-muted-foreground">Aucun actif ne correspond.</TableCell></TableRow> : null}
-              {modalFilteredAssets.map((a: any) => (
-                <TableRow key={a.id} className="hover:bg-secondary/40">
-                  <TableCell className="font-mono text-xs font-bold text-foreground pl-6">{a.asset}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{a.type}</TableCell>
-                  <TableCell className="text-xs font-mono text-muted-foreground uppercase">{a.vendors && a.vendors.length > 0 ? a.vendors.join(', ') : "-"}</TableCell>
-                  <TableCell><Badge variant={a.riskLevel === 'Critique' || a.riskLevel === 'Élevé' ? 'destructive' : 'secondary'}>{a.riskLevel}</Badge></TableCell>
-                  <TableCell className="font-bold text-sm text-right pr-6">{a.findings}</TableCell>
-                </TableRow>
-              ))}
+              {modalFilteredAssets.map((a: any) => {
+                const badgeProps = getSeverityBadgeProps(a.riskLevel);
+                return (
+                  <TableRow key={a.id} className="hover:bg-secondary/40">
+                    <TableCell className="font-mono text-xs font-bold text-foreground pl-6">{a.asset}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{a.type}</TableCell>
+                    <TableCell className="text-xs font-mono text-muted-foreground uppercase">{a.vendors?.length > 0 ? a.vendors.join(', ') : "-"}</TableCell>
+                    <TableCell><Badge variant={badgeProps.variant} className={badgeProps.className}>{a.riskLevel}</Badge></TableCell>
+                    <TableCell className="font-bold text-sm text-right pr-6">{a.findings}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
@@ -539,13 +609,16 @@ export default function BitsightPanel() {
             <TableHeader className="sticky top-0 bg-card z-10 shadow-sm"><TableRow><TableHead className="pl-6">Vulnérabilité (Vecteur)</TableHead><TableHead>Sévérité</TableHead><TableHead>Dernière Découverte</TableHead></TableRow></TableHeader>
             <TableBody>
               {specificAssetFindings.length === 0 ? <TableRow><TableCell colSpan={3} className="text-center py-8 text-sm text-muted-foreground">Aucune vulnérabilité trouvée pour cet actif.</TableCell></TableRow> : null}
-              {specificAssetFindings.map((f: any) => (
-                <TableRow key={f.id} className="hover:bg-secondary/40">
-                  <TableCell className="font-bold text-sm text-foreground pl-6">{f.finding}</TableCell>
-                  <TableCell><Badge variant={f.severity === 'Critique' || f.severity === 'Matériel' ? 'destructive' : f.severity === 'Modéré' ? 'default' : 'secondary'} className={f.severity === 'Modéré' ? 'bg-yellow-500 text-white' : ''}>{f.severity}</Badge></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{f.discoveryDate}</TableCell>
-                </TableRow>
-              ))}
+              {specificAssetFindings.map((f: any) => {
+                const badgeProps = getSeverityBadgeProps(f.severity);
+                return (
+                  <TableRow key={f.id} className="hover:bg-secondary/40">
+                    <TableCell className="font-bold text-sm text-foreground pl-6">{f.finding}</TableCell>
+                    <TableCell><Badge variant={badgeProps.variant} className={badgeProps.className}>{f.severity}</Badge></TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{f.discoveryDate}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
@@ -573,15 +646,18 @@ export default function BitsightPanel() {
             <TableHeader className="sticky top-0 bg-card z-10 shadow-sm"><TableRow><TableHead className="pl-6">Vulnérabilité (Vecteur)</TableHead><TableHead>Sévérité</TableHead><TableHead>Actif Associé (Cliquez pour cibler)</TableHead><TableHead>Statut</TableHead><TableHead className="pr-6">Dernière Découverte</TableHead></TableRow></TableHeader>
             <TableBody>
               {modalFilteredFindings.length === 0 ? <TableRow><TableCell colSpan={5} className="text-center py-8 text-sm text-muted-foreground">Aucune faille ne correspond.</TableCell></TableRow> : null}
-              {modalFilteredFindings.map((f: any) => (
-                <TableRow key={f.id} className="hover:bg-secondary/40">
-                  <TableCell className="font-bold text-sm text-foreground pl-6">{f.finding}</TableCell>
-                  <TableCell><Badge variant={f.severity === 'Critique' || f.severity === 'Matériel' ? 'destructive' : f.severity === 'Modéré' ? 'default' : 'secondary'} className={f.severity === 'Modéré' ? 'bg-yellow-500 text-white' : ''}>{f.severity}</Badge></TableCell>
-                  <TableCell><button type="button" onClick={() => setSelectedAssetForFindings(f.asset)} className="font-mono text-xs max-w-[250px] truncate block text-blue-500 hover:underline cursor-pointer bg-transparent border-none p-0 text-left" title="Voir toutes les failles">{f.asset}</button></TableCell>
-                  <TableCell className="text-xs">{f.status}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground pr-6">{f.discoveryDate}</TableCell>
-                </TableRow>
-              ))}
+              {modalFilteredFindings.map((f: any) => {
+                const badgeProps = getSeverityBadgeProps(f.severity);
+                return (
+                  <TableRow key={f.id} className="hover:bg-secondary/40">
+                    <TableCell className="font-bold text-sm text-foreground pl-6">{f.finding}</TableCell>
+                    <TableCell><Badge variant={badgeProps.variant} className={badgeProps.className}>{f.severity}</Badge></TableCell>
+                    <TableCell><button type="button" onClick={() => setSelectedAssetForFindings(f.asset)} className="font-mono text-xs max-w-[250px] truncate block text-blue-500 hover:text-blue-600 hover:underline transition-colors text-left bg-transparent border-none p-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500" title={`Voir toutes les failles pour ${f.asset}`}>{f.asset}</button></TableCell>
+                    <TableCell className="text-xs">{f.status}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground pr-6">{f.discoveryDate}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
@@ -608,14 +684,17 @@ export default function BitsightPanel() {
             <TableHeader className="sticky top-0 bg-card z-10 shadow-sm"><TableRow><TableHead className="pl-6">Technologie / Logiciel</TableHead><TableHead>Version</TableHead><TableHead>Actif Associé</TableHead><TableHead className="pr-6">Niveau de Risque</TableHead></TableRow></TableHeader>
             <TableBody>
               {modalFilteredTechs.length === 0 ? <TableRow><TableCell colSpan={4} className="text-center py-8 text-sm text-muted-foreground">Aucune technologie ne correspond.</TableCell></TableRow> : null}
-              {modalFilteredTechs.map((t: any) => (
-                <TableRow key={t.id} className="hover:bg-secondary/40">
-                  <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
-                  <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
-                  <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
-                  <TableCell className="pr-6"><Badge variant={t.risk === 'Élevé' ? 'destructive' : 'secondary'}>{t.risk}</Badge></TableCell>
-                </TableRow>
-              ))}
+              {modalFilteredTechs.map((t: any) => {
+                const badgeProps = getSeverityBadgeProps(t.risk); // Reuse similar logic or custom
+                return (
+                  <TableRow key={t.id} className="hover:bg-secondary/40">
+                    <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
+                    <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
+                    <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
+                    <TableCell className="pr-6"><Badge variant={t.risk === 'Élevé' ? 'destructive' : 'secondary'}>{t.risk}</Badge></TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
@@ -633,10 +712,10 @@ export default function BitsightPanel() {
 
       {/* 1. Bandeau Exécutif */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
-        <Card className={`lg:col-span-2 border-l-4 ${data.executive.score < 600 ? 'border-l-destructive' : data.executive.score < 700 ? 'border-l-orange-500' : 'border-l-emerald-500'} bg-card shadow-sm flex flex-col justify-between`}>
+        <Card className={`lg:col-span-2 border-l-4 ${scoreStyles.borderClass} bg-card shadow-sm flex flex-col justify-between`}>
           <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">BitSight Rating</CardTitle>
-            <ShieldCheck className={`w-5 h-5 ${data.executive.score >= 700 ? 'text-emerald-500' : data.executive.score >= 600 ? 'text-orange-500' : 'text-destructive'}`} />
+            <ShieldCheck className={`w-5 h-5 ${scoreStyles.iconClass}`} />
           </CardHeader>
           <CardContent>
             <div className="flex items-baseline gap-2">
@@ -644,15 +723,9 @@ export default function BitsightPanel() {
               <span className="text-sm text-muted-foreground font-medium">/ {data.executive.maxScore}</span>
             </div>
             <div className="mt-2 flex items-center gap-2">
-              {(() => {
-                const getTrendStyle = (trend: string) => trend.startsWith('+') ? { color: "text-emerald-500", bg: "bg-emerald-500/10", Icon: TrendingUp } : trend.startsWith('-') ? { color: "text-destructive", bg: "bg-destructive/10", Icon: TrendingDown } : { color: "text-slate-500", bg: "bg-slate-500/10", Icon: Activity };
-                const d30Style = getTrendStyle(data.executive.trends.d30);
-                return (
-                  <Badge className={`${d30Style.bg} ${d30Style.color} font-bold border-none`}>
-                    <d30Style.Icon className="w-3.5 h-3.5 mr-1" /> {data.executive.trends.d30} {data.executive.trends.d30 !== "N/A" && data.executive.trends.d30 !== "0" ? "pts (30j)" : ""}
-                  </Badge>
-                );
-              })()}
+              <Badge className={`${d30Style.bg} ${d30Style.color} font-bold border-none`}>
+                <d30Style.Icon className="w-3.5 h-3.5 mr-1" /> {data.executive.trends.d30} {data.executive.trends.d30 !== "N/A" && data.executive.trends.d30 !== "0" ? "pts (30j)" : ""}
+              </Badge>
             </div>
           </CardContent>
         </Card>
@@ -662,7 +735,7 @@ export default function BitsightPanel() {
           <CardContent className="space-y-2 text-xs">
             {['d7', 'd30', 'd90'].map(d => {
               const trendStr = data.executive.trends[d as keyof typeof data.executive.trends];
-              const tStyle = trendStr.startsWith('+') ? { color: "text-emerald-500", Icon: TrendingUp } : trendStr.startsWith('-') ? { color: "text-destructive", Icon: TrendingDown } : { color: "text-slate-500", Icon: Activity };
+              const tStyle = getTrendStyle(trendStr);
               return (
                 <div key={d} className="flex justify-between items-center">
                   <span>{d === 'd7' ? '7' : d === 'd30' ? '30' : '90'} jours:</span>
@@ -858,15 +931,18 @@ export default function BitsightPanel() {
                   </TableHeader>
                   <TableBody>
                     {top10Assets.length === 0 ? <TableRow><TableCell colSpan={5} className="text-center py-4 text-xs text-muted-foreground">Aucun actif spécifique remonté</TableCell></TableRow> : null}
-                    {top10Assets.map((a: any) => (
-                      <TableRow key={a.id}>
-                        <TableCell className="font-mono text-xs font-bold text-foreground">{a.asset}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{a.type}</TableCell>
-                        <TableCell className="text-xs font-mono text-muted-foreground uppercase">{a.vendors && a.vendors.length > 0 ? a.vendors.slice(0, 2).join(', ') : "-"}</TableCell>
-                        <TableCell><Badge variant={a.riskLevel === 'Critique' || a.riskLevel === 'Élevé' ? 'destructive' : 'secondary'}>{a.riskLevel}</Badge></TableCell>
-                        <TableCell className="font-bold text-sm text-right text-destructive">{a.findings}</TableCell>
-                      </TableRow>
-                    ))}
+                    {top10Assets.map((a: any) => {
+                      const badgeProps = getSeverityBadgeProps(a.riskLevel);
+                      return (
+                        <TableRow key={a.id}>
+                          <TableCell className="font-mono text-xs font-bold text-foreground">{a.asset}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{a.type}</TableCell>
+                          <TableCell className="text-xs font-mono text-muted-foreground uppercase">{a.vendors && a.vendors.length > 0 ? a.vendors.slice(0, 2).join(', ') : "-"}</TableCell>
+                          <TableCell><Badge variant={badgeProps.variant} className={badgeProps.className}>{a.riskLevel}</Badge></TableCell>
+                          <TableCell className="font-bold text-sm text-right text-destructive">{a.findings}</TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -996,22 +1072,21 @@ export default function BitsightPanel() {
                 </TableHeader>
                 <TableBody>
                   {displayFindings.length === 0 ? <TableRow><TableCell colSpan={4} className="text-center py-8 text-sm text-muted-foreground">Aucun finding ne correspond à vos filtres.</TableCell></TableRow> : null}
-                  {displayFindings.map((f: any) => (
-                    <TableRow key={f.id} className="hover:bg-secondary/20">
-                      <TableCell className="font-bold text-sm text-foreground">{f.finding}</TableCell>
-                      <TableCell>
-                        <Badge variant={f.severity === 'Critique' || f.severity === 'Matériel' ? 'destructive' : f.severity === 'Modéré' ? 'default' : 'secondary'} className={f.severity === 'Modéré' ? 'bg-yellow-500 hover:bg-yellow-600 text-white' : ''}>
-                          {f.severity}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <button type="button" onClick={() => setSelectedAssetForFindings(f.asset)} className="font-mono text-xs max-w-[250px] truncate block text-blue-500 hover:text-blue-600 hover:underline transition-colors text-left bg-transparent border-none p-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500" title={`Voir toutes les failles pour ${f.asset}`}>
-                          {f.asset}
-                        </button>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{f.discoveryDate}</TableCell>
-                    </TableRow>
-                  ))}
+                  {displayFindings.map((f: any) => {
+                    const badgeProps = getSeverityBadgeProps(f.severity);
+                    return (
+                      <TableRow key={f.id} className="hover:bg-secondary/20">
+                        <TableCell className="font-bold text-sm text-foreground">{f.finding}</TableCell>
+                        <TableCell><Badge variant={badgeProps.variant} className={badgeProps.className}>{f.severity}</Badge></TableCell>
+                        <TableCell>
+                          <button type="button" onClick={() => setSelectedAssetForFindings(f.asset)} className="font-mono text-xs max-w-[250px] truncate block text-blue-500 hover:text-blue-600 hover:underline transition-colors text-left bg-transparent border-none p-0 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500" title={`Voir toutes les failles pour ${f.asset}`}>
+                            {f.asset}
+                          </button>
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{f.discoveryDate}</TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>
@@ -1106,18 +1181,21 @@ export default function BitsightPanel() {
                   </TableHeader>
                   <TableBody>
                     {top10Techs.length === 0 ? <TableRow><TableCell colSpan={4} className="text-center py-6 text-xs text-muted-foreground">Aucune technologie recensée</TableCell></TableRow> : null}
-                    {top10Techs.map((t: any) => (
-                      <TableRow key={t.id}>
-                        <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
-                        <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
-                        <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
-                        <TableCell>
-                          <Badge variant={t.risk === 'Élevé' ? 'destructive' : 'secondary'}>
-                            {t.risk}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {top10Techs.map((t: any) => {
+                      const badgeProps = getSeverityBadgeProps(t.risk);
+                      return (
+                        <TableRow key={t.id}>
+                          <TableCell className="font-bold text-sm text-foreground pl-6">{t.name}</TableCell>
+                          <TableCell className="text-xs font-mono text-muted-foreground">{t.version}</TableCell>
+                          <TableCell className="text-xs font-mono text-muted-foreground">{t.asset}</TableCell>
+                          <TableCell>
+                            <Badge variant={badgeProps.variant} className={badgeProps.className}>
+                              {t.risk}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
              </div>
