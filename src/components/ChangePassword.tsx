@@ -16,8 +16,8 @@ interface ValidationItemProps {
   text: string;
 }
 
-function ValidationItem({ isValid, text }: ValidationItemProps) {
-  return (
+function ValidationItem({ isValid, text }: Readonly<ValidationItemProps>) {
+    return (
     <li className={`flex items-center text-sm mt-1 transition-colors duration-200 ${isValid ? 'text-green-600' : 'text-gray-400'}`}>
       {isValid ? <FaCheckCircle className="mr-2" /> : <FaRegCircle className="mr-2" />}
       {text}

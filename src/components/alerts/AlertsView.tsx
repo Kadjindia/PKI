@@ -54,7 +54,7 @@ const LEVEL_TEXT_CLASS: Record<AlertLevel, string> = {
   ok: "text-foreground",
 };
 
-function LevelIcon({ level }: { level: AlertLevel }) {
+function LevelIcon({ level }: Readonly<{ level: AlertLevel }>) {
   if (level === "danger") return <AlertCircle className="w-8 h-8 text-destructive" />;
   if (level === "warning") return <AlertTriangle className="w-8 h-8 text-accent" />;
   return <CheckCircle2 className="w-8 h-8 text-success" />;
@@ -80,7 +80,7 @@ interface AlertCardProps {
 
 // Sous-composant extrait : fait baisser la complexité cognitive du .map() parent
 // et élimine les ternaires imbriqués en s'appuyant sur les tables ci-dessus.
-function AlertCard({ kpi, value, level, isPercentage, isAcknowledged, advice, onAcknowledge }: AlertCardProps) {
+function AlertCard({ kpi, value, level, isPercentage, isAcknowledged, advice, onAcknowledge }: Readonly<AlertCardProps>) {
   let valueDisplay: string | number = "—";
   if (value !== undefined) {
     valueDisplay = isPercentage ? `${value}%` : value;
