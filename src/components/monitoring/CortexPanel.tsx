@@ -13,7 +13,7 @@ import {
 import * as XLSX from "xlsx";
 
 // ----------------------------------------------------------------------------
-// Utilitaires de base (Placés en haut pour éviter toute ReferenceError)
+// Utilitaires de base
 // ----------------------------------------------------------------------------
 const compareVersions = (a: string, b: string): number => {
   const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
@@ -183,6 +183,75 @@ const formatBinLabel = (t: number, binGranularity: string): string => {
   }
 };
 
+// ============================================================================
+// SOUS-COMPOSANT PUR : TABLEAU DE L'INVENTAIRE (Élimine le ternaire imbriqué)
+// ============================================================================
+
+const InventoryTableContent = ({ inventoryError, inventoryLoading, paginatedInventory, filteredInventory, inventoryData }: any) => {
+  if (inventoryError) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 text-destructive p-8">
+        <XCircle className="w-8 h-8" />
+        <p className="text-sm font-medium text-center">{inventoryError}</p>
+      </div>
+    );
+  }
+
+  if (inventoryLoading) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center space-y-4 p-8">
+        <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+        <p className="text-sm font-medium text-muted-foreground text-center">Récupération de l'inventaire complet en cours...</p>
+      </div>
+    );
+  }
+
+  return (
+    <table className="w-full text-left border-collapse text-sm">
+      <thead className="bg-secondary/95 sticky top-0 z-10 backdrop-blur-md shadow-sm">
+        <tr>
+          <th className="p-3 font-bold text-muted-foreground border-b border-border">Endpoint</th>
+          <th className="p-3 font-bold text-muted-foreground border-b border-border">Statut</th>
+          <th className="p-3 font-bold text-muted-foreground border-b border-border">OS</th>
+          <th className="p-3 font-bold text-muted-foreground border-b border-border">Version Agent</th>
+          <th className="p-3 font-bold text-muted-foreground border-b border-border">Utilisateur(s)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {paginatedInventory.map((ep: any, i: number) => {
+          const isConnected = ep.endpoint_status?.toLowerCase() === 'connected';
+          const users = Array.isArray(ep.users) ? ep.users.join(", ") : (ep.users || "N/A");
+
+          return (
+            <tr key={ep.endpoint_id || i} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+              <td className="p-3 font-bold text-foreground">{ep.endpoint_name || "N/A"}</td>
+              <td className="p-3">
+                <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${isConnected ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'}`}>
+                  {ep.endpoint_status || "N/A"}
+                </span>
+              </td>
+              <td className="p-3 text-muted-foreground font-medium">{ep.operating_system || "N/A"}</td>
+              <td className="p-3 font-mono text-xs">{ep.agent_version || "N/A"}</td>
+              <td className="p-3 text-muted-foreground truncate max-w-[200px]" title={users}>{users}</td>
+            </tr>
+          );
+        })}
+        {filteredInventory.length === 0 && (
+          <tr>
+            <td colSpan={5} className="p-12 text-center text-muted-foreground italic">
+              {inventoryData?.length === 0 ? "Aucun endpoint trouvé sur ce tenant." : "Aucun endpoint ne correspond à ces filtres."}
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  );
+};
+
+// ============================================================================
+// COMPOSANT PRINCIPAL
+// ============================================================================
+
 export default function CortexPanel() {
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [message, setMessage] = useState<string>("Synchronisation des KPIs via l'API REST...");
@@ -323,6 +392,7 @@ export default function CortexPanel() {
 
     try {
       const BATCH_SIZE = 100;
+      // Correction SonarQube : Utilisation de Math.max
       const totalExpected = Math.max(0, kpis.coverageTotal);
 
       if (totalExpected === 0) {
@@ -362,6 +432,7 @@ export default function CortexPanel() {
 
   const uniqueOSList = useMemo(() => {
     if (!inventoryData) return [];
+    // Correction SonarQube : Fonction de comparaison explicite
     const osSet = new Set(inventoryData.map(ep => ep.operating_system).filter(Boolean));
     return Array.from(osSet).sort((a, b) => String(a).localeCompare(String(b)));
   }, [inventoryData]);
@@ -371,6 +442,7 @@ export default function CortexPanel() {
     return inventoryData.filter(ep => {
       const searchLower = searchTerm.toLowerCase();
       const usersStr = Array.isArray(ep.users) ? ep.users.join(" ") : (ep.users || "");
+      // Correction SonarQube : Chaînage optionnel `?.`
       const matchesSearch = searchTerm === "" || ep.endpoint_name?.toLowerCase().includes(searchLower) || usersStr.toLowerCase().includes(searchLower);
       const matchesStatus = statusFilter === "ALL" || ep.endpoint_status?.toLowerCase() === statusFilter.toLowerCase();
       const matchesOS = osFilter === "ALL" || ep.operating_system === osFilter;
@@ -1193,56 +1265,13 @@ export default function CortexPanel() {
             </div>
 
             <div className="flex-grow overflow-auto p-0 custom-scrollbar relative bg-background">
-              {inventoryError ? (
-                <div className="h-full flex flex-col items-center justify-center gap-3 text-destructive p-8">
-                  <XCircle className="w-8 h-8" />
-                  <p className="text-sm font-medium text-center">{inventoryError}</p>
-                </div>
-              ) : inventoryLoading ? (
-                <div className="h-full flex flex-col items-center justify-center space-y-4 p-8">
-                  <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
-                  <p className="text-sm font-medium text-muted-foreground text-center">Récupération de l'inventaire complet en cours...</p>
-                </div>
-              ) : (
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead className="bg-secondary/95 sticky top-0 z-10 backdrop-blur-md shadow-sm">
-                    <tr>
-                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Endpoint</th>
-                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Statut</th>
-                      <th className="p-3 font-bold text-muted-foreground border-b border-border">OS</th>
-                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Version Agent</th>
-                      <th className="p-3 font-bold text-muted-foreground border-b border-border">Utilisateur(s)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paginatedInventory.map((ep, i) => {
-                      const isConnected = ep.endpoint_status?.toLowerCase() === 'connected';
-                      const users = Array.isArray(ep.users) ? ep.users.join(", ") : (ep.users || "N/A");
-
-                      return (
-                        <tr key={ep.endpoint_id || i} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
-                          <td className="p-3 font-bold text-foreground">{ep.endpoint_name || "N/A"}</td>
-                          <td className="p-3">
-                            <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${isConnected ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'}`}>
-                              {ep.endpoint_status || "N/A"}
-                            </span>
-                          </td>
-                          <td className="p-3 text-muted-foreground font-medium">{ep.operating_system || "N/A"}</td>
-                          <td className="p-3 font-mono text-xs">{ep.agent_version || "N/A"}</td>
-                          <td className="p-3 text-muted-foreground truncate max-w-[200px]" title={users}>{users}</td>
-                        </tr>
-                      );
-                    })}
-                    {filteredInventory.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="p-12 text-center text-muted-foreground italic">
-                          {inventoryData?.length === 0 ? "Aucun endpoint trouvé sur ce tenant." : "Aucun endpoint ne correspond à ces filtres."}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              )}
+              <InventoryTableContent
+                inventoryError={inventoryError}
+                inventoryLoading={inventoryLoading}
+                paginatedInventory={paginatedInventory}
+                filteredInventory={filteredInventory}
+                inventoryData={inventoryData}
+              />
             </div>
 
             {!inventoryLoading && !inventoryError && totalPages > 1 && (
