@@ -40,7 +40,12 @@ const formatPeriod = (p: string) => {
   return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 };
 
-// --- HOOKS DE CALCUL (extraits pour réduire la complexité cognitive de Dashboard) ---
+const GAP_SEVERITY_PENALTY: Record<string, number> = { critique: 20, eleve: 10, moyen: 5 };
+function getGapPenalty(severity: string): number {
+  return GAP_SEVERITY_PENALTY[severity] ?? 2;
+}
+
+// --- HOOKS DE CALCUL ---
 
 function useSecurityIndicators(projects: any[], apps: any[], vulns: any[]) {
   return useMemo(() => {
@@ -62,7 +67,7 @@ function useSecurityIndicators(projects: any[], apps: any[], vulns: any[]) {
     return {
       totalProjects, validatedPas, pasCoverage, projectsAtRisk,
       totalApps, auditedApps, auditCoverage, appsWithRiskAnalysis, riskAnalysisCoverage,
-      activeVulns, totalCriticalVulns, totalHighVulns,
+      totalCriticalVulns, totalHighVulns,
     };
   }, [projects, apps, vulns]);
 }
@@ -80,12 +85,12 @@ function useGovernanceIndicators(policies: any[], gaps: any[]) {
       if (status === "expired") return acc;
       let score = 100;
       activeGaps.filter(g => g.policyId === p.id).forEach(gap => {
-        score -= gap.severity === 'critique' ? 20 : gap.severity === 'eleve' ? 10 : gap.severity === 'moyen' ? 5 : 2;
+        score -= getGapPenalty(gap.severity);
       });
       return acc + Math.max(0, score);
     }, 0) / totalPolicies) : 0;
 
-    return { totalPolicies, activeGaps, openGapsCount, criticalGapsCount, okPoliciesCount, avgCompliance };
+    return { totalPolicies, openGapsCount, criticalGapsCount, okPoliciesCount, avgCompliance };
   }, [policies, gaps]);
 }
 
@@ -121,9 +126,8 @@ function useAwarenessIndicators(campaigns: any[], profiles: any[], modules: any[
     const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
 
     return {
-      highRiskProfiles, sortedCampaigns, campaignsThisYear, targetCampaignsPerYear, isGoalReached,
-      latestCampaign, prevCampaign, compromiseRate, prevCompromiseRate, reportRate, prevReportRate,
-      phishingChartData, elearningModules, sessionModules, totalElearningAssigned, totalElearningCompleted,
+      highRiskProfiles, campaignsThisYear, targetCampaignsPerYear, isGoalReached,
+      compromiseRate, prevCompromiseRate, reportRate, prevReportRate, phishingChartData,
       elearningRate, elearningGoalReached, sessionsThisYear, targetSessionsPerYear, isSessionGoalReached,
     };
   }, [campaigns, profiles, modules, selectedYear]);
@@ -139,7 +143,10 @@ function useMessagingIndicators(entries: any[], getFilteredValue: (id: string) =
   const tauxInterne = msgTotal > 0 ? Math.round((msg1212 / msgTotal) * 100) : 0;
 
   const msgEntries = useMemo(() => entries.filter(e => e.kpiId.startsWith('msg-')), [entries]);
-  const msgAvailablePeriods = useMemo(() => [...new Set(msgEntries.map((e) => e.period))].sort(), [msgEntries]);
+  const msgAvailablePeriods = useMemo(
+    () => [...new Set(msgEntries.map((e) => e.period))].sort((a, b) => a.localeCompare(b)),
+    [msgEntries]
+  );
   const monthlyMsgData = useMemo(() => {
     return msgAvailablePeriods.map(period => {
       const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === period)?.value);
@@ -152,13 +159,11 @@ function useMessagingIndicators(entries: any[], getFilteredValue: (id: string) =
     });
   }, [msgAvailablePeriods, msgEntries]);
 
-  return {
-    msgTotal, msgFraude, msgErreur, msg1212, msgExterne,
-    tauxFraude, tauxInterne, msgEntries, msgAvailablePeriods, monthlyMsgData,
-  };
+  return { msgTotal, msgFraude, msgErreur, msg1212, msgExterne, tauxFraude, tauxInterne, monthlyMsgData };
 }
 
-// --- COMPOSANT DE TENDANCE ---
+// --- SOUS-COMPOSANTS ---
+
 const TrendIndicator = ({ current, previous, inverseColors = false }: Readonly<{ current?: number | null, previous?: number | null, inverseColors?: boolean }>) => {
   if (previous === undefined || previous === null || current === undefined || current === null) return null;
   const diff = current - previous;
@@ -173,7 +178,6 @@ const TrendIndicator = ({ current, previous, inverseColors = false }: Readonly<{
   );
 };
 
-// --- JAUGE DE PROGRESSION ---
 const CustomProgress = ({ value, max = 100, label, colorClass = "bg-primary" }: Readonly<{ value: number, max?: number, label: string, colorClass?: string }>) => {
   const percentage = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
   return (
@@ -189,13 +193,372 @@ const CustomProgress = ({ value, max = 100, label, colorClass = "bg-primary" }: 
   );
 };
 
+interface KriGridProps {
+  projectsAtRisk: number;
+  totalCriticalVulns: number;
+  totalHighVulns: number;
+  criticalGapsCount: number;
+  highRiskProfilesCount: number;
+  compromiseRate: number;
+  prevCompromiseRate: number | null;
+  reportRate: number;
+  prevReportRate: number | null;
+  tauxFraude: number;
+  msgFraude: number;
+  msgErreur: number;
+}
+
+// Section KRI extraite : sort tous ses ternaires de className de la fonction Dashboard
+function KriGrid({
+  projectsAtRisk, totalCriticalVulns, totalHighVulns, criticalGapsCount, highRiskProfilesCount,
+  compromiseRate, prevCompromiseRate, reportRate, prevReportRate, tauxFraude, msgFraude, msgErreur,
+}: Readonly<KriGridProps>) {
+  const totalDebtVulns = totalCriticalVulns + totalHighVulns;
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Alerte Go-Live</CardTitle>
+          <Rocket className="w-4 h-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent>
+          <div className={`text-2xl font-bold ${projectsAtRisk > 0 ? 'text-rose-600 dark:text-rose-400' : ''}`}>{projectsAtRisk}</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Projets risqués sans PAS</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${totalDebtVulns > 0 ? 'border-l-rose-600 dark:bg-rose-900/10' : 'border-l-emerald-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Dette Majeure</CardTitle>
+          <Bug className={`w-4 h-4 ${totalDebtVulns > 0 ? 'text-rose-600' : 'text-emerald-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className={`text-2xl font-bold ${totalDebtVulns > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600'}`}>{totalDebtVulns}</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Vulnérabilités Crit/Élev (Audits)</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${criticalGapsCount > 0 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Urgences (Gov)</CardTitle>
+          <AlertTriangle className="w-4 h-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent>
+          <div className={`text-2xl font-bold ${criticalGapsCount > 0 ? 'text-rose-600 dark:text-rose-400' : ''}`}>{criticalGapsCount}</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts critiques actifs (Politiques)</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${highRiskProfilesCount > 0 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Risque &gt; 60</CardTitle>
+          <UserX className="w-4 h-4 text-amber-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">{highRiskProfilesCount}</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Collaborateurs à suivre</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${compromiseRate > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Compromission</CardTitle>
+          <AlertTriangle className="w-4 h-4 text-rose-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="text-2xl font-bold">{compromiseRate}%</div>
+            <TrendIndicator current={compromiseRate} previous={prevCompromiseRate} inverseColors />
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
+        </CardContent>
+      </Card>
+      <Card className="border-l-4 border-l-blue-500 shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Signalements</CardTitle>
+          <ShieldCheck className="w-4 h-4 text-blue-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="text-2xl font-bold">{reportRate}%</div>
+            <TrendIndicator current={reportRate} previous={prevReportRate} />
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Fraude Entrante</CardTitle>
+          <AlertTriangle className={`w-4 h-4 ${tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className={`text-2xl font-bold ${tauxFraude > 20 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-500'}`}>
+              {msgFraude} <span className="text-sm font-normal opacity-70">({tauxFraude}%)</span>
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenants de la BP Fraude</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${msgErreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : msgErreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Erreurs Adressage</CardTitle>
+          <AlertCircle className={`w-4 h-4 ${msgErreur > 10 ? 'text-rose-500' : 'text-emerald-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className={`text-2xl font-bold ${msgErreur > 25 ? 'text-rose-600 dark:text-rose-400' : msgErreur > 10 ? 'text-amber-600 dark:text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+              {msgErreur}
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails non justifiés</p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+interface MessagingChartsProps {
+  monthlyMsgData: { period: string; total: number; fraude: number; erreur: number }[];
+  phishingChartData: { name: string; clics: number; saisies: number; signalements: number }[];
+}
+
+function MessagingCharts({ monthlyMsgData, phishingChartData }: Readonly<MessagingChartsProps>) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <Card className="lg:col-span-2 shadow-sm flex flex-col">
+        <CardHeader className="pb-0">
+          <CardTitle className="text-xs font-semibold text-foreground uppercase flex items-center justify-between">
+            <span>Bruit et Fraudes (Messagerie)</span>
+            <span className="text-[10px] text-muted-foreground font-normal">6 derniers mois</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex-1 pt-4 pb-2">
+          <div className="h-[200px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={monthlyMsgData.slice(-6)} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <XAxis dataKey="period" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} dy={10} />
+                <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
+                <Area type="monotone" dataKey="erreur" name="Erreurs (Bruit)" stroke="#ef4444" fill="#ef4444" fillOpacity={0.1} strokeWidth={2} />
+                <Area type="monotone" dataKey="fraude" name="Fraudes" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.2} strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
+      <Card className="shadow-sm flex flex-col border-l-4 border-l-amber-500">
+        <CardHeader className="pb-0">
+          <CardTitle className="text-xs font-semibold text-foreground uppercase flex items-center justify-between">
+            <span>Taux de Clics (Phishing)</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex-1 pt-4 pb-2">
+          <div className="h-[200px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={phishingChartData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} dy={10} />
+                <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} domain={[0, 100]} />
+                <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} formatter={(val) => `${val}%`} />
+                <Bar dataKey="clics" name="Taux de Clics" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+interface KpiGridProps {
+  pasCoverage: number; validatedPas: number; totalProjects: number;
+  riskAnalysisCoverage: number; appsWithRiskAnalysis: number; totalApps: number;
+  auditCoverage: number; auditedApps: number;
+  msgTotal: number; msg1212: number; tauxInterne: number; msgExterne: number;
+  okPoliciesCount: number; totalPolicies: number; avgCompliance: number; openGapsCount: number;
+  campaignsThisYearCount: number; targetCampaignsPerYear: number; isGoalReached: boolean;
+  sessionsThisYearCount: number; targetSessionsPerYear: number; isSessionGoalReached: boolean;
+  elearningRate: number; elearningGoalReached: boolean;
+}
+
+function KpiGrid(props: Readonly<KpiGridProps>) {
+  const {
+    pasCoverage, validatedPas, totalProjects, riskAnalysisCoverage, appsWithRiskAnalysis, totalApps,
+    auditCoverage, auditedApps, msgTotal, msg1212, tauxInterne, msgExterne,
+    okPoliciesCount, totalPolicies, avgCompliance, openGapsCount,
+    campaignsThisYearCount, targetCampaignsPerYear, isGoalReached,
+    sessionsThisYearCount, targetSessionsPerYear, isSessionGoalReached,
+    elearningRate, elearningGoalReached,
+  } = props;
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture PAS</CardTitle>
+          <ShieldCheck className={`w-4 h-4 ${pasCoverage >= 80 ? 'text-emerald-500' : pasCoverage > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">{pasCoverage}%</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{validatedPas} projets sur {totalProjects}</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Analyses Risques</CardTitle>
+          <Target className="w-4 h-4 text-primary" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${auditCoverage >= 80 ? 'border-l-blue-500' : auditCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture Audit</CardTitle>
+          <ShieldAlert className="w-4 h-4 text-blue-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">{auditCoverage}%</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{auditedApps} périmètres sur {totalApps}</p>
+        </CardContent>
+      </Card>
+      <Card className="border-l-4 border-l-blue-500 shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Volume Total Msg</CardTitle>
+          <Inbox className="w-4 h-4 text-blue-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="text-2xl font-bold text-foreground">{msgTotal}</div>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails reçus ce mois</p>
+        </CardContent>
+      </Card>
+      <Card className="border-l-4 border-l-emerald-500 shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Remontées 1212</CardTitle>
+          <ShieldCheck className="w-4 h-4 text-emerald-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+              {msg1212} <span className="text-sm font-normal opacity-70">({tauxInterne}%)</span>
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenant du 1212</p>
+        </CardContent>
+      </Card>
+      <Card className="border-l-4 border-l-slate-400 shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Externes</CardTitle>
+          <Globe className="w-4 h-4 text-slate-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="text-2xl font-bold text-slate-700 dark:text-slate-300">{msgExterne}</div>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Provenant de l'extérieur</p>
+        </CardContent>
+      </Card>
+      <Card className="border-l-4 border-l-primary shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Santé du Référentiel</CardTitle>
+          <FileText className="w-4 h-4 text-primary" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">{okPoliciesCount} / {totalPolicies}</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Politiques à jour</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${avgCompliance >= 80 ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Score Conformité</CardTitle>
+          <ShieldCheck className={`w-4 h-4 ${avgCompliance >= 80 ? 'text-emerald-500' : 'text-amber-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">{avgCompliance}%</div>
+          <CustomProgress value={avgCompliance} label="Score moyen" colorClass={avgCompliance >= 80 ? "bg-emerald-500" : "bg-amber-500"} />
+        </CardContent>
+      </Card>
+      <Card className="border-l-4 border-l-blue-500 shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Plan d'Action</CardTitle>
+          <Activity className="w-4 h-4 text-blue-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-2xl font-bold">{openGapsCount}</div>
+          <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts ouverts (Politiques)</p>
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Campagnes Phishing</CardTitle>
+          <Target className={`w-4 h-4 ${isGoalReached ? 'text-emerald-500' : 'text-blue-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold flex items-baseline gap-1">
+            {campaignsThisYearCount} <span className="text-sm font-normal text-muted-foreground">/ {targetCampaignsPerYear}</span>
+          </div>
+          <CustomProgress value={campaignsThisYearCount} max={targetCampaignsPerYear} label="Campagnes annuelles" colorClass={isGoalReached ? "bg-emerald-500" : "bg-blue-500"} />
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
+          <Mic className={`w-4 h-4 ${isSessionGoalReached ? 'text-emerald-500' : 'text-amber-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold flex items-baseline gap-1">
+            {sessionsThisYearCount} <span className="text-sm font-normal text-muted-foreground">/ {targetSessionsPerYear}</span>
+          </div>
+          <CustomProgress value={sessionsThisYearCount} max={targetSessionsPerYear} label="Webinaires / Présentiel" colorClass={isSessionGoalReached ? "bg-emerald-500" : "bg-amber-500"} />
+        </CardContent>
+      </Card>
+      <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">E-Learning</CardTitle>
+          <Monitor className={`w-4 h-4 ${elearningGoalReached ? 'text-emerald-500' : 'text-primary'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold flex items-baseline gap-1">
+            {elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span>
+          </div>
+          <CustomProgress value={elearningRate} max={95} label="Taux de complétion (Année en cours)" colorClass={elearningGoalReached ? "bg-emerald-500" : "bg-primary"} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function CoverageChart({ data }: Readonly<{ data: { name: string; value: number; fill: string }[] }>) {
+  return (
+    <Card className="shadow-sm w-full">
+      <CardHeader className="pb-0">
+        <CardTitle className="text-xs font-semibold text-foreground uppercase">Couverture Sécurité Globale</CardTitle>
+      </CardHeader>
+      <CardContent className="pt-2 pb-4">
+        <div className="h-[180px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data} layout="vertical" margin={{ top: 10, right: 20, left: 20, bottom: 0 }}>
+              <XAxis type="number" hide domain={[0, 100]} />
+              <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: "hsl(var(--foreground))", fontWeight: 500 }} width={120} />
+              <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} formatter={(val) => `${val}%`} />
+              <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={24}>
+                {data.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.fill} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Dashboard() {
   const { entries, availablePeriods, selectedPeriod, setSelectedPeriod, getFilteredValue } = useKpi();
   const currentIdx = availablePeriods.indexOf(selectedPeriod);
   const canPrev = currentIdx > 0;
   const canNext = currentIdx < availablePeriods.length - 1;
 
-  // FETCH DES DONNÉES
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
   const { data: apps = [] } = useQuery({ queryKey: ['applications'], queryFn: fetchApplications });
   const { data: vulns = [] } = useQuery({ queryKey: ['vulnerabilities'], queryFn: fetchVulnerabilities });
@@ -207,7 +570,6 @@ export default function Dashboard() {
 
   const selectedYear = selectedPeriod ? parseInt(selectedPeriod.split("-")[0]) : new Date().getFullYear();
 
-  // INDICATEURS (calculs extraits dans des hooks dédiés)
   const {
     totalProjects, validatedPas, pasCoverage, projectsAtRisk,
     totalApps, auditedApps, auditCoverage, appsWithRiskAnalysis, riskAnalysisCoverage,
@@ -221,8 +583,7 @@ export default function Dashboard() {
   const {
     highRiskProfiles, campaignsThisYear, targetCampaignsPerYear, isGoalReached,
     compromiseRate, prevCompromiseRate, reportRate, prevReportRate, phishingChartData,
-    totalElearningAssigned, elearningRate, elearningGoalReached,
-    sessionsThisYear, targetSessionsPerYear, isSessionGoalReached,
+    elearningRate, elearningGoalReached, sessionsThisYear, targetSessionsPerYear, isSessionGoalReached,
   } = useAwarenessIndicators(campaigns, profiles, modules, selectedYear);
 
   const {
@@ -237,7 +598,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8 pb-12 animate-in fade-in duration-500">
-      {/* ======================= HEADER ET CLOCHE ======================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
@@ -265,323 +625,67 @@ export default function Dashboard() {
           <TopAlerts />
         </div>
       </div>
+
       <section>
         <ExecutiveSummary />
       </section>
+
       <section className="pt-6 border-t border-border/50">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold flex items-center gap-2">
             <ShieldAlert className="w-5 h-5 text-rose-500" /> Indicateurs de Maîtrise des Risques (KRI)
           </h2>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Alerte Go-Live</CardTitle>
-              <Rocket className="w-4 h-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className={`text-2xl font-bold ${projectsAtRisk > 0 ? 'text-rose-600 dark:text-rose-400' : ''}`}>{projectsAtRisk}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Projets risqués sans PAS</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${(totalCriticalVulns + totalHighVulns) > 0 ? 'border-l-rose-600 dark:bg-rose-900/10' : 'border-l-emerald-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Dette Majeure</CardTitle>
-              <Bug className={`w-4 h-4 ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-500'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className={`text-2xl font-bold ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600'}`}>{totalCriticalVulns + totalHighVulns}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Vulnérabilités Crit/Élev (Audits)</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${criticalGapsCount > 0 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Urgences (Gov)</CardTitle>
-              <AlertTriangle className="w-4 h-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className={`text-2xl font-bold ${criticalGapsCount > 0 ? 'text-rose-600 dark:text-rose-400' : ''}`}>{criticalGapsCount}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts critiques actifs (Politiques)</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${highRiskProfiles.length > 0 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Risque &gt; 60</CardTitle>
-              <UserX className="w-4 h-4 text-amber-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{highRiskProfiles.length}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Collaborateurs à suivre</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${compromiseRate > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Compromission</CardTitle>
-              <AlertTriangle className="w-4 h-4 text-rose-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold">{compromiseRate}%</div>
-                <TrendIndicator current={compromiseRate} previous={prevCompromiseRate} inverseColors />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
-            </CardContent>
-          </Card>
-          <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Signalements</CardTitle>
-              <ShieldCheck className="w-4 h-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold">{reportRate}%</div>
-                <TrendIndicator current={reportRate} previous={prevReportRate} />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Fraude Entrante</CardTitle>
-              <AlertTriangle className={`w-4 h-4 ${tauxFraude > 20 ? 'text-rose-500' : 'text-amber-500'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className={`text-2xl font-bold ${tauxFraude > 20 ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-500'}`}>
-                  {msgFraude} <span className="text-sm font-normal opacity-70">({tauxFraude}%)</span>
-                </div>
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenants de la BP Fraude</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${msgErreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : msgErreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Erreurs Adressage</CardTitle>
-              <AlertCircle className={`w-4 h-4 ${msgErreur > 10 ? 'text-rose-500' : 'text-emerald-500'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className={`text-2xl font-bold ${msgErreur > 25 ? 'text-rose-600 dark:text-rose-400' : msgErreur > 10 ? 'text-amber-600 dark:text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                  {msgErreur}
-                </div>
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails non justifiés</p>
-            </CardContent>
-          </Card>
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <Card className="lg:col-span-2 shadow-sm flex flex-col">
-            <CardHeader className="pb-0">
-              <CardTitle className="text-xs font-semibold text-foreground uppercase flex items-center justify-between">
-                <span>Bruit et Fraudes (Messagerie)</span>
-                <span className="text-[10px] text-muted-foreground font-normal">6 derniers mois</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 pt-4 pb-2">
-              <div className="h-[200px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={monthlyMsgData.slice(-6)} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <XAxis dataKey="period" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} dy={10} />
-                    <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px' }} />
-                    <Area type="monotone" dataKey="erreur" name="Erreurs (Bruit)" stroke="#ef4444" fill="#ef4444" fillOpacity={0.1} strokeWidth={2} />
-                    <Area type="monotone" dataKey="fraude" name="Fraudes" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.2} strokeWidth={2} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="shadow-sm flex flex-col border-l-4 border-l-amber-500">
-            <CardHeader className="pb-0">
-              <CardTitle className="text-xs font-semibold text-foreground uppercase flex items-center justify-between">
-                <span>Taux de Clics (Phishing)</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 pt-4 pb-2">
-              <div className="h-[200px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={phishingChartData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                    <XAxis dataKey="name" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} dy={10} />
-                    <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} domain={[0, 100]} />
-                    <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} formatter={(val) => `${val}%`} />
-                    <Bar dataKey="clics" name="Taux de Clics" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <KriGrid
+          projectsAtRisk={projectsAtRisk}
+          totalCriticalVulns={totalCriticalVulns}
+          totalHighVulns={totalHighVulns}
+          criticalGapsCount={criticalGapsCount}
+          highRiskProfilesCount={highRiskProfiles.length}
+          compromiseRate={compromiseRate}
+          prevCompromiseRate={prevCompromiseRate}
+          reportRate={reportRate}
+          prevReportRate={prevReportRate}
+          tauxFraude={tauxFraude}
+          msgFraude={msgFraude}
+          msgErreur={msgErreur}
+        />
+        <MessagingCharts monthlyMsgData={monthlyMsgData} phishingChartData={phishingChartData} />
       </section>
-      {/* ========================================================= */}
-      {/* 3. PERFORMANCE ET CONFORMITÉ (KPI)                        */}
-      {/* ========================================================= */}
+
       <section className="pt-6 border-t border-border/50">
         <h2 className="text-lg font-bold flex items-center gap-2 mb-4">
           <TrendingUp className="w-5 h-5 text-primary" /> Performance et Conformité (KPI)
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture PAS</CardTitle>
-              <ShieldCheck className={`w-4 h-4 ${pasCoverage >= 80 ? 'text-emerald-500' : pasCoverage > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{pasCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{validatedPas} projets sur {totalProjects}</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Analyses Risques</CardTitle>
-              <Target className="w-4 h-4 text-primary" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${auditCoverage >= 80 ? 'border-l-blue-500' : auditCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture Audit</CardTitle>
-              <ShieldAlert className="w-4 h-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{auditCoverage}%</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{auditedApps} périmètres sur {totalApps}</p>
-            </CardContent>
-          </Card>
-          <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Volume Total Msg</CardTitle>
-              <Inbox className="w-4 h-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-foreground">{msgTotal}</div>
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails reçus ce mois</p>
-            </CardContent>
-          </Card>
-          <Card className="border-l-4 border-l-emerald-500 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Remontées 1212</CardTitle>
-              <ShieldCheck className="w-4 h-4 text-emerald-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
-                  {msg1212} <span className="text-sm font-normal opacity-70">({tauxInterne}%)</span>
-                </div>
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenant du 1212</p>
-            </CardContent>
-          </Card>
-          <Card className="border-l-4 border-l-slate-400 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Externes</CardTitle>
-              <Globe className="w-4 h-4 text-slate-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold text-slate-700 dark:text-slate-300">{msgExterne}</div>
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Provenant de l'extérieur</p>
-            </CardContent>
-          </Card>
-          <Card className="border-l-4 border-l-primary shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Santé du Référentiel</CardTitle>
-              <FileText className="w-4 h-4 text-primary" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{okPoliciesCount} / {totalPolicies}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Politiques à jour</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${avgCompliance >= 80 ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Score Conformité</CardTitle>
-              <ShieldCheck className={`w-4 h-4 ${avgCompliance >= 80 ? 'text-emerald-500' : 'text-amber-500'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{avgCompliance}%</div>
-              <CustomProgress value={avgCompliance} label="Score moyen" colorClass={avgCompliance >= 80 ? "bg-emerald-500" : "bg-amber-500"} />
-            </CardContent>
-          </Card>
-          <Card className="border-l-4 border-l-blue-500 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Plan d'Action</CardTitle>
-              <Activity className="w-4 h-4 text-blue-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{openGapsCount}</div>
-              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts ouverts (Politiques)</p>
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Campagnes Phishing</CardTitle>
-              <Target className={`w-4 h-4 ${isGoalReached ? 'text-emerald-500' : 'text-blue-500'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-xl font-bold flex items-baseline gap-1">
-                {campaignsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetCampaignsPerYear}</span>
-              </div>
-              <CustomProgress value={campaignsThisYear.length} max={targetCampaignsPerYear} label="Campagnes annuelles" colorClass={isGoalReached ? "bg-emerald-500" : "bg-blue-500"} />
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
-              <Mic className={`w-4 h-4 ${isSessionGoalReached ? 'text-emerald-500' : 'text-amber-500'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-xl font-bold flex items-baseline gap-1">
-                {sessionsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetSessionsPerYear}</span>
-              </div>
-              <CustomProgress value={sessionsThisYear.length} max={targetSessionsPerYear} label="Webinaires / Présentiel" colorClass={isSessionGoalReached ? "bg-emerald-500" : "bg-amber-500"} />
-            </CardContent>
-          </Card>
-          <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">E-Learning</CardTitle>
-              <Monitor className={`w-4 h-4 ${elearningGoalReached ? 'text-emerald-500' : 'text-primary'}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-xl font-bold flex items-baseline gap-1">
-                {elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span>
-              </div>
-              <CustomProgress value={elearningRate} max={95} label="Taux de complétion (Année en cours)" colorClass={elearningGoalReached ? "bg-emerald-500" : "bg-primary"} />
-            </CardContent>
-          </Card>
-        </div>
-        {/* LIGNE 2 : Grand Graphique Horizontal */}
-        <Card className="shadow-sm w-full">
-          <CardHeader className="pb-0">
-            <CardTitle className="text-xs font-semibold text-foreground uppercase">Couverture Sécurité Globale</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-2 pb-4">
-            <div className="h-[180px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={coverageData} layout="vertical" margin={{ top: 10, right: 20, left: 20, bottom: 0 }}>
-                  <XAxis type="number" hide domain={[0, 100]} />
-                  <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: "hsl(var(--foreground))", fontWeight: 500 }} width={120} />
-                  <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} formatter={(val) => `${val}%`} />
-                  <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={24}>
-                    {coverageData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.fill} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
+        <KpiGrid
+          pasCoverage={pasCoverage}
+          validatedPas={validatedPas}
+          totalProjects={totalProjects}
+          riskAnalysisCoverage={riskAnalysisCoverage}
+          appsWithRiskAnalysis={appsWithRiskAnalysis}
+          totalApps={totalApps}
+          auditCoverage={auditCoverage}
+          auditedApps={auditedApps}
+          msgTotal={msgTotal}
+          msg1212={msg1212}
+          tauxInterne={tauxInterne}
+          msgExterne={msgExterne}
+          okPoliciesCount={okPoliciesCount}
+          totalPolicies={totalPolicies}
+          avgCompliance={avgCompliance}
+          openGapsCount={openGapsCount}
+          campaignsThisYearCount={campaignsThisYear.length}
+          targetCampaignsPerYear={targetCampaignsPerYear}
+          isGoalReached={isGoalReached}
+          sessionsThisYearCount={sessionsThisYear.length}
+          targetSessionsPerYear={targetSessionsPerYear}
+          isSessionGoalReached={isSessionGoalReached}
+          elearningRate={elearningRate}
+          elearningGoalReached={elearningGoalReached}
+        />
+        <CoverageChart data={coverageData} />
       </section>
-      {/* ========================================================= */}
-      {/* 4. LE RESTE DES INDICATEURS (GRAPHIQUE CENTRAL)           */}
-      {/* ========================================================= */}
+
       <div className="pt-6 border-t border-border/50">
         <KpiChartTabs />
       </div>
