@@ -6,41 +6,160 @@ import TopAlerts from "./TopAlerts";
 import { Activity, ChevronLeft, ChevronRight, Calendar, ShieldAlert, TrendingUp, TrendingDown, Minus, Rocket, Target, ShieldCheck, Bug, FileText, AlertTriangle, UserX, Mic, Monitor, Inbox, Globe, AlertCircle } from "lucide-react";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip } from "recharts";
-
+import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, Cell } from "recharts";
 import { fetchProjects, fetchApplications, fetchVulnerabilities } from "@/lib/supabase-security";
 import { fetchPolicies, fetchGaps } from "@/lib/supabase-governance";
 import { fetchPhishingCampaigns, fetchPhishingProfiles, fetchElearningModules } from "@/lib/supabase-awareness";
-
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 // --- FONCTIONS UTILITAIRES ---
 const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
-  return isNaN(n) ? 0 : n;
+  return Number.isNaN(n) ? 0 : n;
 };
-
 const calculatePercentage = (part: number, total: number) => {
   const p = safeNum(part);
   const t = safeNum(total);
   if (t === 0) return 0;
   return Math.round((p / t) * 100);
 };
-
 const getDynamicStatus = (lastDate: string | null, freqMonths: number, manualStatus: string) => {
   if (manualStatus === "draft") return "draft";
   if (!lastDate) return "warning";
   const nextDate = new Date(lastDate);
   nextDate.setMonth(nextDate.getMonth() + (freqMonths || 24));
-  const diffDays = Math.ceil((nextDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.ceil((nextDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
   if (diffDays < 0) return "expired";
   if (diffDays <= 60) return "warning";
   return "ok";
 };
+const formatPeriod = (p: string) => {
+  if (!p) return "—";
+  const d = new Date(p + "-01");
+  return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+};
+
+// --- HOOKS DE CALCUL (extraits pour réduire la complexité cognitive de Dashboard) ---
+
+function useSecurityIndicators(projects: any[], apps: any[], vulns: any[]) {
+  return useMemo(() => {
+    const totalProjects = projects.length;
+    const validatedPas = projects.filter(p => p.pasStatus === "validated").length;
+    const pasCoverage = totalProjects > 0 ? Math.round((validatedPas / totalProjects) * 100) : 0;
+    const projectsAtRisk = projects.filter(p => p.pasStatus !== "validated" && p.riskLevel === "fort").length;
+
+    const totalApps = apps.length;
+    const auditedApps = apps.filter(a => a.lastAuditDate && getDynamicStatus(a.lastAuditDate, a.auditFrequencyMonths || 12, "active") !== "expired").length;
+    const auditCoverage = totalApps > 0 ? Math.round((auditedApps / totalApps) * 100) : 0;
+    const appsWithRiskAnalysis = apps.filter(a => a.lastRiskAnalysisDate && getDynamicStatus(a.lastRiskAnalysisDate, a.riskAnalysisFrequencyMonths || 36, "active") !== "expired").length;
+    const riskAnalysisCoverage = totalApps > 0 ? Math.round((appsWithRiskAnalysis / totalApps) * 100) : 0;
+
+    const activeVulns = vulns.filter(v => v.status === "ouvert");
+    const totalCriticalVulns = activeVulns.filter(v => v.severity === "critique").length;
+    const totalHighVulns = activeVulns.filter(v => v.severity === "eleve").length;
+
+    return {
+      totalProjects, validatedPas, pasCoverage, projectsAtRisk,
+      totalApps, auditedApps, auditCoverage, appsWithRiskAnalysis, riskAnalysisCoverage,
+      activeVulns, totalCriticalVulns, totalHighVulns,
+    };
+  }, [projects, apps, vulns]);
+}
+
+function useGovernanceIndicators(policies: any[], gaps: any[]) {
+  return useMemo(() => {
+    const totalPolicies = policies.length;
+    const activeGaps = gaps.filter(g => g.status !== 'resolu');
+    const openGapsCount = activeGaps.length;
+    const criticalGapsCount = activeGaps.filter(g => g.severity === "critique").length;
+    const okPoliciesCount = policies.filter(p => getDynamicStatus(p.lastReviewDate, p.reviewFrequencyMonths, p.status) === 'ok').length;
+
+    const avgCompliance = totalPolicies > 0 ? Math.round(policies.reduce((acc, p) => {
+      const status = getDynamicStatus(p.lastReviewDate, p.reviewFrequencyMonths, p.status);
+      if (status === "expired") return acc;
+      let score = 100;
+      activeGaps.filter(g => g.policyId === p.id).forEach(gap => {
+        score -= gap.severity === 'critique' ? 20 : gap.severity === 'eleve' ? 10 : gap.severity === 'moyen' ? 5 : 2;
+      });
+      return acc + Math.max(0, score);
+    }, 0) / totalPolicies) : 0;
+
+    return { totalPolicies, activeGaps, openGapsCount, criticalGapsCount, okPoliciesCount, avgCompliance };
+  }, [policies, gaps]);
+}
+
+function useAwarenessIndicators(campaigns: any[], profiles: any[], modules: any[], selectedYear: number) {
+  return useMemo(() => {
+    const highRiskProfiles = profiles.filter(p => safeNum(p.riskScore) >= 60);
+
+    const sortedCampaigns = [...campaigns].sort((a, b) => new Date(b.sendDate).getTime() - new Date(a.sendDate).getTime());
+    const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === selectedYear);
+    const targetCampaignsPerYear = 4;
+    const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
+    const latestCampaign = sortedCampaigns.length > 0 ? sortedCampaigns[0] : null;
+    const prevCampaign = sortedCampaigns.length > 1 ? sortedCampaigns[1] : null;
+    const compromiseRate = latestCampaign ? calculatePercentage(latestCampaign.compromisedCount, latestCampaign.targetCount) : 0;
+    const prevCompromiseRate = prevCampaign ? calculatePercentage(prevCampaign.compromisedCount, prevCampaign.targetCount) : null;
+    const reportRate = latestCampaign ? calculatePercentage(latestCampaign.reportedCount, latestCampaign.targetCount) : 0;
+    const prevReportRate = prevCampaign ? calculatePercentage(prevCampaign.reportedCount, prevCampaign.targetCount) : null;
+    const phishingChartData = sortedCampaigns.slice(0, 6).reverse().map(c => ({
+      name: new Date(c.sendDate).toLocaleDateString('fr-FR', { month: 'short' }),
+      clics: calculatePercentage(c.clickedCount, c.targetCount),
+      saisies: calculatePercentage(c.compromisedCount, c.targetCount),
+      signalements: calculatePercentage(c.reportedCount, c.targetCount)
+    }));
+
+    const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
+    const sessionModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning");
+    const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
+    const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
+    const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
+    const elearningGoalReached = elearningRate >= 95;
+    const sessionsThisYear = sessionModules.filter(m => new Date(m.startDate || m.createdAt || "").getFullYear() === selectedYear);
+    const targetSessionsPerYear = 4;
+    const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
+
+    return {
+      highRiskProfiles, sortedCampaigns, campaignsThisYear, targetCampaignsPerYear, isGoalReached,
+      latestCampaign, prevCampaign, compromiseRate, prevCompromiseRate, reportRate, prevReportRate,
+      phishingChartData, elearningModules, sessionModules, totalElearningAssigned, totalElearningCompleted,
+      elearningRate, elearningGoalReached, sessionsThisYear, targetSessionsPerYear, isSessionGoalReached,
+    };
+  }, [campaigns, profiles, modules, selectedYear]);
+}
+
+function useMessagingIndicators(entries: any[], getFilteredValue: (id: string) => number | undefined) {
+  const msgTotal = getFilteredValue('msg-total') || 0;
+  const msgFraude = getFilteredValue('msg-fraude') || 0;
+  const msgErreur = getFilteredValue('msg-erreur') || 0;
+  const msg1212 = getFilteredValue('msg-1212') || 0;
+  const msgExterne = getFilteredValue('msg-externe') || 0;
+  const tauxFraude = msgTotal > 0 ? Math.round((msgFraude / msgTotal) * 100) : 0;
+  const tauxInterne = msgTotal > 0 ? Math.round((msg1212 / msgTotal) * 100) : 0;
+
+  const msgEntries = useMemo(() => entries.filter(e => e.kpiId.startsWith('msg-')), [entries]);
+  const msgAvailablePeriods = useMemo(() => [...new Set(msgEntries.map((e) => e.period))].sort(), [msgEntries]);
+  const monthlyMsgData = useMemo(() => {
+    return msgAvailablePeriods.map(period => {
+      const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === period)?.value);
+      return {
+        period: new Date(period + "-01").toLocaleDateString('fr-FR', { month: 'short' }),
+        total: getVal('msg-total'),
+        fraude: getVal('msg-fraude'),
+        erreur: getVal('msg-erreur'),
+      };
+    });
+  }, [msgAvailablePeriods, msgEntries]);
+
+  return {
+    msgTotal, msgFraude, msgErreur, msg1212, msgExterne,
+    tauxFraude, tauxInterne, msgEntries, msgAvailablePeriods, monthlyMsgData,
+  };
+}
 
 // --- COMPOSANT DE TENDANCE ---
-const TrendIndicator = ({ current, previous, inverseColors = false }: { current?: number | null, previous?: number | null, inverseColors?: boolean }) => {
+const TrendIndicator = ({ current, previous, inverseColors = false }: Readonly<{ current?: number | null, previous?: number | null, inverseColors?: boolean }>) => {
   if (previous === undefined || previous === null || current === undefined || current === null) return null;
   const diff = current - previous;
   if (diff === 0) return <div className="flex items-center gap-1 text-[10px] text-muted-foreground font-medium"><Minus className="w-3 h-3" /> Stable</div>;
@@ -55,7 +174,7 @@ const TrendIndicator = ({ current, previous, inverseColors = false }: { current?
 };
 
 // --- JAUGE DE PROGRESSION ---
-const CustomProgress = ({ value, max = 100, label, colorClass = "bg-primary" }: { value: number, max?: number, label: string, colorClass?: string }) => {
+const CustomProgress = ({ value, max = 100, label, colorClass = "bg-primary" }: Readonly<{ value: number, max?: number, label: string, colorClass?: string }>) => {
   const percentage = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
   return (
     <div className="mt-3">
@@ -72,16 +191,9 @@ const CustomProgress = ({ value, max = 100, label, colorClass = "bg-primary" }: 
 
 export default function Dashboard() {
   const { entries, availablePeriods, selectedPeriod, setSelectedPeriod, getFilteredValue } = useKpi();
-
   const currentIdx = availablePeriods.indexOf(selectedPeriod);
   const canPrev = currentIdx > 0;
   const canNext = currentIdx < availablePeriods.length - 1;
-
-  const formatPeriod = (p: string) => {
-    if (!p) return "—";
-    const d = new Date(p + "-01");
-    return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
-  };
 
   // FETCH DES DONNÉES
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
@@ -93,98 +205,29 @@ export default function Dashboard() {
   const { data: profiles = [] } = useQuery({ queryKey: ['profiles'], queryFn: fetchPhishingProfiles });
   const { data: modules = [] } = useQuery({ queryKey: ['elearning'], queryFn: fetchElearningModules });
 
-  // 1. SÉCURITÉ OPÉRATIONNELLE
-  const totalProjects = projects.length;
-  const validatedPas = projects.filter(p => p.pasStatus === "validated").length;
-  const pasCoverage = totalProjects > 0 ? Math.round((validatedPas / totalProjects) * 100) : 0;
-  const projectsAtRisk = projects.filter(p => p.pasStatus !== "validated" && p.riskLevel === "fort").length;
-
-  const totalApps = apps.length;
-  const auditedApps = apps.filter(a => a.lastAuditDate && getDynamicStatus(a.lastAuditDate, a.auditFrequencyMonths || 12, "active") !== "expired").length;
-  const auditCoverage = totalApps > 0 ? Math.round((auditedApps / totalApps) * 100) : 0;
-
-  const appsWithRiskAnalysis = apps.filter(a => a.lastRiskAnalysisDate && getDynamicStatus(a.lastRiskAnalysisDate, a.riskAnalysisFrequencyMonths || 36, "active") !== "expired").length;
-  const riskAnalysisCoverage = totalApps > 0 ? Math.round((appsWithRiskAnalysis / totalApps) * 100) : 0;
-
-  const activeVulns = vulns.filter(v => v.status === "ouvert");
-  const totalCriticalVulns = activeVulns.filter(v => v.severity === "critique").length;
-  const totalHighVulns = activeVulns.filter(v => v.severity === "eleve").length;
-
-  // 2. GOUVERNANCE
-  const totalPolicies = policies.length;
-  const activeGaps = gaps.filter(g => g.status !== 'resolu');
-  const openGapsCount = activeGaps.length;
-  const criticalGapsCount = activeGaps.filter(g => g.severity === "critique").length;
-  const okPoliciesCount = policies.filter(p => getDynamicStatus(p.lastReviewDate, p.reviewFrequencyMonths, p.status) === 'ok').length;
-
-  const avgCompliance = totalPolicies > 0 ? Math.round(policies.reduce((acc, p) => {
-    const status = getDynamicStatus(p.lastReviewDate, p.reviewFrequencyMonths, p.status);
-    if (status === "expired") return acc;
-    let score = 100;
-    activeGaps.filter(g => g.policyId === p.id).forEach(gap => {
-      score -= gap.severity === 'critique' ? 20 : gap.severity === 'eleve' ? 10 : gap.severity === 'moyen' ? 5 : 2;
-    });
-    return acc + Math.max(0, score);
-  }, 0) / totalPolicies) : 0;
-
-  // 3. SENSIBILISATION
-  const highRiskProfiles = profiles.filter(p => safeNum(p.riskScore) >= 60);
   const selectedYear = selectedPeriod ? parseInt(selectedPeriod.split("-")[0]) : new Date().getFullYear();
 
-  const sortedCampaigns = [...campaigns].sort((a, b) => new Date(b.sendDate).getTime() - new Date(a.sendDate).getTime());
-  const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === selectedYear);
-  const targetCampaignsPerYear = 4;
-  const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
+  // INDICATEURS (calculs extraits dans des hooks dédiés)
+  const {
+    totalProjects, validatedPas, pasCoverage, projectsAtRisk,
+    totalApps, auditedApps, auditCoverage, appsWithRiskAnalysis, riskAnalysisCoverage,
+    totalCriticalVulns, totalHighVulns,
+  } = useSecurityIndicators(projects, apps, vulns);
 
-  const latestCampaign = sortedCampaigns.length > 0 ? sortedCampaigns[0] : null;
-  const prevCampaign = sortedCampaigns.length > 1 ? sortedCampaigns[1] : null;
-  const compromiseRate = latestCampaign ? calculatePercentage(latestCampaign.compromisedCount, latestCampaign.targetCount) : 0;
-  const prevCompromiseRate = prevCampaign ? calculatePercentage(prevCampaign.compromisedCount, prevCampaign.targetCount) : null;
-  const reportRate = latestCampaign ? calculatePercentage(latestCampaign.reportedCount, latestCampaign.targetCount) : 0;
-  const prevReportRate = prevCampaign ? calculatePercentage(prevCampaign.reportedCount, prevCampaign.targetCount) : null;
+  const {
+    totalPolicies, openGapsCount, criticalGapsCount, okPoliciesCount, avgCompliance,
+  } = useGovernanceIndicators(policies, gaps);
 
-  const phishingChartData = sortedCampaigns.slice(0, 6).reverse().map(c => ({
-    name: new Date(c.sendDate).toLocaleDateString('fr-FR', { month: 'short' }),
-    clics: calculatePercentage(c.clickedCount, c.targetCount),
-    saisies: calculatePercentage(c.compromisedCount, c.targetCount),
-    signalements: calculatePercentage(c.reportedCount, c.targetCount)
-  }));
+  const {
+    highRiskProfiles, campaignsThisYear, targetCampaignsPerYear, isGoalReached,
+    compromiseRate, prevCompromiseRate, reportRate, prevReportRate, phishingChartData,
+    totalElearningAssigned, elearningRate, elearningGoalReached,
+    sessionsThisYear, targetSessionsPerYear, isSessionGoalReached,
+  } = useAwarenessIndicators(campaigns, profiles, modules, selectedYear);
 
-  const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
-  const sessionModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning");
-
-  const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
-  const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
-  const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
-  const elearningGoalReached = elearningRate >= 95;
-
-  const sessionsThisYear = sessionModules.filter(m => new Date(m.startDate || m.createdAt || "").getFullYear() === selectedYear);
-  const targetSessionsPerYear = 4;
-  const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
-
-  // 4. MESSAGERIE SSI (Utilise getFilteredValue)
-  const msgTotal = getFilteredValue('msg-total') || 0;
-  const msgFraude = getFilteredValue('msg-fraude') || 0;
-  const msgErreur = getFilteredValue('msg-erreur') || 0;
-  const msg1212 = getFilteredValue('msg-1212') || 0;
-  const msgExterne = getFilteredValue('msg-externe') || 0;
-
-  const tauxFraude = msgTotal > 0 ? Math.round((msgFraude / msgTotal) * 100) : 0;
-  const tauxInterne = msgTotal > 0 ? Math.round((msg1212 / msgTotal) * 100) : 0;
-
-  const msgEntries = entries.filter(e => e.kpiId.startsWith('msg-'));
-  const msgAvailablePeriods = useMemo(() => [...new Set(msgEntries.map((e) => e.period))].sort(), [msgEntries]);
-  const monthlyMsgData = useMemo(() => {
-    return msgAvailablePeriods.map(period => {
-      const getVal = (id: string) => safeNum(msgEntries.find(e => e.kpiId === id && e.period === period)?.value);
-      return {
-        period: new Date(period + "-01").toLocaleDateString('fr-FR', { month: 'short' }),
-        total: getVal('msg-total'),
-        fraude: getVal('msg-fraude'),
-        erreur: getVal('msg-erreur'),
-      };
-    });
-  }, [msgAvailablePeriods, msgEntries]);
+  const {
+    msgTotal, msgFraude, msgErreur, msg1212, msgExterne, tauxFraude, tauxInterne, monthlyMsgData,
+  } = useMessagingIndicators(entries, getFilteredValue);
 
   const coverageData = [
     { name: "Projets (PAS)", value: pasCoverage, fill: "#10b981" },
@@ -194,7 +237,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8 pb-12 animate-in fade-in duration-500">
-
       {/* ======================= HEADER ET CLOCHE ======================= */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -208,14 +250,14 @@ export default function Dashboard() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1 glass-panel px-2 py-1 hidden lg:flex">
-            <button onClick={() => setSelectedPeriod(availablePeriods[currentIdx - 1])} disabled={!canPrev} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
+            <button type="button" onClick={() => setSelectedPeriod(availablePeriods[currentIdx - 1])} disabled={!canPrev} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
               <ChevronLeft className="w-4 h-4 text-muted-foreground" />
             </button>
             <div className="flex items-center gap-1.5 px-2 min-w-[160px] justify-center">
               <Calendar className="w-3.5 h-3.5 text-primary" />
               <span className="text-sm font-medium text-foreground capitalize">{formatPeriod(selectedPeriod)}</span>
             </div>
-            <button onClick={() => setSelectedPeriod(availablePeriods[currentIdx + 1])} disabled={!canNext} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
+            <button type="button" onClick={() => setSelectedPeriod(availablePeriods[currentIdx + 1])} disabled={!canNext} className="p-1 rounded hover:bg-secondary disabled:opacity-30 transition-colors">
               <ChevronRight className="w-4 h-4 text-muted-foreground" />
             </button>
           </div>
@@ -223,18 +265,15 @@ export default function Dashboard() {
           <TopAlerts />
         </div>
       </div>
-
       <section>
         <ExecutiveSummary />
       </section>
-
       <section className="pt-6 border-t border-border/50">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold flex items-center gap-2">
             <ShieldAlert className="w-5 h-5 text-rose-500" /> Indicateurs de Maîtrise des Risques (KRI)
           </h2>
         </div>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -246,7 +285,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Projets risqués sans PAS</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${(totalCriticalVulns + totalHighVulns) > 0 ? 'border-l-rose-600 dark:bg-rose-900/10' : 'border-l-emerald-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Dette Majeure</CardTitle>
@@ -257,7 +295,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Vulnérabilités Crit/Élev (Audits)</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${criticalGapsCount > 0 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-slate-200'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Urgences (Gov)</CardTitle>
@@ -268,7 +305,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts critiques actifs (Politiques)</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${highRiskProfiles.length > 0 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Risque &gt; 60</CardTitle>
@@ -279,7 +315,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Collaborateurs à suivre</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${compromiseRate > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Compromission</CardTitle>
@@ -293,7 +328,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
             </CardContent>
           </Card>
-
           <Card className="border-l-4 border-l-blue-500 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Signalements</CardTitle>
@@ -307,7 +341,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Dernière campagne</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${tauxFraude > 20 ? 'border-l-rose-500 bg-rose-50/50 dark:bg-rose-900/10' : 'border-l-amber-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Fraude Entrante</CardTitle>
@@ -322,7 +355,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenants de la BP Fraude</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${msgErreur > 25 ? 'border-l-rose-600 bg-rose-50/50 dark:bg-rose-900/10' : msgErreur > 10 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Erreurs Adressage</CardTitle>
@@ -338,7 +370,6 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         </div>
-
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <Card className="lg:col-span-2 shadow-sm flex flex-col">
             <CardHeader className="pb-0">
@@ -361,7 +392,6 @@ export default function Dashboard() {
               </div>
             </CardContent>
           </Card>
-
           <Card className="shadow-sm flex flex-col border-l-4 border-l-amber-500">
             <CardHeader className="pb-0">
               <CardTitle className="text-xs font-semibold text-foreground uppercase flex items-center justify-between">
@@ -383,7 +413,6 @@ export default function Dashboard() {
           </Card>
         </div>
       </section>
-
       {/* ========================================================= */}
       {/* 3. PERFORMANCE ET CONFORMITÉ (KPI)                        */}
       {/* ========================================================= */}
@@ -391,7 +420,6 @@ export default function Dashboard() {
         <h2 className="text-lg font-bold flex items-center gap-2 mb-4">
           <TrendingUp className="w-5 h-5 text-primary" /> Performance et Conformité (KPI)
         </h2>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -403,7 +431,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{validatedPas} projets sur {totalProjects}</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Analyses Risques</CardTitle>
@@ -414,7 +441,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${auditCoverage >= 80 ? 'border-l-blue-500' : auditCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Couverture Audit</CardTitle>
@@ -425,7 +451,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">{auditedApps} périmètres sur {totalApps}</p>
             </CardContent>
           </Card>
-
           <Card className="border-l-4 border-l-blue-500 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Volume Total Msg</CardTitle>
@@ -438,7 +463,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails reçus ce mois</p>
             </CardContent>
           </Card>
-
           <Card className="border-l-4 border-l-emerald-500 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Remontées 1212</CardTitle>
@@ -453,7 +477,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Mails provenant du 1212</p>
             </CardContent>
           </Card>
-
           <Card className="border-l-4 border-l-slate-400 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Externes</CardTitle>
@@ -466,7 +489,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Provenant de l'extérieur</p>
             </CardContent>
           </Card>
-
           <Card className="border-l-4 border-l-primary shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Santé du Référentiel</CardTitle>
@@ -477,7 +499,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Politiques à jour</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${avgCompliance >= 80 ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Score Conformité</CardTitle>
@@ -488,7 +509,6 @@ export default function Dashboard() {
               <CustomProgress value={avgCompliance} label="Score moyen" colorClass={avgCompliance >= 80 ? "bg-emerald-500" : "bg-amber-500"} />
             </CardContent>
           </Card>
-
           <Card className="border-l-4 border-l-blue-500 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Plan d'Action</CardTitle>
@@ -499,7 +519,6 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Écarts ouverts (Politiques)</p>
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Campagnes Phishing</CardTitle>
@@ -512,7 +531,6 @@ export default function Dashboard() {
               <CustomProgress value={campaignsThisYear.length} max={targetCampaignsPerYear} label="Campagnes annuelles" colorClass={isGoalReached ? "bg-emerald-500" : "bg-blue-500"} />
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
@@ -525,7 +543,6 @@ export default function Dashboard() {
               <CustomProgress value={sessionsThisYear.length} max={targetSessionsPerYear} label="Webinaires / Présentiel" colorClass={isSessionGoalReached ? "bg-emerald-500" : "bg-amber-500"} />
             </CardContent>
           </Card>
-
           <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-[10px] font-medium text-muted-foreground uppercase">E-Learning</CardTitle>
@@ -539,7 +556,6 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         </div>
-
         {/* LIGNE 2 : Grand Graphique Horizontal */}
         <Card className="shadow-sm w-full">
           <CardHeader className="pb-0">
@@ -554,7 +570,7 @@ export default function Dashboard() {
                   <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ fontSize: '12px', borderRadius: '8px' }} formatter={(val) => `${val}%`} />
                   <Bar dataKey="value" radius={[0, 4, 4, 0]} barSize={24}>
                     {coverageData.map((entry, index) => (
-                      <cell key={`cell-${index}`} fill={entry.fill} />
+                      <Cell key={`cell-${index}`} fill={entry.fill} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -563,14 +579,12 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </section>
-
       {/* ========================================================= */}
       {/* 4. LE RESTE DES INDICATEURS (GRAPHIQUE CENTRAL)           */}
       {/* ========================================================= */}
       <div className="pt-6 border-t border-border/50">
         <KpiChartTabs />
       </div>
-
     </div>
   );
 }
