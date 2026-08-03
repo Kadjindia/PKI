@@ -77,7 +77,7 @@ const HR_MAPPING_STORAGE_KEY = "cortex_hr_mapping_v1";
 const HR_MAPPING_META_STORAGE_KEY = "cortex_hr_mapping_meta_v1";
 
 // ----------------------------------------------------------------------------
-// Fonctions API & Logiques (Complexité réduite)
+// Fonctions API & Logiques (Complexité réduite sous 15)
 // ----------------------------------------------------------------------------
 
 const apiCall = async (endpoint: string, payload: any) => {
@@ -105,11 +105,7 @@ const pollSingleQueryAttempt = async (queryId: string) => {
   return { status: "PENDING" };
 };
 
-const executeXql = async (query: string, fromTimestamp: number, toTimestamp: number, withTimeframe: boolean, checkCancelled: () => boolean) => {
-  const payload: any = { request_data: { query } };
-  if (withTimeframe) payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
-
-  let queryId = null;
+const attemptStartQuery = async (payload: any, checkCancelled: () => boolean) => {
   for (let retry = 0; retry < 3; retry++) {
     if (checkCancelled()) return null;
     const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload);
@@ -118,12 +114,12 @@ const executeXql = async (query: string, fromTimestamp: number, toTimestamp: num
       continue;
     }
     if (!startRes.ok) return null;
-    queryId = (await startRes.json())?.reply;
-    break;
+    return (await startRes.json())?.reply;
   }
+  return null;
+};
 
-  if (!queryId) return null;
-
+const attemptPollQuery = async (queryId: string, checkCancelled: () => boolean) => {
   for (let i = 0; i < 20; i++) {
     if (checkCancelled()) break;
     await new Promise(res => setTimeout(res, 3000));
@@ -132,6 +128,15 @@ const executeXql = async (query: string, fromTimestamp: number, toTimestamp: num
     if (result.status === "FAIL") break;
   }
   return null;
+};
+
+const executeXql = async (query: string, fromTimestamp: number, toTimestamp: number, withTimeframe: boolean, checkCancelled: () => boolean) => {
+  const payload: any = { request_data: { query } };
+  if (withTimeframe) payload.request_data.timeframe = { from: fromTimestamp, to: toTimestamp };
+
+  const queryId = await attemptStartQuery(payload, checkCancelled);
+  if (!queryId) return null;
+  return await attemptPollQuery(queryId, checkCancelled);
 };
 
 const calculateTimeRange = (timePrefix: string, timeValue: number, timeUnit: string) => {
@@ -438,7 +443,7 @@ export default function CortexPanel() {
 
   const uniqueOSList = useMemo(() => {
     if (!inventoryData) return [];
-    // Correction SonarQube : Typage explicite des paramètres de comparaison stringify-safe
+    // Correction SonarQube : Typage explicite stringify-safe pour le tri alphabétique
     const osSet = new Set(inventoryData.map(ep => ep.operating_system).filter(Boolean));
     return Array.from(osSet).sort((a: unknown, b: unknown) => String(a).localeCompare(String(b)));
   }, [inventoryData]);
@@ -602,7 +607,7 @@ export default function CortexPanel() {
   }, [timePrefix, timeValue, timeUnit]);
 
   // ============================================================================
-  // RENDUS SÉPARÉS (Pour respecter SonarQube)
+  // RENDUS SÉPARÉS
   // ============================================================================
 
   const renderSeverityPieChart = () => {
