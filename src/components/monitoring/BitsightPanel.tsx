@@ -162,7 +162,10 @@ const processHistoricalRatings = (ratingData: any, realData: any) => {
   const formatDiff = (pastScore: number | null) => {
     if (pastScore === null) return "N/A";
     const diff = currentScore - pastScore;
-    return diff === 0 ? "0" : (diff > 0 ? `+${diff}` : `${diff}`);
+    // Correction SonarQube : Déstructuration du ternaire imbriqué en if/else
+    if (diff === 0) return "0";
+    if (diff > 0) return `+${diff}`;
+    return `${diff}`;
   };
 
   realData.executive.trends = {
@@ -359,7 +362,7 @@ const fetchBitsightDetails = async () => {
 };
 
 // ============================================================================
-// HOOK DE TRAITEMENT (Prend bien en compte selectedAssetForFindings désormais)
+// HOOK DE TRAITEMENT (Pour retirer la logique du composant)
 // ============================================================================
 
 function useBitsightDataProcessing(data: any, filters: any, selectedAssetForFindings: string | null) {
@@ -412,8 +415,6 @@ function useBitsightDataProcessing(data: any, filters: any, selectedAssetForFind
     const catDist = Object.entries(cm).map(([category, details]) => ({ category, count: details.count, vectorKey: details.key })).sort((a, b) => b.count - a.count).slice(0, 10);
 
     const mFind = fFind.filter((f: any) => f.asset.toLowerCase().includes(modalFindingSearch.toLowerCase()) || f.finding.toLowerCase().includes(modalFindingSearch.toLowerCase()));
-
-    // CORRECTION : Filtre correctement les findings spécifiques liés à l'actif sélectionné
     const spFind = rFind.filter((f: any) => selectedAssetForFindings && f.asset.includes(selectedAssetForFindings));
 
     return {
@@ -646,6 +647,9 @@ const ExecutiveSummary = ({ data }: { data: any }) => {
   const scoreStyles = getScoreCardStyles(data.executive.score);
   const d30Style = getTrendStyle(data.executive.trends.d30);
 
+  // Utilisation d'un objet (map) pour corriger l'erreur de SonarQube sur le ternaire imbriqué
+  const trendDaysMap: Record<string, string> = { d7: '7', d30: '30', d90: '90' };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
       <Card className={`lg:col-span-2 border-l-4 ${scoreStyles.borderClass} bg-card shadow-sm flex flex-col justify-between`}>
@@ -672,9 +676,11 @@ const ExecutiveSummary = ({ data }: { data: any }) => {
           {['d7', 'd30', 'd90'].map(d => {
             const trendStr = data.executive.trends[d as keyof typeof data.executive.trends];
             const tStyle = getTrendStyle(trendStr);
+            const daysLabel = trendDaysMap[d] || '90';
+
             return (
               <div key={d} className="flex justify-between items-center">
-                <span>{d === 'd7' ? '7' : d === 'd30' ? '30' : '90'} jours:</span>
+                <span>{daysLabel} jours:</span>
                 <span className={`font-bold flex items-center gap-1 ${tStyle.color}`}><tStyle.Icon className="w-3 h-3" /> {trendStr}</span>
               </div>
             );
@@ -726,7 +732,7 @@ export default function BitsightPanel() {
   const [selectedAssetForFindings, setSelectedAssetForFindings] = useState<string | null>(null);
   const [isTechModalOpen, setIsTechModalOpen] = useState(false);
 
-  // Regroupement des filtres
+  // Regroupement des filtres pour faciliter la transmission
   const [filters, setFilters] = useState({
     assetFilter: 'all' as 'all' | 'domains' | 'ips' | 'critical',
     modalAssetSearch: "",
