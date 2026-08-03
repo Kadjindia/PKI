@@ -7,19 +7,30 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { ScrollArea } from "@/components/ui/scroll-area";
 
 import {
   ServerCrash, ShieldCheck, Activity, TrendingDown,
   FileWarning, ShieldAlert, Clock, AlertTriangle,
-  CheckCircle2, Target // <-- Target a été ajouté ici !
+  CheckCircle2, Target
 } from "lucide-react";
 
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, Cell
 } from "recharts";
+
+// --- FONCTIONS UTILITAIRES (Évite les ternaires imbriqués) ---
+const getScoreBadgeVariant = (score: number): "destructive" | "default" | "secondary" => {
+  if (score >= 8) return 'destructive';
+  if (score >= 6) return 'default';
+  return 'secondary';
+};
+
+const getAgingColor = (index: number): string => {
+  if (index > 3) return '#7f1d1d';
+  if (index > 2) return '#b91c1c';
+  return '#ef4444';
+};
 
 export default function QualysPanel() {
   // --- MOCK DATA ENTERPRISE (Scale : 4000 utilisateurs / 4850 actifs) ---
@@ -199,7 +210,7 @@ export default function QualysPanel() {
                     <RechartsTooltip cursor={{fill: 'transparent'}} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
                     <Bar dataKey="vulns" name="Nb de Vulnérabilités" fill="#ef4444" radius={[4, 4, 0, 0]}>
                       {data.trends.agingData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={index > 3 ? '#7f1d1d' : index > 2 ? '#b91c1c' : '#ef4444'} />
+                        <Cell key={entry.range} fill={getAgingColor(index)} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -233,8 +244,8 @@ export default function QualysPanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.slaBreaches.map((sla, i) => (
-                <TableRow key={i}>
+              {data.slaBreaches.map((sla) => (
+                <TableRow key={sla.severity}>
                   <TableCell className="pl-6 font-bold text-sm">{sla.severity}</TableCell>
                   <TableCell className={`font-bold ${sla.status === 'Hors SLA' ? 'text-destructive' : 'text-emerald-500'}`}>{sla.mttrReal}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{sla.slaTarget}</TableCell>
@@ -274,12 +285,12 @@ export default function QualysPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.assetRiskGroups.map((group, i) => (
-                  <TableRow key={i}>
+                {data.assetRiskGroups.map((group) => (
+                  <TableRow key={group.group}>
                     <TableCell className="pl-6 font-bold text-sm">{group.group}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{group.desc}</TableCell>
                     <TableCell>
-                      <Badge variant={group.score >= 8 ? 'destructive' : group.score >= 6 ? 'default' : 'secondary'} className="text-sm">
+                      <Badge variant={getScoreBadgeVariant(group.score)} className="text-sm">
                         {group.score}
                       </Badge>
                     </TableCell>
@@ -309,8 +320,8 @@ export default function QualysPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.topRecurringDette.map((vuln, i) => (
-                  <TableRow key={i}>
+                {data.topRecurringDette.map((vuln) => (
+                  <TableRow key={vuln.cve}>
                     <TableCell className="pl-6 font-bold text-sm">{vuln.cve}</TableCell>
                     <TableCell className="text-destructive font-black">{vuln.age} j</TableCell>
                     <TableCell className="font-bold">{vuln.affectedAssets}</TableCell>
@@ -344,8 +355,8 @@ export default function QualysPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.actionableVulns.map((vuln, i) => (
-                  <TableRow key={i}>
+                {data.actionableVulns.map((vuln) => (
+                  <TableRow key={vuln.cve}>
                     <TableCell className="pl-6">
                       <span className="font-bold text-sm block">{vuln.cve}</span>
                       <span className="text-xs text-muted-foreground">{vuln.title}</span>
