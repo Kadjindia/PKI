@@ -133,16 +133,13 @@ export default function ProfileModal({ isOpen, onClose, userEmail, currentInitia
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
-      <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity"
+      {/* Correction SonarQube : Utilisation d'un bouton natif plutôt que d'une div avec role="button" */}
+      <button
+        type="button"
+        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity w-full h-full border-none cursor-default"
         onClick={onClose}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === 'Escape') onClose();
-        }}
         aria-label="Fermer la modale"
-      ></div>
+      />
 
       <div className="relative bg-white dark:bg-slate-900 w-full max-w-3xl rounded-lg shadow-2xl flex flex-col max-h-[90vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
 
