@@ -124,7 +124,7 @@ interface TrackedRisk {
 }
 
 // ============================================================================
-// UTILITAIRES DE BASE
+// UTILITAIRES DE BASE (Sécurisés & Complexité réduite)
 // ============================================================================
 const generateId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 
@@ -285,7 +285,7 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
 const cleanDatasetRows = (rawData: any[], dateColumn: string | undefined): any[] => {
   const filtered = rawData.filter(row => {
     if (dateColumn) return row[dateColumn] != null && safeStringify(row[dateColumn]) !== "";
-    return Object.values(row).some(val => val != null && safeStringify(val) !== "");
+    return Object.values(row).some(val => val != null && typeof val !== 'object' && String(val).trim() !== "");
   });
 
   return filtered.map(row => {
@@ -675,7 +675,7 @@ const FiltersSidebar = ({ isFiltersOpen, setIsFiltersOpen, activeWidget, activeD
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-lg transition-all duration-300 overflow-hidden ${isFiltersOpen ? 'w-64' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') setIsFiltersOpen(!isFiltersOpen); }} onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none"><Filter className="w-4 h-4 text-muted-foreground shrink-0" />{isFiltersOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Filtres</h3>}</div>
+        <button type="button" onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none"><Filter className="w-4 h-4 text-muted-foreground shrink-0" />{isFiltersOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Filtres</h3>}</button>
         {isFiltersOpen ? <button type="button" onClick={() => setIsFiltersOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsFiltersOpen(true)}><ChevronRight className="w-4 h-4" /></button>}
       </div>
       <div className={`flex-1 overflow-y-auto p-3 ${!isFiltersOpen && 'hidden'}`}>
@@ -704,7 +704,7 @@ const AppearanceSidebar = ({ isVisOpen, setIsVisOpen, activeWidget, activeRisk, 
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-xl transition-all duration-300 overflow-hidden ${isVisOpen ? 'w-72' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') setIsVisOpen(!isVisOpen); }} onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none"><LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />{isVisOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Apparence</h3>}</div>
+        <button type="button" onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none"><LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />{isVisOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Apparence</h3>}</button>
         {isVisOpen ? <button type="button" onClick={() => setIsVisOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsVisOpen(true)}><ChevronRight className="w-4 h-4" /></button>}
       </div>
       <div className={`flex-1 overflow-y-auto p-4 ${!isVisOpen && 'hidden'}`}>
@@ -772,7 +772,7 @@ const DataSidebar = ({ isDataOpen, setIsDataOpen, setIsAppendOpen, setIsAddDataO
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 overflow-hidden ${isDataOpen ? 'w-64' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') setIsDataOpen(!isDataOpen); }} onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none"><Database className="w-4 h-4 text-muted-foreground shrink-0" />{isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Données</h3>}</div>
+        <button type="button" onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none"><Database className="w-4 h-4 text-muted-foreground shrink-0" />{isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Données</h3>}</button>
         {isDataOpen ? (<div className="flex items-center gap-1 shrink-0"><Button type="button" variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner (Append)"><Combine className="w-3.5 h-3.5" /></Button><Button type="button" variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source"><Plus className="w-3.5 h-3.5" /></Button><button type="button" onClick={() => setIsDataOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground"><ChevronRight className="w-4 h-4" /></button></div>) : (<button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsDataOpen(true)}><ChevronRight className="w-4 h-4" /></button>)}
       </div>
       <div className={`flex-1 overflow-y-auto p-2 ${!isDataOpen && 'hidden'}`}>
@@ -978,7 +978,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
 };
 
 // ============================================================================
-// COMPOSANT PRINCIPAL (VIEW) - Refactorisé
+// COMPOSANT PRINCIPAL (VIEW)
 // ============================================================================
 export default function RisksView() {
   const [risks, setRisks] = useState<TrackedRisk[]>([]);
