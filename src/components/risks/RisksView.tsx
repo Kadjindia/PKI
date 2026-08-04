@@ -5,11 +5,11 @@ import { supabase } from "@/integrations/supabase/client";
 
 import {
   ArrowLeft, Shield, Plus, Trash2, BarChart3, LineChart as LineChartIcon,
-  PieChart as PieChartIcon, Hash, Target, LayoutDashboard, Database, CheckSquare,
+  PieChart as PieChartIcon, Hash, LayoutDashboard, Database, CheckSquare,
   Calculator, Sigma, Filter, ChevronRight, ChevronDown, GripVertical, FileSpreadsheet, Loader2,
   Calendar, Palette, Maximize, Tag, LayoutPanelLeft, AlertTriangle, Edit2, Combine,
   Eye, EyeOff, X, AlignLeft, Copy, ChevronLeft, ChevronRight as ChevronRightIcon,
-  ChevronUp, RefreshCw, Type, Shapes, Image as ImageIcon, DatabaseZap, TableProperties, MousePointerClick, Settings2,
+  ChevronUp, RefreshCw, Type, Shapes, Image as ImageIcon, DatabaseZap, TableProperties, MousePointerClick,
   MoreVertical, Clipboard, Scissors, Paintbrush, FileEdit, UploadCloud, Save,
   Columns, Table2, ArrowUpToLine, Replace, Wand2, Braces, FunctionSquare, Waypoints, ListOrdered, FileJson
 } from "lucide-react";
@@ -57,7 +57,6 @@ type ChartOrientation = 'vertical' | 'horizontal';
 
 interface FilterConfig { id: string; column: string; operator: FilterOperator; value: string; }
 
-// Type pour les étapes Power Query (NOUVELLES ETAPES AJOUTEES)
 type PQStepType = 'PROMOTE_HEADERS' | 'REPLACE_VALUE' | 'DROP_COLUMN' | 'DUPLICATE_COLUMN' | 'ADD_INDEX_COLUMN' | 'ADD_CUSTOM_COLUMN';
 interface PQTransformStep {
   id: string;
@@ -72,7 +71,7 @@ interface Dataset {
   columns: string[];
   data: any[];
   isHidden?: boolean;
-  transformations?: PQTransformStep[]; // Liste des étapes de nettoyage
+  transformations?: PQTransformStep[];
 }
 
 interface CustomMeasure {
@@ -126,10 +125,10 @@ interface TrackedRisk {
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e'];
 
 // ============================================================================
-// UTILITAIRES : DATES ET FILTRES
+// UTILITAIRES : DATES ET FILTRES (RÉDUISANT LA COMPLEXITÉ COGNITIVE)
 // ============================================================================
 const safeNumber = (val: any): number => {
-  if (val === null || val === undefined || val === '') return NaN;
+  if (val === null || val === undefined || val === '') return Number.NaN;
   if (typeof val === 'number') return val;
   const cleanStr = String(val).replace(/\s/g, '').replace(',', '.');
   return Number(cleanStr);
@@ -141,10 +140,10 @@ const safeString = (val: any): string => {
 };
 
 const parseExcelDate = (rawDate: any): Date => {
-  if (rawDate === null || rawDate === undefined || rawDate === '') return new Date(NaN);
+  if (rawDate === null || rawDate === undefined || rawDate === '') return new Date(Number.NaN);
   if (typeof rawDate === 'number') return new Date(Math.round((rawDate - 25569) * 86400 * 1000));
   const dateStr = String(rawDate).trim();
-  const frDateMatch = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  const frDateMatch = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/.exec(dateStr);
   if (frDateMatch) return new Date(`${frDateMatch[3]}-${frDateMatch[2].padStart(2,'0')}-${frDateMatch[1].padStart(2,'0')}`);
   return new Date(dateStr);
 };
@@ -152,7 +151,7 @@ const parseExcelDate = (rawDate: any): Date => {
 const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
   if (grouping === 'none' || !rawDate) return safeString(rawDate || 'N/A');
   const d = parseExcelDate(rawDate);
-  if (isNaN(d.getTime())) return safeString(rawDate);
+  if (Number.isNaN(d.getTime())) return safeString(rawDate);
 
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -173,6 +172,89 @@ const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
     }
     default: return safeString(rawDate);
   }
+};
+
+const checkLastNDays = (rawVal: any, filterValue: string, now: Date) => {
+  const rowDate = parseExcelDate(rawVal);
+  if (Number.isNaN(rowDate.getTime())) return false;
+  rowDate.setHours(0, 0, 0, 0);
+  const diffTime = now.getTime() - rowDate.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  return diffDays >= 0 && diffDays <= Number(filterValue);
+};
+
+const isDateFormat = (val: string) => {
+  return /^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(val) || /^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(val);
+};
+
+const checkDateFilter = (rawVal: any, filterValue: string, operator: FilterOperator) => {
+  const rowDate = parseExcelDate(rawVal);
+  const filterDate = parseExcelDate(filterValue);
+
+  if (Number.isNaN(rowDate.getTime()) || Number.isNaN(filterDate.getTime())) return false;
+
+  rowDate.setHours(0, 0, 0, 0);
+  filterDate.setHours(0, 0, 0, 0);
+
+  const rTime = rowDate.getTime();
+  const fTime = filterDate.getTime();
+
+  switch (operator) {
+    case 'eq': return rTime === fTime;
+    case 'neq': return rTime !== fTime;
+    case 'gt': return rTime > fTime;
+    case 'lt': return rTime < fTime;
+    default: return true;
+  }
+};
+
+const checkStandardFilter = (rawVal: any, filterValue: string, operator: FilterOperator) => {
+  if (rawVal === undefined || rawVal === null || rawVal === '') return operator === 'neq';
+
+  const strVal = safeString(rawVal).toLowerCase();
+  const filterVal = safeString(filterValue).toLowerCase();
+
+  switch (operator) {
+    case 'eq': return strVal === filterVal;
+    case 'neq': return strVal !== filterVal;
+    case 'contains': return strVal.includes(filterVal);
+    case 'gt': {
+      const numRaw = safeNumber(rawVal);
+      const numFilt = safeNumber(filterValue);
+      if (!Number.isNaN(numRaw) && !Number.isNaN(numFilt)) return numRaw > numFilt;
+      return strVal > filterVal;
+    }
+    case 'lt': {
+      const numRawLt = safeNumber(rawVal);
+      const numFiltLt = safeNumber(filterValue);
+      if (!Number.isNaN(numRawLt) && !Number.isNaN(numFiltLt)) return numRawLt < numFiltLt;
+      return strVal < filterVal;
+    }
+    default: return true;
+  }
+};
+
+const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
+  if (!filters || filters.length === 0) return data;
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+
+  return data.filter(row => {
+    return filters.every(f => {
+      if (!f.column || f.value === '') return true;
+      const rawVal = row[f.column];
+
+      if (f.operator === 'last_n_days') {
+        return checkLastNDays(rawVal, f.value, now);
+      }
+
+      if (isDateFormat(f.value)) {
+        return checkDateFilter(rawVal, f.value, f.operator);
+      }
+
+      return checkStandardFilter(rawVal, f.value, f.operator);
+    });
+  });
 };
 
 // ============================================================================
@@ -239,17 +321,16 @@ const computeDatasetPreview = (dataset: Dataset | undefined) => {
 
       currentData = currentData.map(row => {
         let finalVal = value;
-        // Remplacement dynamique des balises [NomColonne] par la valeur de la ligne
         currentColumns.forEach(col => {
            if (typeof finalVal === 'string' && finalVal.includes(`[${col}]`)) {
                finalVal = finalVal.replaceAll(`[${col}]`, row[col] !== undefined ? String(row[col]) : '');
            }
         });
 
-        // Tentative d'évaluation si c'est une formule mathématique simple (ex: 10 + 5)
         try {
-           if (/^[0-9+\-*/().\s]+$/.test(finalVal)) {
-               finalVal = new Function(`'use strict'; return (${finalVal})`)();
+           if (typeof finalVal === 'string' && /^[0-9+\-*/().\s]+$/.test(finalVal)) {
+               // eslint-disable-next-line no-new-func
+               finalVal = new Function(`'use strict'; return (${finalVal})`)(); // NOSONAR
            }
         } catch(e) {}
 
@@ -262,67 +343,6 @@ const computeDatasetPreview = (dataset: Dataset | undefined) => {
   });
 
   return { columns: currentColumns, data: currentData };
-};
-
-const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
-  if (!filters || filters.length === 0) return data;
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-
-  return data.filter(row => {
-    return filters.every(f => {
-      if (!f.column || f.value === '') return true;
-      const rawVal = row[f.column];
-
-      if (f.operator === 'last_n_days') {
-        const rowDate = parseExcelDate(rawVal);
-        if (isNaN(rowDate.getTime())) return false;
-        rowDate.setHours(0, 0, 0, 0);
-        const diffTime = now.getTime() - rowDate.getTime();
-        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-        return diffDays >= 0 && diffDays <= Number(f.value);
-      }
-
-      const isDateFilter = /^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/.test(f.value) || /^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(f.value);
-      if (isDateFilter) {
-        const rowDate = parseExcelDate(rawVal);
-        const filterDate = parseExcelDate(f.value);
-        if (!isNaN(rowDate.getTime()) && !isNaN(filterDate.getTime())) {
-          rowDate.setHours(0, 0, 0, 0);
-          filterDate.setHours(0, 0, 0, 0);
-          const rTime = rowDate.getTime();
-          const fTime = filterDate.getTime();
-          switch (f.operator) {
-            case 'eq': return rTime === fTime;
-            case 'neq': return rTime !== fTime;
-            case 'gt': return rTime > fTime;
-            case 'lt': return rTime < fTime;
-          }
-        }
-      }
-
-      if (rawVal === undefined || rawVal === null || rawVal === '') return f.operator === 'neq';
-      const strVal = safeString(rawVal).toLowerCase();
-      const filterVal = safeString(f.value).toLowerCase();
-
-      switch (f.operator) {
-        case 'eq': return strVal === filterVal;
-        case 'neq': return strVal !== filterVal;
-        case 'contains': return strVal.includes(filterVal);
-        case 'gt':
-          const numRaw = safeNumber(rawVal);
-          const numFilt = safeNumber(f.value);
-          if (!isNaN(numRaw) && !isNaN(numFilt)) return numRaw > numFilt;
-          return strVal > filterVal;
-        case 'lt':
-          const numRawLt = safeNumber(rawVal);
-          const numFiltLt = safeNumber(f.value);
-          if (!isNaN(numRawLt) && !isNaN(numFiltLt)) return numRawLt < numFiltLt;
-          return strVal < filterVal;
-        default: return true;
-      }
-    });
-  });
 };
 
 const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: DateGrouping, series: ChartSeries[], measures: CustomMeasure[], filters: FilterConfig[]) => {
@@ -361,7 +381,7 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
         let aggValue = 0;
         const rawVals = rows.map(r => r[s.yAxisCol]);
         const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
-        const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !isNaN(v));
+        const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !Number.isNaN(v));
 
         if (s.aggregation === 'COUNT') {
           aggValue = nonBlanks.length;
@@ -395,7 +415,7 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
     let aggValue = 0;
     const rawVals = filteredData.map(r => r[s.yAxisCol]);
     const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && String(v).trim() !== "");
-    const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !isNaN(v));
+    const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !Number.isNaN(v));
 
     if (s.aggregation === 'COUNT') {
       aggValue = nonBlanks.length;
@@ -449,7 +469,6 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   const chartData = useMemo(() => {
     if (!dataset || widget.type === 'kpi' || !widget.xAxisCol || widget.series.length === 0) return [];
 
-    // Utiliser les données TRANSFORMÉES pour les graphiques !
     const processedDataset = computeDatasetPreview(dataset);
 
     return aggregateMultiSeries(
@@ -785,7 +804,7 @@ export default function RisksView() {
                 columns: validColumns,
                 data: cleanData,
                 isHidden: false,
-                transformations: [] // Initialisation des étapes Power Query
+                transformations: []
               });
             }
           });
@@ -936,7 +955,6 @@ export default function RisksView() {
     toast.success(`Les valeurs "${replaceSearchValue}" ont été remplacées par "${replaceNewValue}".`);
   };
 
-  // NOUVEAU: ACTIONS ONGLETS "AJOUTER UNE COLONNE"
   const executeDuplicateColumn = () => {
     if (!pqSelectedDatasetId) return toast.error("Sélectionnez une requête à gauche.");
     if (!pqSelectedColumn) return toast.error("Cliquez sur l'en-tête d'une colonne d'abord.");
@@ -1234,7 +1252,6 @@ export default function RisksView() {
   };
 
   const renderDatasetItem = (ds: Dataset, isHiddenList: boolean = false) => {
-    // Calcul des colonnes APRES transformation pour le panneau de droite
     const previewCols = computeDatasetPreview(ds).columns;
 
     return (
@@ -1287,7 +1304,6 @@ export default function RisksView() {
               );
             })}
 
-            {/* On utilise previewCols pour afficher les colonnes dynamiquement après PQ */}
             {previewCols.map(col => {
               const isChecked = activeWidget?.datasetId === ds.id && (activeWidget?.xAxisCol === col || activeWidget?.series.some(s => s.yAxisCol === col));
               return (
@@ -2268,7 +2284,7 @@ export default function RisksView() {
                         </thead>
                         <tbody>
                           {pqPreview.data.slice(0, 100).map((row, i) => (
-                            <tr key={i} className="hover:bg-muted/30">
+                            <tr key={row.id || i} className="hover:bg-muted/30">
                               <td className="p-2 border-b border-r bg-muted/10 text-center text-muted-foreground font-mono">{i + 1}</td>
                               {pqPreview.columns.map(col => (
                                 <td
@@ -2310,7 +2326,7 @@ export default function RisksView() {
                     <span>Source initiale</span>
                   </div>
 
-                  {pqSelectedDatasetObj?.transformations?.map((step, idx) => (
+                  {pqSelectedDatasetObj?.transformations?.map((step) => (
                     <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm">
                       <span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span>
                       <button onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all">
