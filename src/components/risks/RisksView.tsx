@@ -124,16 +124,17 @@ interface TrackedRisk {
 }
 
 // ============================================================================
-// UTILITAIRES DE BASE (Complexité réduite, SonarQube garanti sans erreur)
+// UTILITAIRES DE BASE (Sécurisés & Complexité réduite)
 // ============================================================================
 const generateId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 
-// Sécurise la transformation en chaîne pour éviter le fameux "[object Object]"
 const safeStringify = (val: unknown): string => {
   if (val === null || val === undefined) return "";
+  if (typeof val === 'string') return val.trim();
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
   if (val instanceof Date) return val.toISOString();
-  if (typeof val === 'object') return ""; // Évite explicitement de stringifier des objets non gérés
-  return String(val).trim();
+  // Ignorer tout le reste pour garantir qu'aucun "[object Object]" n'est généré
+  return "";
 };
 
 const safeNumber = (val: unknown): number => {
@@ -286,18 +287,21 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
 };
 
 // ============================================================================
-// LECTURE & PARSING EXCEL (Corrigé pour l'alerte object stringification)
+// LECTURE & PARSING EXCEL
 // ============================================================================
 const cleanDatasetRows = (rawData: any[], dateColumn: string | undefined): any[] => {
   const filtered = rawData.filter(row => {
     if (dateColumn) return row[dateColumn] != null && safeStringify(row[dateColumn]) !== "";
-    return Object.values(row).some(val => safeStringify(val) !== "");
+    return Object.values(row).some(val => {
+      if (val == null || typeof val === 'object') return false;
+      return String(val).trim() !== "";
+    });
   });
 
   return filtered.map(row => {
     const minifiedRow: any = {};
     Object.keys(row).forEach(key => {
-      if (!key.includes('__EMPTY') && safeStringify(row[key]) !== "") {
+      if (!key.includes('__EMPTY') && row[key] != null && typeof row[key] !== 'object' && String(row[key]).trim() !== "") {
         minifiedRow[key] = row[key];
       }
     });
@@ -627,7 +631,7 @@ const DashboardRibbon = ({
           </div>
           <div className="flex gap-1">
             {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
-              <button type="button" key={tab} onClick={() => { setActiveRibbonTab(tab); if (isRibbonCollapsed) setIsRibbonCollapsed(false); }} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] font-inherit outline-none cursor-pointer ${activeRibbonTab === tab && !isRibbonCollapsed ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground bg-transparent'}`}>{tab}</button>
+              <button type="button" key={tab} onClick={() => { setActiveRibbonTab(tab); if (isRibbonCollapsed) setIsRibbonCollapsed(false); }} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] outline-none font-inherit cursor-pointer bg-transparent ${activeRibbonTab === tab && !isRibbonCollapsed ? 'border-primary text-primary font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>{tab}</button>
             ))}
           </div>
         </div>
@@ -681,13 +685,13 @@ const FiltersSidebar = ({ isFiltersOpen, setIsFiltersOpen, activeWidget, activeD
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-lg transition-all duration-300 overflow-hidden ${isFiltersOpen ? 'w-64' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <button type="button" onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit"><Filter className="w-4 h-4 text-muted-foreground shrink-0" />{isFiltersOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Filtres</h3>}</button>
+        <button type="button" onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit"><Filter className="w-4 h-4 text-muted-foreground shrink-0" />{isFiltersOpen && <span className="font-bold text-xs uppercase tracking-wider truncate">Filtres</span>}</button>
         {isFiltersOpen ? <button type="button" onClick={() => setIsFiltersOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0 bg-transparent border-none cursor-pointer outline-none"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer bg-transparent border-none outline-none" onClick={() => setIsFiltersOpen(true)}><ChevronRight className="w-4 h-4" /></button>}
       </div>
       <div className={`flex-1 overflow-y-auto p-3 ${!isFiltersOpen && 'hidden'}`}>
         {!activeWidget ? (<div className="text-center py-8 text-muted-foreground opacity-50 text-xs">Sélectionnez un indicateur.</div>) : (
           <div className="space-y-4 animate-in fade-in">
-            <div className="flex items-center justify-between min-w-0"><h4 className="text-[10px] font-black uppercase text-primary truncate">Sur cet indicateur</h4><Button type="button" variant="ghost" size="sm" onClick={addFilter} className="h-6 px-1 text-[10px] text-primary shrink-0"><Plus className="w-3 h-3 mr-1"/> Ajouter</Button></div>
+            <div className="flex items-center justify-between min-w-0"><span className="text-[10px] font-black uppercase text-primary truncate">Sur cet indicateur</span><Button type="button" variant="ghost" size="sm" onClick={addFilter} className="h-6 px-1 text-[10px] text-primary shrink-0"><Plus className="w-3 h-3 mr-1"/> Ajouter</Button></div>
             {(!activeWidget?.filters || activeWidget.filters.length === 0) && <div className="p-3 text-center border border-dashed rounded bg-muted/20 text-[10px] text-muted-foreground">Aucun filtre actif.</div>}
             <div className="space-y-3">
               {activeWidget?.filters?.map((f: FilterConfig) => (
@@ -710,7 +714,7 @@ const AppearanceSidebar = ({ isVisOpen, setIsVisOpen, activeWidget, activeRisk, 
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-xl transition-all duration-300 overflow-hidden ${isVisOpen ? 'w-72' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <button type="button" onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit"><LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />{isVisOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Apparence</h3>}</button>
+        <button type="button" onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit"><LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />{isVisOpen && <span className="font-bold text-xs uppercase tracking-wider truncate">Apparence</span>}</button>
         {isVisOpen ? <button type="button" onClick={() => setIsVisOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0 bg-transparent border-none cursor-pointer outline-none"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer bg-transparent border-none outline-none" onClick={() => setIsVisOpen(true)}><ChevronRight className="w-4 h-4" /></button>}
       </div>
       <div className={`flex-1 overflow-y-auto p-4 ${!isVisOpen && 'hidden'}`}>
@@ -761,7 +765,7 @@ const AppearanceSidebar = ({ isVisOpen, setIsVisOpen, activeWidget, activeRisk, 
               ))}
             </div>
             <div className="pt-2 border-t flex flex-col gap-3 min-w-0">
-              <h4 className="text-[10px] font-black uppercase text-primary flex items-center gap-1 truncate"><Palette className="w-3 h-3 shrink-0"/> Options de Rendu</h4>
+              <span className="text-[10px] font-black uppercase text-primary flex items-center gap-1 truncate"><Palette className="w-3 h-3 shrink-0"/> Options de Rendu</span>
               {activeWidget.type === 'bar' && (<div className="flex flex-col gap-1 min-w-0"><Label className="text-xs flex items-center gap-1 text-muted-foreground truncate"><AlignLeft className="w-3 h-3 shrink-0"/> Orientation</Label><select value={activeWidget.orientation || 'vertical'} onChange={e => updateActiveWidget({ orientation: e.target.value as ChartOrientation })} className="w-full h-7 rounded border px-1 text-xs bg-background truncate"><option value="vertical">Colonnes (Verticales)</option><option value="horizontal">Barres (Horizontales)</option></select></div>)}
               {activeWidget.type !== 'kpi' && (<div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-xs flex items-center gap-1 text-muted-foreground truncate"><Tag className="w-3 h-3 shrink-0"/> Valeurs sur le graphique</Label><input type="checkbox" checked={activeWidget.showLabels !== false} onChange={(e) => updateActiveWidget({ showLabels: e.target.checked })} className="w-4 h-4 accent-primary shrink-0" /></div>)}
               <div className="flex flex-col gap-1 min-w-0"><Label className="text-xs flex items-center gap-1 text-muted-foreground truncate"><Maximize className="w-3 h-3 shrink-0"/> Taille du panneau</Label><select value={activeWidget.widgetSize || 'medium'} onChange={e => updateActiveWidget({ widgetSize: e.target.value as WidgetSize })} className="w-full h-7 rounded border px-1 text-xs bg-background truncate"><option value="small">Tiers de page</option><option value="medium">Deux Tiers</option><option value="large">Pleine page</option></select></div>
@@ -778,7 +782,7 @@ const DataSidebar = ({ isDataOpen, setIsDataOpen, setIsAppendOpen, setIsAddDataO
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 overflow-hidden ${isDataOpen ? 'w-64' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <button type="button" onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit"><Database className="w-4 h-4 text-muted-foreground shrink-0" />{isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Données</h3>}</button>
+        <button type="button" onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit"><Database className="w-4 h-4 text-muted-foreground shrink-0" />{isDataOpen && <span className="font-bold text-xs uppercase tracking-wider truncate">Données</span>}</button>
         {isDataOpen ? (<div className="flex items-center gap-1 shrink-0"><Button type="button" variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner (Append)"><Combine className="w-3.5 h-3.5" /></Button><Button type="button" variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source"><Plus className="w-3.5 h-3.5" /></Button><button type="button" onClick={() => setIsDataOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground bg-transparent border-none outline-none cursor-pointer"><ChevronRight className="w-4 h-4" /></button></div>) : (<button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer bg-transparent border-none outline-none" onClick={() => setIsDataOpen(true)}><ChevronRight className="w-4 h-4" /></button>)}
       </div>
       <div className={`flex-1 overflow-y-auto p-2 ${!isDataOpen && 'hidden'}`}>
@@ -982,7 +986,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               <div className="text-xs p-2 bg-muted/20 rounded border flex items-center justify-between text-muted-foreground"><span>Source initiale</span></div>
               {pqSelectedDatasetObj?.transformations?.map((step: PQTransformStep) => (
-                <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm"><span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span><button type="button" onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all bg-transparent border-none outline-none cursor-pointer"><X className="w-3.5 h-3.5" /></button></div>
+                <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm"><span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span><button type="button" onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all bg-transparent border-none outline-none cursor-pointer appearance-none"><X className="w-3.5 h-3.5" /></button></div>
               ))}
             </div>
           </div>
@@ -1326,16 +1330,18 @@ export default function RisksView() {
     return (
       <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2 relative">
         <div className={`w-full flex items-center justify-between p-2 rounded font-bold transition-colors ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`}>
-          <button
-            type="button"
+          <div
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter') toggleDatasetCollapse(ds.id); }}
             onClick={() => toggleDatasetCollapse(ds.id)}
-            className="flex-1 flex items-center gap-2 truncate text-left bg-transparent border-none p-0 outline-none cursor-pointer font-inherit text-inherit after:absolute after:inset-0 after:z-0"
+            className="flex-1 flex items-center gap-2 truncate text-left bg-transparent border-none p-0 outline-none cursor-pointer font-inherit text-inherit relative z-10"
           >
             {collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
             <Database className={`w-3.5 h-3.5 shrink-0 ${isHiddenList ? 'opacity-40' : 'text-muted-foreground'}`}/>
             <span className="truncate">{ds.name}</span>
-          </button>
-          <div className="flex items-center gap-1 shrink-0 relative z-10 pointer-events-auto">
+          </div>
+          <div className="flex items-center gap-1 shrink-0 relative z-20 pointer-events-auto">
             <button type="button" onClick={(e) => { e.stopPropagation(); toggleDatasetVisibility(e, ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1 bg-transparent border-none outline-none cursor-pointer">
               {isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}
             </button>
@@ -1397,7 +1403,7 @@ export default function RisksView() {
                 <DialogDescription className="sr-only">Paramétrez le nom et la source de données pour cette nouvelle analyse.</DialogDescription>
               </DialogHeader>
               {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label>Nom de l'analyse</Label><Input value={newRiskTitle} onChange={e => setNewRiskTitle(e.target.value)} /></div><div className="space-y-2"><Label>Description de l'objectif</Label><Input value={newRiskDesc} onChange={e => setNewRiskDesc(e.target.value)} /></div><div className="space-y-2 pt-4 border-t"><Label className="text-primary font-bold">Source de données (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={!newRiskTitle} /><Button type="button" variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2" disabled={!newRiskTitle}><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
-              {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} className={`relative w-full flex justify-between items-center p-3 rounded border ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><button type="button" onClick={() => toggleSheetSelection(sheet.id)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none focus:ring-2 focus:ring-primary z-0" aria-label={`Sélectionner ${sheet.name}`} /><div className="flex items-center gap-3 relative z-10 pointer-events-none"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary" className="relative z-10 pointer-events-none">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeRiskCreation} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer</Button></div></div>)}
+              {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} className={`relative w-full flex justify-between items-center p-3 rounded border ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') toggleSheetSelection(sheet.id); }} onClick={() => toggleSheetSelection(sheet.id)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none focus:ring-2 focus:ring-primary z-0" aria-label={`Sélectionner ${sheet.name}`} /><div className="flex items-center gap-3 relative z-10 pointer-events-none"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary" className="relative z-10 pointer-events-none">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer</Button></div></div>)}
             </DialogContent>
           </Dialog>
         </div>
@@ -1407,9 +1413,11 @@ export default function RisksView() {
           {risks.map((risk) => (
             <div key={risk.id} className="relative block w-full text-left">
               <Card className="group border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative overflow-hidden h-full flex flex-col">
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   aria-label={`Ouvrir ${risk.title}`}
+                  onKeyDown={(e) => { if(e.key === 'Enter') { setActiveRiskId(risk.id); setActiveTabId(risk.tabs?.[0]?.id || null); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); } }}
                   onClick={() => { setActiveRiskId(risk.id); setActiveTabId(risk.tabs?.[0]?.id || null); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); }}
                   className="absolute inset-0 w-full h-full bg-transparent border-none outline-none cursor-pointer z-0 focus:ring-2 focus:ring-primary focus:ring-inset"
                 />
@@ -1455,11 +1463,13 @@ export default function RisksView() {
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 flex flex-col min-w-0 bg-[#f3f2f1] dark:bg-slate-900/50">
           <div className="flex-1 overflow-auto p-6 transition-all relative">
-            <button
-              type="button"
+            {/* Background button to deselect active widget without capturing mouse events from inner elements */}
+            <div
+              role="button"
               aria-label="Désélectionner le graphique actif"
               className="absolute inset-0 w-full h-[200%] bg-transparent border-none cursor-default outline-none z-0"
               onClick={() => setActiveWidgetId(null)}
+              onKeyDown={(e) => { if(e.key === 'Enter' || e.key === 'Escape') setActiveWidgetId(null); }}
               tabIndex={-1}
             />
             <div className="relative z-10 pointer-events-none h-full">
@@ -1472,14 +1482,16 @@ export default function RisksView() {
                       <Card className={`transition-all bg-background min-w-0 relative h-full flex flex-col ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10' : 'hover:border-primary/50 shadow-sm'}`}>
                         <CardHeader className="p-3 border-b flex flex-row items-center justify-between bg-card/50 min-w-0 shrink-0">
                           <CardTitle className="text-xs font-bold uppercase text-muted-foreground truncate w-full pr-2 m-0">
-                            <button
-                              type="button"
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setActiveWidgetId(widget.id); } }}
                               onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); }}
                               className="w-full text-left bg-transparent border-none p-0 outline-none cursor-pointer after:absolute after:inset-0 after:z-0 font-inherit text-inherit"
                               aria-label={`Sélectionner le graphique ${widget.title}`}
                             >
                               {widget.title}
-                            </button>
+                            </div>
                           </CardTitle>
                         </CardHeader>
                         <CardContent className={`p-3 min-w-0 overflow-hidden relative z-10 ${widget.widgetSize === 'large' ? 'h-[400px]' : 'h-[250px]'}`}>
@@ -1524,7 +1536,7 @@ export default function RisksView() {
               <DialogDescription className="sr-only">Sélectionnez et ajoutez de nouvelles sources de données à votre modèle.</DialogDescription>
             </DialogHeader>
             {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label className="text-primary font-bold">Fichier source (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" /><Button type="button" variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2"><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
-            {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} className={`relative w-full flex justify-between p-3 rounded border ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><button type="button" onClick={() => toggleSheetSelection(sheet.id)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none focus:ring-2 focus:ring-primary z-0" aria-label={`Sélectionner ${sheet.name}`} /><div className="flex items-center gap-3 relative z-10 pointer-events-none"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary" className="relative z-10 pointer-events-none">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button></div></div>)}
+            {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} className={`relative w-full flex justify-between items-center p-3 rounded border ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') toggleSheetSelection(sheet.id); }} onClick={() => toggleSheetSelection(sheet.id)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none focus:ring-2 focus:ring-primary z-0" aria-label={`Sélectionner ${sheet.name}`} /><div className="flex items-center gap-3 relative z-10 pointer-events-none"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary" className="relative z-10 pointer-events-none">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button></div></div>)}
           </DialogContent>
         </Dialog>
 
