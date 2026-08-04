@@ -624,7 +624,14 @@ const DashboardRibbon = ({
           </div>
           <div className="flex gap-1">
             {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
-              <button type="button" key={tab} onClick={() => { setActiveRibbonTab(tab); if (isRibbonCollapsed) setIsRibbonCollapsed(false); }} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] outline-none font-inherit cursor-pointer ${activeRibbonTab === tab && !isRibbonCollapsed ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground bg-transparent'}`}>{tab}</button>
+              <button
+                type="button"
+                key={tab}
+                onClick={() => { setActiveRibbonTab(tab); if (isRibbonCollapsed) setIsRibbonCollapsed(false); }}
+                className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] bg-transparent border-none cursor-pointer outline-none font-inherit text-inherit ${activeRibbonTab === tab && !isRibbonCollapsed ? 'border-primary text-primary font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}
+              >
+                {tab}
+              </button>
             ))}
           </div>
         </div>
@@ -636,34 +643,34 @@ const DashboardRibbon = ({
           {activeRibbonTab === 'Accueil' && (
             <>
               <div className="flex gap-1 border-r pr-4">
-                <button type="button" className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[50px] opacity-40 cursor-not-allowed bg-transparent border-none outline-none font-inherit"><Clipboard className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Coller</span></button>
+                <button type="button" className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[50px] opacity-40 cursor-not-allowed bg-transparent border-none outline-none font-inherit text-inherit"><Clipboard className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Coller</span></button>
                 <div className="flex flex-col justify-center gap-1">
-                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px] bg-transparent border-none outline-none font-inherit"><Scissors className="w-3 h-3" /> Couper</button>
-                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px] bg-transparent border-none outline-none font-inherit"><Copy className="w-3 h-3" /> Copier</button>
-                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px] bg-transparent border-none outline-none font-inherit"><Paintbrush className="w-3 h-3" /> Reproduire</button>
+                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px] bg-transparent border-none outline-none font-inherit text-inherit"><Scissors className="w-3 h-3" /> Couper</button>
+                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px] bg-transparent border-none outline-none font-inherit text-inherit"><Copy className="w-3 h-3" /> Copier</button>
+                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px] bg-transparent border-none outline-none font-inherit text-inherit"><Paintbrush className="w-3 h-3" /> Reproduire</button>
                 </div>
               </div>
               <div className="flex gap-1 border-r pr-4">
-                <button type="button" onClick={onAddData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit"><DatabaseZap className="w-6 h-6 text-yellow-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Obtenir<br/>les données</span></button>
-                <button type="button" onClick={onAddData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit"><FileSpreadsheet className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Classeur<br/>Excel</span></button>
+                <button type="button" onClick={onAddData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit text-inherit"><DatabaseZap className="w-6 h-6 text-yellow-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Obtenir<br/>les données</span></button>
+                <button type="button" onClick={onAddData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit text-inherit"><FileSpreadsheet className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Classeur<br/>Excel</span></button>
               </div>
               <div className="flex gap-1 border-r pr-4">
-                <button type="button" onClick={onOpenPowerQuery} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-orange-50 hover:bg-orange-100 border border-orange-200 outline-none cursor-pointer font-inherit"><FileEdit className="w-6 h-6 text-orange-600" /><span className="text-[10px] leading-tight text-center text-orange-700 font-bold">Transformer<br/>les données</span></button>
-                <button type="button" className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed bg-transparent border-none outline-none font-inherit"><RefreshCw className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Actualiser</span></button>
+                <button type="button" onClick={onOpenPowerQuery} className="flex flex-col items-center justify-center p-2 rounded-md gap-1.5 min-w-[72px] bg-orange-50 hover:bg-orange-100 border border-orange-200 outline-none cursor-pointer font-inherit text-inherit"><FileEdit className="w-6 h-6 text-orange-600" /><span className="text-[10px] leading-tight text-center text-orange-700 font-bold">Transformer<br/>les données</span></button>
+                <button type="button" className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed bg-transparent border-none outline-none font-inherit text-inherit"><RefreshCw className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Actualiser</span></button>
               </div>
               <div className="flex gap-1 border-r pr-4">
-                <button type="button" onClick={onAddWidget} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit"><BarChart3 className="w-6 h-6 text-blue-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveau<br/>visuel</span></button>
+                <button type="button" onClick={onAddWidget} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit text-inherit"><BarChart3 className="w-6 h-6 text-blue-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveau<br/>visuel</span></button>
               </div>
             </>
           )}
           {activeRibbonTab === 'Insérer' && (
             <>
-              <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAddTab} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit"><Plus className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouvelle<br/>page</span></button></div>
-              <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAddWidget} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit"><PieChartIcon className="w-6 h-6 text-primary" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveaux<br/>visuels</span></button></div>
+              <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAddTab} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit text-inherit"><Plus className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouvelle<br/>page</span></button></div>
+              <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAddWidget} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit text-inherit"><PieChartIcon className="w-6 h-6 text-primary" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveaux<br/>visuels</span></button></div>
             </>
           )}
           {activeRibbonTab === 'Modélisation' && (
-            <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAppendData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit"><Combine className="w-6 h-6 text-purple-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Gérer les<br/>relations</span></button></div>
+            <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAppendData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-transparent border-none outline-none cursor-pointer font-inherit text-inherit"><Combine className="w-6 h-6 text-purple-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Gérer les<br/>relations</span></button></div>
           )}
           {(activeRibbonTab === 'Affichage' || activeRibbonTab === 'Optimiser' || activeRibbonTab === 'Aide') && (
             <div className="flex items-center text-xs text-muted-foreground px-4 italic">Options spécifiques à venir...</div>
@@ -678,13 +685,16 @@ const FiltersSidebar = ({ isFiltersOpen, setIsFiltersOpen, activeWidget, activeD
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-lg transition-all duration-300 overflow-hidden ${isFiltersOpen ? 'w-64' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') setIsFiltersOpen(!isFiltersOpen); }} onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 outline-none"><Filter className="w-4 h-4 text-muted-foreground shrink-0" />{isFiltersOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Filtres</h3>}</div>
+        <button type="button" onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit">
+          <Filter className="w-4 h-4 text-muted-foreground shrink-0" />
+          {isFiltersOpen && <span className="font-bold text-xs uppercase tracking-wider truncate">Filtres</span>}
+        </button>
         {isFiltersOpen ? <button type="button" onClick={() => setIsFiltersOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0 bg-transparent border-none cursor-pointer outline-none"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer bg-transparent border-none outline-none" onClick={() => setIsFiltersOpen(true)}><ChevronRight className="w-4 h-4" /></button>}
       </div>
       <div className={`flex-1 overflow-y-auto p-3 ${!isFiltersOpen && 'hidden'}`}>
         {!activeWidget ? (<div className="text-center py-8 text-muted-foreground opacity-50 text-xs">Sélectionnez un indicateur.</div>) : (
           <div className="space-y-4 animate-in fade-in">
-            <div className="flex items-center justify-between min-w-0"><h4 className="text-[10px] font-black uppercase text-primary truncate">Sur cet indicateur</h4><Button type="button" variant="ghost" size="sm" onClick={addFilter} className="h-6 px-1 text-[10px] text-primary shrink-0"><Plus className="w-3 h-3 mr-1"/> Ajouter</Button></div>
+            <div className="flex items-center justify-between min-w-0"><span className="text-[10px] font-black uppercase text-primary truncate">Sur cet indicateur</span><Button type="button" variant="ghost" size="sm" onClick={addFilter} className="h-6 px-1 text-[10px] text-primary shrink-0"><Plus className="w-3 h-3 mr-1"/> Ajouter</Button></div>
             {(!activeWidget?.filters || activeWidget.filters.length === 0) && <div className="p-3 text-center border border-dashed rounded bg-muted/20 text-[10px] text-muted-foreground">Aucun filtre actif.</div>}
             <div className="space-y-3">
               {activeWidget?.filters?.map((f: FilterConfig) => (
@@ -707,7 +717,10 @@ const AppearanceSidebar = ({ isVisOpen, setIsVisOpen, activeWidget, activeRisk, 
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-xl transition-all duration-300 overflow-hidden ${isVisOpen ? 'w-72' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') setIsVisOpen(!isVisOpen); }} onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 outline-none"><LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />{isVisOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Apparence</h3>}</div>
+        <button type="button" onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit">
+          <LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />
+          {isVisOpen && <span className="font-bold text-xs uppercase tracking-wider truncate">Apparence</span>}
+        </button>
         {isVisOpen ? <button type="button" onClick={() => setIsVisOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0 bg-transparent border-none cursor-pointer outline-none"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer bg-transparent border-none outline-none" onClick={() => setIsVisOpen(true)}><ChevronRight className="w-4 h-4" /></button>}
       </div>
       <div className={`flex-1 overflow-y-auto p-4 ${!isVisOpen && 'hidden'}`}>
@@ -716,10 +729,10 @@ const AppearanceSidebar = ({ isVisOpen, setIsVisOpen, activeWidget, activeRisk, 
             <div className="space-y-2 flex flex-col min-w-0">
               <div className="flex justify-between items-center min-w-0 gap-2"><Input value={activeWidget.title} onChange={e => updateActiveWidget({ title: e.target.value })} className="h-8 text-xs font-bold w-full truncate" /><button type="button" onClick={() => setWidgetToDelete(activeWidget.id)} className="text-rose-500 hover:bg-rose-50 p-1.5 rounded shrink-0 bg-transparent border-none cursor-pointer outline-none"><Trash2 className="w-4 h-4"/></button></div>
               <div className="grid grid-cols-4 gap-1.5 border-b pb-4">
-                <button type="button" onClick={() => updateActiveWidget({ type: 'bar' })} className={`p-2 flex items-center justify-center rounded border transition-colors bg-transparent cursor-pointer outline-none ${activeWidget.type === 'bar' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><BarChart3 className="w-4 h-4"/></button>
-                <button type="button" onClick={() => updateActiveWidget({ type: 'area' })} className={`p-2 flex items-center justify-center rounded border transition-colors bg-transparent cursor-pointer outline-none ${activeWidget.type === 'area' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><LineChartIcon className="w-4 h-4"/></button>
-                <button type="button" onClick={() => updateActiveWidget({ type: 'pie' })} className={`p-2 flex items-center justify-center rounded border transition-colors bg-transparent cursor-pointer outline-none ${activeWidget.type === 'pie' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><PieChartIcon className="w-4 h-4"/></button>
-                <button type="button" onClick={() => updateActiveWidget({ type: 'kpi' })} className={`p-2 flex items-center justify-center rounded border transition-colors bg-transparent cursor-pointer outline-none ${activeWidget.type === 'kpi' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><Hash className="w-4 h-4"/></button>
+                <button type="button" onClick={() => updateActiveWidget({ type: 'bar' })} className={`p-2 flex items-center justify-center rounded border transition-colors cursor-pointer outline-none bg-transparent ${activeWidget.type === 'bar' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><BarChart3 className="w-4 h-4"/></button>
+                <button type="button" onClick={() => updateActiveWidget({ type: 'area' })} className={`p-2 flex items-center justify-center rounded border transition-colors cursor-pointer outline-none bg-transparent ${activeWidget.type === 'area' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><LineChartIcon className="w-4 h-4"/></button>
+                <button type="button" onClick={() => updateActiveWidget({ type: 'pie' })} className={`p-2 flex items-center justify-center rounded border transition-colors cursor-pointer outline-none bg-transparent ${activeWidget.type === 'pie' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><PieChartIcon className="w-4 h-4"/></button>
+                <button type="button" onClick={() => updateActiveWidget({ type: 'kpi' })} className={`p-2 flex items-center justify-center rounded border transition-colors cursor-pointer outline-none bg-transparent ${activeWidget.type === 'kpi' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><Hash className="w-4 h-4"/></button>
               </div>
             </div>
             <div className="space-y-1 flex flex-col min-w-0">
@@ -758,7 +771,7 @@ const AppearanceSidebar = ({ isVisOpen, setIsVisOpen, activeWidget, activeRisk, 
               ))}
             </div>
             <div className="pt-2 border-t flex flex-col gap-3 min-w-0">
-              <h4 className="text-[10px] font-black uppercase text-primary flex items-center gap-1 truncate"><Palette className="w-3 h-3 shrink-0"/> Options de Rendu</h4>
+              <span className="text-[10px] font-black uppercase text-primary flex items-center gap-1 truncate"><Palette className="w-3 h-3 shrink-0"/> Options de Rendu</span>
               {activeWidget.type === 'bar' && (<div className="flex flex-col gap-1 min-w-0"><Label className="text-xs flex items-center gap-1 text-muted-foreground truncate"><AlignLeft className="w-3 h-3 shrink-0"/> Orientation</Label><select value={activeWidget.orientation || 'vertical'} onChange={e => updateActiveWidget({ orientation: e.target.value as ChartOrientation })} className="w-full h-7 rounded border px-1 text-xs bg-background truncate"><option value="vertical">Colonnes (Verticales)</option><option value="horizontal">Barres (Horizontales)</option></select></div>)}
               {activeWidget.type !== 'kpi' && (<div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-xs flex items-center gap-1 text-muted-foreground truncate"><Tag className="w-3 h-3 shrink-0"/> Valeurs sur le graphique</Label><input type="checkbox" checked={activeWidget.showLabels !== false} onChange={(e) => updateActiveWidget({ showLabels: e.target.checked })} className="w-4 h-4 accent-primary shrink-0" /></div>)}
               <div className="flex flex-col gap-1 min-w-0"><Label className="text-xs flex items-center gap-1 text-muted-foreground truncate"><Maximize className="w-3 h-3 shrink-0"/> Taille du panneau</Label><select value={activeWidget.widgetSize || 'medium'} onChange={e => updateActiveWidget({ widgetSize: e.target.value as WidgetSize })} className="w-full h-7 rounded border px-1 text-xs bg-background truncate"><option value="small">Tiers de page</option><option value="medium">Deux Tiers</option><option value="large">Pleine page</option></select></div>
@@ -775,7 +788,10 @@ const DataSidebar = ({ isDataOpen, setIsDataOpen, setIsAppendOpen, setIsAddDataO
   return (
     <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 overflow-hidden ${isDataOpen ? 'w-64' : 'w-10'}`}>
       <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-        <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') setIsDataOpen(!isDataOpen); }} onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 outline-none"><Database className="w-4 h-4 text-muted-foreground shrink-0" />{isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Données</h3>}</div>
+        <button type="button" onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1 bg-transparent border-none p-0 text-left outline-none font-inherit text-inherit">
+          <Database className="w-4 h-4 text-muted-foreground shrink-0" />
+          {isDataOpen && <span className="font-bold text-xs uppercase tracking-wider truncate">Données</span>}
+        </button>
         {isDataOpen ? (<div className="flex items-center gap-1 shrink-0"><Button type="button" variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner (Append)"><Combine className="w-3.5 h-3.5" /></Button><Button type="button" variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source"><Plus className="w-3.5 h-3.5" /></Button><button type="button" onClick={() => setIsDataOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground bg-transparent border-none outline-none cursor-pointer"><ChevronRight className="w-4 h-4" /></button></div>) : (<button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer bg-transparent border-none outline-none" onClick={() => setIsDataOpen(true)}><ChevronRight className="w-4 h-4" /></button>)}
       </div>
       <div className={`flex-1 overflow-y-auto p-2 ${!isDataOpen && 'hidden'}`}>
@@ -791,27 +807,32 @@ const TabsBar = ({ activeRisk, activeTabId, setActiveTabId, setActiveWidgetId, e
   return (
     <div className="flex items-center gap-1 px-4 bg-background border-t shadow-sm z-10 overflow-x-auto h-12 shrink-0 custom-scrollbar">
       {activeRisk?.tabs?.map((tab: DashboardTab) => (
-        <div role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') { setActiveTabId(tab.id); setActiveWidgetId(null); } }} key={tab.id} onClick={() => { setActiveTabId(tab.id); setActiveWidgetId(null); }} className={`flex items-center px-4 h-full border-t-2 cursor-pointer transition-colors whitespace-nowrap group outline-none ${activeTabId === tab.id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>
-          {editingTabId === tab.id ? (
-            <Input value={editingTabName} onChange={e => setEditingTabName(e.target.value)} onBlur={() => { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); }} onKeyDown={e => { if(e.key === 'Enter') { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); } }} autoFocus className="h-7 text-sm w-32 font-bold px-2 py-0 border-primary" onClick={e => e.stopPropagation()} />
-          ) : (
-            <span role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabName(tab.name); } }} onDoubleClick={(e) => { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabName(tab.name); }} className="font-bold text-sm select-none mr-1 outline-none" title="Double-cliquez pour renommer">{tab.name}</span>
-          )}
+        <div key={tab.id} className={`relative flex items-center px-4 h-full border-t-2 transition-colors whitespace-nowrap group ${activeTabId === tab.id ? 'border-primary text-primary bg-primary/5' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>
+          <button type="button" onClick={() => { setActiveTabId(tab.id); setActiveWidgetId(null); }} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none focus:bg-muted/10 z-0" aria-label={`Sélectionner l'onglet ${tab.name}`} />
+          <div className="relative z-10 flex items-center flex-1 h-full pointer-events-none">
+            {editingTabId === tab.id ? (
+              <Input value={editingTabName} onChange={e => setEditingTabName(e.target.value)} onBlur={() => { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); }} onKeyDown={e => { if(e.key === 'Enter') { handleRenameTab(tab.id, editingTabName); setEditingTabId(null); } }} autoFocus className="h-7 text-sm w-32 font-bold px-2 py-0 border-primary pointer-events-auto" onClick={e => e.stopPropagation()} />
+            ) : (
+              <span onDoubleClick={(e) => { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabName(tab.name); }} className="font-bold text-sm select-none mr-1 pointer-events-auto cursor-text" title="Double-cliquez pour renommer">{tab.name}</span>
+            )}
+          </div>
           {activeTabId === tab.id && editingTabId !== tab.id && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild><span role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') e.stopPropagation(); }} className="p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-primary transition-colors ml-1 shrink-0 outline-none" onClick={(e) => e.stopPropagation()}><MoreVertical className="w-3.5 h-3.5" /></span></DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'left'); }} disabled={activeRisk?.tabs?.findIndex((t: DashboardTab) => t.id === tab.id) === 0} className="text-xs cursor-pointer"><ChevronLeft className="w-3.5 h-3.5 mr-2" /> Déplacer à gauche</DropdownMenuItem>
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'right'); }} disabled={activeRisk?.tabs?.findIndex((t: DashboardTab) => t.id === tab.id) === (activeRisk?.tabs?.length || 1) - 1} className="text-xs cursor-pointer"><ChevronRightIcon className="w-3.5 h-3.5 mr-2" /> Déplacer à droite</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDuplicateTab(tab.id); }} className="text-xs cursor-pointer"><Copy className="w-3.5 h-3.5 mr-2" /> Dupliquer la page</DropdownMenuItem>
-                {activeRisk?.tabs && activeRisk.tabs.length > 1 && (<><DropdownMenuSeparator /><DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDeleteTab(tab.id); }} className="text-xs text-rose-500 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"><Trash2 className="w-3.5 h-3.5 mr-2" /> Supprimer</DropdownMenuItem></>)}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="relative z-20 pointer-events-auto">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild><button type="button" onClick={(e) => e.stopPropagation()} className="p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-primary transition-colors ml-1 shrink-0 bg-transparent border-none cursor-pointer outline-none"><MoreVertical className="w-3.5 h-3.5" /></button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'left'); }} disabled={activeRisk?.tabs?.findIndex((t: DashboardTab) => t.id === tab.id) === 0} className="text-xs cursor-pointer"><ChevronLeft className="w-3.5 h-3.5 mr-2" /> Déplacer à gauche</DropdownMenuItem>
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'right'); }} disabled={activeRisk?.tabs?.findIndex((t: DashboardTab) => t.id === tab.id) === (activeRisk?.tabs?.length || 1) - 1} className="text-xs cursor-pointer"><ChevronRightIcon className="w-3.5 h-3.5 mr-2" /> Déplacer à droite</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDuplicateTab(tab.id); }} className="text-xs cursor-pointer"><Copy className="w-3.5 h-3.5 mr-2" /> Dupliquer la page</DropdownMenuItem>
+                  {activeRisk?.tabs && activeRisk.tabs.length > 1 && (<><DropdownMenuSeparator /><DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDeleteTab(tab.id); }} className="text-xs text-rose-500 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"><Trash2 className="w-3.5 h-3.5 mr-2" /> Supprimer</DropdownMenuItem></>)}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           )}
         </div>
       ))}
-      <div className="px-2 border-l ml-2 pl-4"><Button type="button" variant="ghost" size="sm" onClick={handleAddNewTab} className="h-8 px-2 text-muted-foreground hover:text-primary"><Plus className="w-4 h-4 mr-1"/> Page</Button></div>
+      <div className="px-2 border-l ml-2 pl-4 relative z-10 pointer-events-auto"><Button type="button" variant="ghost" size="sm" onClick={handleAddNewTab} className="h-8 px-2 text-muted-foreground hover:text-primary"><Plus className="w-4 h-4 mr-1"/> Page</Button></div>
     </div>
   );
 };
@@ -890,7 +911,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
           <div className="flex items-end px-2 pt-2 text-sm bg-muted/20">
             <div className="flex gap-1">
               {['Accueil', 'Transformer', 'Ajouter une colonne', 'Affichage'].map(tab => (
-                <button type="button" key={tab} onClick={() => setPqRibbonTab(tab)} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] outline-none cursor-pointer ${pqRibbonTab === tab ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground bg-transparent'}`}>{tab}</button>
+                <button type="button" key={tab} onClick={() => setPqRibbonTab(tab)} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] outline-none cursor-pointer bg-transparent font-inherit text-inherit appearance-none ${pqRibbonTab === tab ? 'border-primary text-primary font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>{tab}</button>
               ))}
             </div>
           </div>
@@ -926,7 +947,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
             <div className="bg-secondary/30 p-2 border-b text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Requêtes</div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {activeRisk?.datasets?.map(d => (
-                <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') { setPqSelectedDatasetId(d.id); setPqSelectedColumn(null); } }} key={d.id} onClick={() => { setPqSelectedDatasetId(d.id); setPqSelectedColumn(null); }} className={`w-full text-left text-xs p-2 rounded cursor-pointer truncate flex items-center gap-2 outline-none ${pqSelectedDatasetId === d.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-muted-foreground'}`}><Table2 className="w-3.5 h-3.5 shrink-0" />{d.name}</div>
+                <button type="button" key={d.id} onClick={() => { setPqSelectedDatasetId(d.id); setPqSelectedColumn(null); }} className={`w-full text-left text-xs p-2 rounded cursor-pointer truncate flex items-center gap-2 border-none outline-none font-inherit appearance-none ${pqSelectedDatasetId === d.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-muted-foreground bg-transparent'}`}><Table2 className="w-3.5 h-3.5 shrink-0" />{d.name}</button>
               ))}
             </div>
           </div>
@@ -939,14 +960,26 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
                     <thead className="bg-muted/50 sticky top-0 z-10 shadow-sm">
                       <tr>
                         <th className="p-2 border-b border-r bg-muted/50 w-8 text-center text-muted-foreground">#</th>
-                        {pqPreview?.columns?.map((col: string) => <th key={col} className={`p-0 border-b border-r font-semibold transition-colors outline-none ${pqSelectedColumn === col ? 'bg-primary/20 text-primary' : 'text-foreground hover:bg-muted/80'}`}><div role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setPqSelectedColumn(col); }} onClick={() => setPqSelectedColumn(col)} className="w-full h-full p-2 flex items-center gap-1 cursor-pointer outline-none text-left"><Type className="w-3 h-3 text-muted-foreground" /> {col}</div></th>)}
+                        {pqPreview?.columns?.map((col: string) => (
+                          <th key={col} className={`p-0 border-b border-r font-semibold transition-colors outline-none relative ${pqSelectedColumn === col ? 'bg-primary/20 text-primary' : 'text-foreground hover:bg-muted/80'}`}>
+                            <button type="button" onClick={() => setPqSelectedColumn(col)} className="w-full h-full min-h-[32px] p-2 flex items-center gap-1 bg-transparent border-none outline-none cursor-pointer font-inherit text-inherit text-left appearance-none">
+                              <Type className="w-3 h-3 text-muted-foreground" /> {col}
+                            </button>
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
                       {pqPreview?.data?.slice(0, 100).map((row: any, i: number) => (
                         <tr key={generateId('row')} className="hover:bg-muted/30">
                           <td className="p-2 border-b border-r bg-muted/10 text-center text-muted-foreground font-mono">{i + 1}</td>
-                          {pqPreview?.columns?.map((col: string) => <td key={col} className={`p-0 border-b border-r truncate max-w-[200px] outline-none ${pqSelectedColumn === col ? 'bg-primary/5 text-primary font-medium' : 'text-muted-foreground'}`} title={safeStringify(row[col])}><div role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setPqSelectedColumn(col); }} onClick={() => setPqSelectedColumn(col)} className="w-full h-full p-2 cursor-pointer text-left truncate outline-none">{safeStringify(row[col])}</div></td>)}
+                          {pqPreview?.columns?.map((col: string) => (
+                            <td key={col} className={`p-0 border-b border-r truncate max-w-[200px] outline-none relative ${pqSelectedColumn === col ? 'bg-primary/5 text-primary font-medium' : 'text-muted-foreground'}`} title={safeStringify(row[col])}>
+                              <button type="button" onClick={() => setPqSelectedColumn(col)} className="w-full h-full min-h-[28px] p-2 bg-transparent border-none outline-none cursor-pointer text-left font-inherit text-inherit truncate appearance-none">
+                                {safeStringify(row[col])}
+                              </button>
+                            </td>
+                          ))}
                         </tr>
                       ))}
                     </tbody>
@@ -962,7 +995,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               <div className="text-xs p-2 bg-muted/20 rounded border flex items-center justify-between text-muted-foreground"><span>Source initiale</span></div>
               {pqSelectedDatasetObj?.transformations?.map((step: PQTransformStep) => (
-                <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm"><span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span><button type="button" onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all bg-transparent border-none outline-none cursor-pointer"><X className="w-3.5 h-3.5" /></button></div>
+                <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm"><span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span><button type="button" onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all bg-transparent border-none outline-none cursor-pointer appearance-none"><X className="w-3.5 h-3.5" /></button></div>
               ))}
             </div>
           </div>
@@ -1071,6 +1104,13 @@ export default function RisksView() {
     }, 1500);
     return () => clearTimeout(timer);
   }, [risks, isInitialized]);
+
+  useEffect(() => {
+    if (!activeWidgetId) return;
+    const handleEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') setActiveWidgetId(null); };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [activeWidgetId]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1200,7 +1240,7 @@ export default function RisksView() {
   };
 
   const confirmDeleteWidget = () => {
-    updateActiveRisk({ widgets: activeRisk!.widgets?.filter(w => w.id !== widgetToDelete) });
+    updateActiveRisk({ widgets: activeRisk?.widgets?.filter(w => w.id !== widgetToDelete) });
     if (activeWidgetId === widgetToDelete) setActiveWidgetId(null);
     setWidgetToDelete(null);
   };
@@ -1297,20 +1337,51 @@ export default function RisksView() {
   const renderDatasetItem = (ds: Dataset, isHiddenList: boolean = false) => {
     const previewCols = computeDatasetPreview(ds).columns;
     return (
-      <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
-        <div role="region" aria-label={`Gérer ${ds.name}`} tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') toggleDatasetCollapse(ds.id); }} onClick={() => toggleDatasetCollapse(ds.id)} className={`w-full text-left flex items-center justify-between p-2 rounded font-bold cursor-pointer transition-colors outline-none ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`}>
-          <div className="flex items-center gap-2 truncate">{collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}<Database className={`w-3.5 h-3.5 shrink-0 ${isHiddenList ? 'opacity-40' : 'text-muted-foreground'}`}/><span className="truncate">{ds.name}</span></div>
-          <div className="flex items-center gap-1 shrink-0"><div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') toggleDatasetVisibility(e as any, ds.id); }} onClick={(e) => toggleDatasetVisibility(e, ds.id)} className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1 outline-none">{isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}</div>{!isHiddenList && (<div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') { e.stopPropagation(); setDatasetToDelete(ds.id); } }} onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity p-1 outline-none"><Trash2 className="w-3 h-3"/></div>)}</div>
+      <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2 relative">
+        <div className={`w-full flex items-center justify-between p-2 rounded font-bold transition-colors ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`}>
+          <button
+            type="button"
+            onClick={() => toggleDatasetCollapse(ds.id)}
+            className="flex-1 flex items-center gap-2 truncate text-left bg-transparent border-none p-0 outline-none cursor-pointer font-inherit text-inherit after:absolute after:inset-0 after:z-0"
+          >
+            {collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}
+            <Database className={`w-3.5 h-3.5 shrink-0 ${isHiddenList ? 'opacity-40' : 'text-muted-foreground'}`}/>
+            <span className="truncate">{ds.name}</span>
+          </button>
+          <div className="flex items-center gap-1 shrink-0 relative z-10 pointer-events-auto">
+            <button type="button" onClick={(e) => { e.stopPropagation(); toggleDatasetVisibility(e, ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1 bg-transparent border-none outline-none cursor-pointer">
+              {isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}
+            </button>
+            {!isHiddenList && (
+              <button type="button" onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity p-1 bg-transparent border-none outline-none cursor-pointer">
+                <Trash2 className="w-3 h-3"/>
+              </button>
+            )}
+          </div>
         </div>
         {(!collapsedDatasets.has(ds.id)) && (
-          <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1">
+          <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1 relative z-10">
             {activeRisk?.measures?.filter(m => m.datasetId === ds.id).map(m => {
               const isChecked = activeWidget?.datasetId === ds.id && activeWidget?.series?.some(s => s.yAxisCol === m.name);
-              return (<div key={m.id} draggable onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: m.name, isMeasure: true, datasetId: ds.id }))} className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}><GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" /><input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(m.name, true, ds.id)} className="accent-primary shrink-0" /><Calculator className="w-3 h-3 text-primary shrink-0"/><span className="text-primary font-medium truncate">{m.name}</span></div>);
+              return (
+                <div key={m.id} draggable onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: m.name, isMeasure: true, datasetId: ds.id }))} className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
+                  <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(m.name, true, ds.id)} className="accent-primary shrink-0" />
+                  <Calculator className="w-3 h-3 text-primary shrink-0"/>
+                  <span className="text-primary font-medium truncate">{m.name}</span>
+                </div>
+              );
             })}
             {previewCols?.map(col => {
               const isChecked = activeWidget?.datasetId === ds.id && (activeWidget?.xAxisCol === col || activeWidget?.series?.some(s => s.yAxisCol === col));
-              return (<div key={col} draggable onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: col, isMeasure: false, datasetId: ds.id }))} className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}><GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" /><input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(col, false, ds.id)} className="accent-primary shrink-0" /><Sigma className="w-3 h-3 text-muted-foreground shrink-0"/><span className="text-muted-foreground truncate" title={col}>{col}</span></div>);
+              return (
+                <div key={col} draggable onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify({ colName: col, isMeasure: false, datasetId: ds.id }))} className={`flex items-center gap-2 text-xs py-1 hover:bg-muted rounded px-1 group cursor-grab active:cursor-grabbing min-w-0 ${isHiddenList ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <GripVertical className="w-3 h-3 text-muted-foreground/30 group-hover:text-muted-foreground shrink-0" />
+                  <input type="checkbox" checked={!!isChecked} onChange={() => toggleColumnInWidget(col, false, ds.id)} className="accent-primary shrink-0" />
+                  <Sigma className="w-3 h-3 text-muted-foreground shrink-0"/>
+                  <span className="text-muted-foreground truncate" title={col}>{col}</span>
+                </div>
+              );
             })}
           </div>
         )}
@@ -1339,7 +1410,7 @@ export default function RisksView() {
                 <DialogDescription className="sr-only">Paramétrez le nom et la source de données pour cette nouvelle analyse.</DialogDescription>
               </DialogHeader>
               {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label>Nom de l'analyse</Label><Input value={newRiskTitle} onChange={e => setNewRiskTitle(e.target.value)} /></div><div className="space-y-2"><Label>Description de l'objectif</Label><Input value={newRiskDesc} onChange={e => setNewRiskDesc(e.target.value)} /></div><div className="space-y-2 pt-4 border-t"><Label className="text-primary font-bold">Source de données (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={!newRiskTitle} /><Button type="button" variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2" disabled={!newRiskTitle}><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
-              {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') toggleSheetSelection(sheet.id); }} key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`w-full flex justify-between p-3 rounded border cursor-pointer outline-none ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeRiskCreation} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer</Button></div></div>)}
+              {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} className={`relative w-full flex justify-between items-center p-3 rounded border ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><button type="button" onClick={() => toggleSheetSelection(sheet.id)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none focus:ring-2 focus:ring-primary z-0" aria-label={`Sélectionner ${sheet.name}`} /><div className="flex items-center gap-3 relative z-10 pointer-events-none"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary" className="relative z-10 pointer-events-none">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeRiskCreation} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer</Button></div></div>)}
             </DialogContent>
           </Dialog>
         </div>
@@ -1347,11 +1418,19 @@ export default function RisksView() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pt-2">
           {risks.length === 0 && <div className="col-span-full py-12 text-center text-muted-foreground border-2 border-dashed rounded-xl">Ce module de suivi est vide. Ajoutez une première analyse de risques.</div>}
           {risks.map((risk) => (
-            <div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') { setActiveRiskId(risk.id); setActiveTabId(risk.tabs?.[0]?.id || null); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); } }} key={risk.id} onClick={() => { setActiveRiskId(risk.id); setActiveTabId(risk.tabs?.[0]?.id || null); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); }} className="outline-none">
-              <Card className="group cursor-pointer border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative">
-                <div role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setRiskToDelete(risk.id); } }} onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }} className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-10 transition-all outline-none"><Trash2 className="w-4 h-4" /></div>
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3 mb-4 pr-8"><div className="p-2.5 rounded-lg bg-primary/10 text-primary"><Shield className="w-6 h-6" /></div><div className="min-w-0"><h3 className="font-bold text-lg truncate m-0">{risk.title}</h3></div></div>
+            <div key={risk.id} className="relative block w-full text-left">
+              <Card className="group border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative overflow-hidden h-full flex flex-col">
+                <button
+                  type="button"
+                  aria-label={`Ouvrir ${risk.title}`}
+                  onClick={() => { setActiveRiskId(risk.id); setActiveTabId(risk.tabs?.[0]?.id || null); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); }}
+                  className="absolute inset-0 w-full h-full bg-transparent border-none outline-none cursor-pointer z-0 focus:ring-2 focus:ring-primary focus:ring-inset"
+                />
+                <button type="button" onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }} className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-20 transition-all outline-none bg-transparent border-none cursor-pointer block pointer-events-auto" title="Supprimer">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+                <CardContent className="p-6 relative z-10 pointer-events-none flex-1">
+                  <div className="flex items-center gap-3 mb-4 pr-8"><div className="p-2.5 rounded-lg bg-primary/10 text-primary shrink-0"><Shield className="w-6 h-6" /></div><div className="min-w-0"><h3 className="font-bold text-lg truncate m-0">{risk.title}</h3></div></div>
                   <div className="flex gap-2 mb-4"><Badge variant="outline" className="text-[10px] bg-secondary/50"><Database className="w-3 h-3 mr-1"/> {risk.datasets.length} Sources</Badge><Badge variant="outline" className="text-[10px] bg-secondary/50"><BarChart3 className="w-3 h-3 mr-1"/> {risk.widgets.length} Indicateurs</Badge></div>
                 </CardContent>
               </Card>
@@ -1388,21 +1467,44 @@ export default function RisksView() {
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 flex flex-col min-w-0 bg-[#f3f2f1] dark:bg-slate-900/50">
-          <div role="region" aria-label="Zone de graphique" tabIndex={-1} onKeyDown={(e) => { if(e.key === 'Escape') setActiveWidgetId(null); }} className="flex-1 overflow-auto p-6 transition-all cursor-default outline-none" onClick={() => setActiveWidgetId(null)}>
-            {visibleWidgets.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50"><LayoutDashboard className="w-16 h-16 mb-4" /><p>Cette page est vide.</p><p className="text-sm mt-2">Cliquez sur "Nouveau visuel" dans le ruban en haut.</p></div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                {visibleWidgets.map(widget => (
-                  <div role="button" aria-label={`Graphique ${widget.title}`} tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') { e.stopPropagation(); setActiveWidgetId(widget.id); } }} key={widget.id} onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); }} className={`outline-none ${getWidgetGridClass(widget.widgetSize)}`}>
-                    <Card className={`cursor-pointer transition-all bg-background min-w-0 ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10 relative' : 'hover:border-primary/50 shadow-sm'}`}>
-                      <CardHeader className="p-3 border-b flex flex-row items-center justify-between bg-card/50 min-w-0"><CardTitle className="text-xs font-bold uppercase text-muted-foreground truncate w-full pr-2 m-0">{widget.title}</CardTitle></CardHeader>
-                      <CardContent className={`p-3 min-w-0 overflow-hidden ${widget.widgetSize === 'large' ? 'h-[400px]' : 'h-[250px]'}`}><DashboardWidget widget={widget} datasets={activeRisk?.datasets || []} measures={activeRisk?.measures || []} /></CardContent>
-                    </Card>
-                  </div>
-                ))}
-              </div>
-            )}
+          <div className="flex-1 overflow-auto p-6 transition-all relative">
+            {/* Background button to deselect active widget without capturing mouse events from inner elements */}
+            <button
+              type="button"
+              aria-label="Désélectionner le graphique actif"
+              className="absolute inset-0 w-full h-[200%] bg-transparent border-none cursor-default outline-none z-0"
+              onClick={() => setActiveWidgetId(null)}
+              tabIndex={-1}
+            />
+            <div className="relative z-10 pointer-events-none h-full">
+              {visibleWidgets.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50"><LayoutDashboard className="w-16 h-16 mb-4" /><p>Cette page est vide.</p><p className="text-sm mt-2">Cliquez sur "Nouveau visuel" dans le ruban en haut.</p></div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pointer-events-auto">
+                  {visibleWidgets.map(widget => (
+                    <div key={widget.id} className={`relative ${getWidgetGridClass(widget.widgetSize)}`}>
+                      <Card className={`transition-all bg-background min-w-0 relative h-full flex flex-col ${activeWidgetId === widget.id ? 'ring-2 ring-primary shadow-lg scale-[1.01] z-10' : 'hover:border-primary/50 shadow-sm'}`}>
+                        <CardHeader className="p-3 border-b flex flex-row items-center justify-between bg-card/50 min-w-0 shrink-0">
+                          <CardTitle className="text-xs font-bold uppercase text-muted-foreground truncate w-full pr-2 m-0">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setActiveWidgetId(widget.id); }}
+                              className="w-full text-left bg-transparent border-none p-0 outline-none cursor-pointer after:absolute after:inset-0 after:z-0 font-inherit text-inherit"
+                              aria-label={`Sélectionner le graphique ${widget.title}`}
+                            >
+                              {widget.title}
+                            </button>
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className={`p-3 min-w-0 overflow-hidden relative z-10 ${widget.widgetSize === 'large' ? 'h-[400px]' : 'h-[250px]'}`}>
+                          <DashboardWidget widget={widget} datasets={activeRisk?.datasets || []} measures={activeRisk?.measures || []} />
+                        </CardContent>
+                      </Card>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <TabsBar
@@ -1436,7 +1538,7 @@ export default function RisksView() {
               <DialogDescription className="sr-only">Sélectionnez et ajoutez de nouvelles sources de données à votre modèle.</DialogDescription>
             </DialogHeader>
             {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label className="text-primary font-bold">Fichier source (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" /><Button type="button" variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2"><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
-            {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div role="button" tabIndex={0} onKeyDown={(e) => { if(e.key === 'Enter') toggleSheetSelection(sheet.id); }} key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`w-full flex justify-between p-3 rounded border cursor-pointer outline-none ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button></div></div>)}
+            {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} className={`relative w-full flex justify-between p-3 rounded border ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><button type="button" onClick={() => toggleSheetSelection(sheet.id)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none focus:ring-2 focus:ring-primary z-0" aria-label={`Sélectionner ${sheet.name}`} /><div className="flex items-center gap-3 relative z-10 pointer-events-none"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm m-0">{sheet.name}</p></div><Badge variant="secondary" className="relative z-10 pointer-events-none">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button></div></div>)}
           </DialogContent>
         </Dialog>
 
