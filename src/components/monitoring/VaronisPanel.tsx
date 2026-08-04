@@ -7,18 +7,35 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { ScrollArea } from "@/components/ui/scroll-area";
 
 import {
   Database, Users, Lock, ShieldAlert, AlertTriangle,
-  UserX, FolderOpen, Activity, CheckCircle2, TrendingDown
+  UserX, FolderOpen, Activity, CheckCircle2
 } from "lucide-react";
 
 import {
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend
+  XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip
 } from "recharts";
+
+// --- FONCTIONS UTILITAIRES (Pour éliminer les ternaires imbriqués de l'UI) ---
+const getRiskScoreColor = (score: number) => {
+  if (score >= 80) return '#ef4444';
+  if (score >= 60) return '#f97316';
+  return '#10b981';
+};
+
+const getRiskLevelVariant = (riskLevel: string): "destructive" | "default" | "secondary" => {
+  if (riskLevel === 'Critique') return 'destructive';
+  if (riskLevel === 'Élevé') return 'default';
+  return 'secondary';
+};
+
+const getAlertSeverityVariant = (severity: string): "destructive" | "default" | "secondary" => {
+  if (severity === 'Critique') return 'destructive';
+  if (severity === 'Élevé') return 'default';
+  return 'secondary';
+};
 
 export default function VaronisPanel() {
   // --- MOCK DATA ENTERPRISE (Scale : 4000 utilisateurs / 1.8 PB de données) ---
@@ -50,17 +67,17 @@ export default function VaronisPanel() {
       { name: 'Données de Santé (HDS)', value: 5, color: '#10b981' }
     ],
     classificationDetails: [
-      { category: "PII (RGPD)", criteria: "Noms, IBAN, Numéros de Sécu", filesCount: "1.2M", maxRiskLoc: "\\\\fs-corp\\RH\\Recrutement" },
-      { category: "Financier (PCI-DSS)", criteria: "Numéros de CB, Bilans", filesCount: "350K", maxRiskLoc: "\\\\fs-corp\\DAF\\Cloture" },
-      { category: "Propriété Intellectuelle", criteria: "Brevets, Code Source, Plans", filesCount: "85K", maxRiskLoc: "\\\\fs-corp\\R&D\\Projet_X" }
+      { category: "PII (RGPD)", criteria: "Noms, IBAN, Numéros de Sécu", filesCount: "1.2M", maxRiskLoc: String.raw`\\fs-corp\RH\Recrutement` },
+      { category: "Financier (PCI-DSS)", criteria: "Numéros de CB, Bilans", filesCount: "350K", maxRiskLoc: String.raw`\\fs-corp\DAF\Cloture` },
+      { category: "Propriété Intellectuelle", criteria: "Brevets, Code Source, Plans", filesCount: "85K", maxRiskLoc: String.raw`\\fs-corp\R&D\Projet_X` }
     ],
 
     // 4. Permissions Excessives ("Global Access")
     excessivePermissions: [
-      { path: "\\\\fs-corp\\DAF\\M&A_2026", owner: "S. Martin (DAF)", issue: "Accessible au groupe 'Tout le monde'", sensitiveHits: 450, status: "Révocation Auto." },
-      { path: "\\\\fs-corp\\RH\\Evaluations_2025", owner: "L. Bernard (DRH)", issue: "Héritage cassé + Droits directs", sensitiveHits: 3200, status: "En attente Data Owner" },
-      { path: "\\\\fs-corp\\IT\\Passwords_Backup", owner: "Orphelin (Sans Prop.)", issue: "Dossier partagé publiquement", sensitiveHits: 15, status: "Révocation Immédiate" },
-      { path: "\\\\fs-corp\\Direction\\Board_Minutes", owner: "M. Dupont (PDG)", issue: "Accessible au groupe 'Utilisateurs du domaine'", sensitiveHits: 125, status: "Corrigé" }
+      { path: String.raw`\\fs-corp\DAF\M&A_2026`, owner: "S. Martin (DAF)", issue: "Accessible au groupe 'Tout le monde'", sensitiveHits: 450, status: "Révocation Auto." },
+      { path: String.raw`\\fs-corp\RH\Evaluations_2025`, owner: "L. Bernard (DRH)", issue: "Héritage cassé + Droits directs", sensitiveHits: 3200, status: "En attente Data Owner" },
+      { path: String.raw`\\fs-corp\IT\Passwords_Backup`, owner: "Orphelin (Sans Prop.)", issue: "Dossier partagé publiquement", sensitiveHits: 15, status: "Révocation Immédiate" },
+      { path: String.raw`\\fs-corp\Direction\Board_Minutes`, owner: "M. Dupont (PDG)", issue: "Accessible au groupe 'Utilisateurs du domaine'", sensitiveHits: 125, status: "Corrigé" }
     ],
 
     // 5. Alertes Comportementales (UEBA / Insider Threat)
@@ -73,7 +90,7 @@ export default function VaronisPanel() {
 
     // 6. Gouvernance des Identités (AD / Entra ID)
     identityGovernance: [
-      { metric: "Comptes utilisateurs dormants (&gt; 90 jours)", value: 345, risk: "Désactivation automatique recommandée" },
+      { metric: "Comptes utilisateurs dormants (> 90 jours)", value: 345, risk: "Désactivation automatique recommandée" },
       { metric: "Mots de passe qui n'expirent jamais", value: 12, risk: "Violation politique de sécurité" },
       { metric: "Comptes à privilèges (Admin) inactifs", value: 4, risk: "Risque de compromission critique" },
       { metric: "Groupes de sécurité vides ou sans owner", value: 142, risk: "Dette technique AD" }
@@ -169,8 +186,8 @@ export default function VaronisPanel() {
                     <YAxis dataKey="dept" type="category" axisLine={false} tickLine={false} tick={{fontSize: 12}} width={120} />
                     <RechartsTooltip cursor={{fill: 'transparent'}} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
                     <Bar dataKey="score" name="Score de Risque" radius={[0, 4, 4, 0]}>
-                      {data.riskByDepartment.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.score >= 80 ? '#ef4444' : entry.score >= 60 ? '#f97316' : '#10b981'} />
+                      {data.riskByDepartment.map((entry) => (
+                        <Cell key={entry.dept} fill={getRiskScoreColor(entry.score)} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -190,11 +207,11 @@ export default function VaronisPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.riskByDepartment.map((r, i) => (
-                    <TableRow key={i}>
+                  {data.riskByDepartment.map((r) => (
+                    <TableRow key={r.dept}>
                       <TableCell className="font-bold text-sm">{r.dept}</TableCell>
                       <TableCell>
-                        <Badge variant={r.riskLevel === 'Critique' ? 'destructive' : r.riskLevel === 'Élevé' ? 'default' : 'secondary'}>
+                        <Badge variant={getRiskLevelVariant(r.riskLevel)}>
                           {r.riskLevel}
                         </Badge>
                       </TableCell>
@@ -232,8 +249,8 @@ export default function VaronisPanel() {
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie data={data.dataClassification} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={5} dataKey="value">
-                      {data.dataClassification.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      {data.dataClassification.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
                       ))}
                     </Pie>
                     <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
@@ -241,8 +258,8 @@ export default function VaronisPanel() {
                 </ResponsiveContainer>
               </div>
               <div className="flex flex-wrap justify-center gap-2 mt-4">
-                {data.dataClassification.map((c, i) => (
-                  <div key={i} className="flex items-center gap-1 text-[10px]"><span className="w-2 h-2 rounded-full" style={{backgroundColor: c.color}}></span>{c.name.split(' ')[0]}</div>
+                {data.dataClassification.map((c) => (
+                  <div key={c.name} className="flex items-center gap-1 text-[10px]"><span className="w-2 h-2 rounded-full" style={{backgroundColor: c.color}}></span>{c.name.split(' ')[0]}</div>
                 ))}
               </div>
             </div>
@@ -259,8 +276,8 @@ export default function VaronisPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.classificationDetails.map((c, i) => (
-                    <TableRow key={i}>
+                  {data.classificationDetails.map((c) => (
+                    <TableRow key={c.category}>
                       <TableCell className="font-bold text-sm">{c.category}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">{c.criteria}</TableCell>
                       <TableCell className="font-mono text-xs font-bold">{c.filesCount}</TableCell>
@@ -299,8 +316,8 @@ export default function VaronisPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.excessivePermissions.map((p, i) => (
-                  <TableRow key={i}>
+                {data.excessivePermissions.map((p) => (
+                  <TableRow key={p.path}>
                     <TableCell className="pl-6 font-mono text-xs font-bold text-foreground">{p.path}</TableCell>
                     <TableCell className="text-sm font-medium">{p.owner}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{p.issue}</TableCell>
@@ -336,10 +353,14 @@ export default function VaronisPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.behavioralAlerts.map((a, i) => (
-                  <TableRow key={i}>
+                {data.behavioralAlerts.map((a) => (
+                  <TableRow key={`${a.user}-${a.time}`}>
                     <TableCell className="pl-6 font-bold text-sm text-foreground">{a.alert}</TableCell>
-                    <TableCell><Badge variant={a.severity === 'Critique' ? 'destructive' : a.severity === 'Élevé' ? 'default' : 'secondary'}>{a.severity}</Badge></TableCell>
+                    <TableCell>
+                      <Badge variant={getAlertSeverityVariant(a.severity)}>
+                        {a.severity}
+                      </Badge>
+                    </TableCell>
                     <TableCell>
                       <span className="block font-medium text-sm">{a.user}</span>
                       <span className="text-[10px] text-muted-foreground uppercase">{a.type}</span>
@@ -373,8 +394,8 @@ export default function VaronisPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.identityGovernance.map((g, i) => (
-                  <TableRow key={i}>
+                {data.identityGovernance.map((g) => (
+                  <TableRow key={g.metric}>
                     <TableCell className="pl-6 font-bold text-sm text-foreground">{g.metric}</TableCell>
                     <TableCell className="font-black text-xl text-orange-500">{g.value}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{g.risk}</TableCell>

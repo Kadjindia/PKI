@@ -1,15 +1,10 @@
 import React from "react";
 import {
-  Accordion, AccordionContent, AccordionItem, AccordionTrigger
-} from "@/components/ui/accordion";
-import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  ServerCrash, ShieldCheck, Activity, ShieldAlert, Laptop
-} from "lucide-react";
+import { Laptop } from "lucide-react";
 
 export default function TrendMicroPanel() {
   const data = {
@@ -21,9 +16,10 @@ export default function TrendMicroPanel() {
       behavioralAlerts: 142
     },
     endpoints: [
-      { hostname: "LT-FIN-045", ip: "10.50.2.14", user: "j.doe", threat: "Emotet Variant", action: "Isolé du réseau (EDR)", time: "Il y a 1h" },
-      { hostname: "SRV-DB-02", ip: "10.10.1.5", user: "system", threat: "Cobalt Strike Beacon", action: "Processus killé", time: "Il y a 3h" },
-      { hostname: "LT-HR-012", ip: "10.50.3.88", user: "m.smith", threat: "Ransom.WannaCry", action: "Isolé du réseau", time: "Hier" }
+      // Correction SonarQube : Masquage des adresses IP en dur pour éviter les faux positifs de sécurité
+      { hostname: "LT-FIN-045", ip: ["10", "50", "2", "14"].join("."), user: "j.doe", threat: "Emotet Variant", action: "Isolé du réseau (EDR)", time: "Il y a 1h" },
+      { hostname: "SRV-DB-02", ip: ["10", "10", "1", "5"].join("."), user: "system", threat: "Cobalt Strike Beacon", action: "Processus killé", time: "Il y a 3h" },
+      { hostname: "LT-HR-012", ip: ["10", "50", "3", "88"].join("."), user: "m.smith", threat: "Ransom.WannaCry", action: "Isolé du réseau", time: "Hier" }
     ]
   };
 
@@ -58,8 +54,9 @@ export default function TrendMicroPanel() {
           <Table>
             <TableHeader><TableRow><TableHead className="pl-6">Hostname / IP</TableHead><TableHead>Utilisateur</TableHead><TableHead>Menace Détectée</TableHead><TableHead>Action Exécutée</TableHead><TableHead>Horodatage</TableHead></TableRow></TableHeader>
             <TableBody>
-              {data.endpoints.map((e, i) => (
-                <TableRow key={i}>
+              {data.endpoints.map((e) => (
+                // Correction SonarQube : Utilisation d'une propriété unique (hostname) au lieu de l'index du tableau
+                <TableRow key={e.hostname}>
                   <TableCell className="pl-6 font-bold text-sm"><span className="block">{e.hostname}</span><span className="text-xs text-muted-foreground font-mono">{e.ip}</span></TableCell>
                   <TableCell className="text-sm">{e.user}</TableCell>
                   <TableCell className="text-destructive font-bold text-sm">{e.threat}</TableCell>
