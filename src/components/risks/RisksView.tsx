@@ -126,10 +126,10 @@ interface TrackedRisk {
 // ============================================================================
 // UTILITAIRES DE BASE (Complexité réduite)
 // ============================================================================
-const generateId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`; // Sonar: pseudo-random number replacement
+const generateId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 
 const safeNumber = (val: any): number => {
-  if (val === null || val === undefined || val === '') return Number.NaN; // Sonar: Number.NaN
+  if (val === null || val === undefined || val === '') return Number.NaN;
   if (typeof val === 'number') return val;
   const cleanStr = String(val).replace(/\s/g, '').replace(',', '.');
   return Number(cleanStr);
@@ -137,15 +137,15 @@ const safeNumber = (val: any): number => {
 
 const safeStringify = (val: any): string => {
   if (val == null) return "";
-  return typeof val === 'string' ? val.trim() : String(val).trim(); // Sonar: default stringification format
+  return typeof val === 'string' ? val.trim() : String(val).trim();
 };
 
 const parseExcelDate = (rawDate: any): Date => {
-  if (rawDate === null || rawDate === undefined || rawDate === '') return new Date(Number.NaN); // Sonar: Number.NaN
+  if (rawDate === null || rawDate === undefined || rawDate === '') return new Date(Number.NaN);
   if (typeof rawDate === 'number') return new Date(Math.round((rawDate - 25569) * 86400 * 1000));
   const dateStr = safeStringify(rawDate);
-  const frDateRegex = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/; // Sonar: Unnecessary escapes removed
-  const frDateMatch = frDateRegex.exec(dateStr); // Sonar: Prefer RegExp.exec()
+  const frDateRegex = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/;
+  const frDateMatch = frDateRegex.exec(dateStr);
   if (frDateMatch) return new Date(`${frDateMatch[3]}-${frDateMatch[2].padStart(2,'0')}-${frDateMatch[1].padStart(2,'0')}`);
   return new Date(dateStr);
 };
@@ -153,7 +153,7 @@ const parseExcelDate = (rawDate: any): Date => {
 const formatTimeGrouping = (rawDate: any, grouping: DateGrouping): string => {
   if (grouping === 'none' || !rawDate) return safeStringify(rawDate || 'N/A');
   const d = parseExcelDate(rawDate);
-  if (Number.isNaN(d.getTime())) return safeStringify(rawDate); // Sonar: Number.isNaN
+  if (Number.isNaN(d.getTime())) return safeStringify(rawDate);
 
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
@@ -189,7 +189,7 @@ const calculateAggregationValue = (rows: any[], s: ChartSeries): number => {
   let aggValue = 0;
   const rawVals = rows.map(r => r[s.yAxisCol]);
   const nonBlanks = rawVals.filter(v => v !== null && v !== undefined && safeStringify(v) !== "");
-  const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !Number.isNaN(v)); // Sonar: Number.isNaN
+  const numVals = nonBlanks.map(v => safeNumber(v)).filter(v => !Number.isNaN(v));
 
   if (s.aggregation === 'COUNT') {
     aggValue = nonBlanks.length;
@@ -205,7 +205,7 @@ const calculateAggregationValue = (rows: any[], s: ChartSeries): number => {
 };
 
 // ============================================================================
-// FILTRES (Complexité extraite)
+// FILTRES
 // ============================================================================
 const checkLastNDays = (rawVal: any, filterValue: string, now: Date) => {
   const rowDate = parseExcelDate(rawVal);
@@ -243,13 +243,13 @@ const checkStandardFilter = (rawVal: any, filterValue: string, operator: FilterO
     case 'eq': return strVal === filterVal;
     case 'neq': return strVal !== filterVal;
     case 'contains': return strVal.includes(filterVal);
-    case 'gt': { // Sonar: Scope for block declarations
+    case 'gt': {
       const numRaw = safeNumber(rawVal);
       const numFilt = safeNumber(filterValue);
       if (!Number.isNaN(numRaw) && !Number.isNaN(numFilt)) return numRaw > numFilt;
       return strVal > filterVal;
     }
-    case 'lt': { // Sonar: Scope for block declarations
+    case 'lt': {
       const numRawLt = safeNumber(rawVal);
       const numFiltLt = safeNumber(filterValue);
       if (!Number.isNaN(numRawLt) && !Number.isNaN(numFiltLt)) return numRawLt < numFiltLt;
@@ -271,7 +271,7 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
 
       if (f.operator === 'last_n_days') return checkLastNDays(rawVal, f.value, now);
 
-      const isDateFilterRegex = /^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(f.value) || /^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(f.value); // Sonar: Escapes removed
+      const isDateFilterRegex = /^\d{4}[/-]\d{1,2}[/-]\d{1,2}$/.test(f.value) || /^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(f.value);
       if (isDateFilterRegex) return checkDateFilter(rawVal, f.value, f.operator);
 
       return checkStandardFilter(rawVal, f.value, f.operator);
@@ -280,8 +280,25 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
 };
 
 // ============================================================================
-// LECTURE & PARSING EXCEL
+// LECTURE & PARSING EXCEL (Évite l'imbrication profonde)
 // ============================================================================
+const cleanDatasetRows = (rawData: any[], dateColumn: string | undefined): any[] => {
+  const filtered = rawData.filter(row => {
+    if (dateColumn) return row[dateColumn] != null && safeStringify(row[dateColumn]) !== "";
+    return Object.values(row).some(val => val != null && safeStringify(val) !== "");
+  });
+
+  return filtered.map(row => {
+    const minifiedRow: any = {};
+    Object.keys(row).forEach(key => {
+      if (!key.includes('__EMPTY') && row[key] != null && safeStringify(row[key]) !== "") {
+        minifiedRow[key] = row[key];
+      }
+    });
+    return minifiedRow;
+  });
+};
+
 const processExcelData = (wb: XLSX.WorkBook): Dataset[] => {
   const sheetsData: Dataset[] = [];
   wb.SheetNames.forEach(sheetName => {
@@ -291,37 +308,16 @@ const processExcelData = (wb: XLSX.WorkBook): Dataset[] => {
     const sampleRow = rawData[0] as object;
     const dateColumn = Object.keys(sampleRow).find(key => key.toUpperCase().includes('DATE'));
 
-    let cleanData = rawData.filter((row: any) => {
-      if (dateColumn) {
-        return row[dateColumn] != null && safeStringify(row[dateColumn]) !== "";
-      }
-      return Object.values(row).some(val => val != null && safeStringify(val) !== "");
-    });
+    let cleanData = cleanDatasetRows(rawData, dateColumn);
 
     if (cleanData.length > 0) {
-      cleanData = cleanData.map((row: any) => {
-        const minifiedRow: any = {};
-        Object.keys(row).forEach(key => {
-          if (!key.includes('__EMPTY') && row[key] != null && safeStringify(row[key]) !== "") {
-            minifiedRow[key] = row[key];
-          }
-        });
-        return minifiedRow;
-      });
-
       if (cleanData.length > MAX_ROWS_PER_DATASET) {
         toast.warning(`⚠️ La feuille "${sheetName}" contient trop de lignes. Seules ${MAX_ROWS_PER_DATASET} conservées.`);
         cleanData = cleanData.slice(0, MAX_ROWS_PER_DATASET);
       }
-
       const validColumns = Array.from(new Set(cleanData.flatMap(r => Object.keys(r))));
       sheetsData.push({
-        id: generateId('ds'),
-        name: sheetName,
-        columns: validColumns,
-        data: cleanData,
-        isHidden: false,
-        transformations: []
+        id: generateId('ds'), name: sheetName, columns: validColumns, data: cleanData, isHidden: false, transformations: []
       });
     }
   });
@@ -415,11 +411,9 @@ const aggregateMultiSeries = (rawData: any[], xAxisCol: string, dateGrouping: Da
     groups.get(key)!.push(row);
   });
 
-  // Sonar: Sorting requires a proper localeCompare
   return Array.from(groups.keys()).sort((a, b) => String(a).localeCompare(String(b))).map(key => {
     const rows = groups.get(key)!;
     const outRow: any = { [xAxisCol]: key };
-
     series.forEach(s => {
       if (s.isMeasure) {
         const m = measures.find(measure => measure.name === s.yAxisCol);
@@ -447,7 +441,7 @@ const aggregateGlobal = (rawData: any[], series: ChartSeries[], measures: Custom
 };
 
 // ============================================================================
-// SOUS-COMPOSANTS : AMÉLIORATION DE L'AFFICHAGE DES GRAPHIQUES
+// SOUS-COMPOSANTS DES WIDGETS
 // ============================================================================
 const truncateText = (text: string, maxLength: number) => {
   const str = String(text || "");
@@ -455,16 +449,14 @@ const truncateText = (text: string, maxLength: number) => {
   return str.substring(0, maxLength) + "...";
 };
 
-const CustomXAxisTick = ({ x, y, payload }: any) => {
-  return (
-    <g transform={`translate(${x},${y})`}>
-      <text x={0} y={0} dy={14} textAnchor="end" fill="currentColor" className="text-muted-foreground" transform="rotate(-40)" fontSize={10}>
-        {truncateText(payload.value, 15)}
-        <title>{payload.value}</title>
-      </text>
-    </g>
-  );
-};
+const CustomXAxisTick = ({ x, y, payload }: any) => (
+  <g transform={`translate(${x},${y})`}>
+    <text x={0} y={0} dy={14} textAnchor="end" fill="currentColor" className="text-muted-foreground" transform="rotate(-40)" fontSize={10}>
+      {truncateText(payload.value, 15)}
+      <title>{payload.value}</title>
+    </text>
+  </g>
+);
 
 const renderLegendComponent = (legendPos: LegendPosition) => {
   if (legendPos === 'none') return null;
@@ -474,16 +466,109 @@ const renderLegendComponent = (legendPos: LegendPosition) => {
   return <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }}/>;
 };
 
-// ============================================================================
-// COMPOSANT DÉDIÉ AU RENDU DES WIDGETS
-// ============================================================================
+const getSeriesName = (s: ChartSeries) => {
+  if (s.alias && s.alias.trim() !== "") return s.alias;
+  return s.isMeasure ? s.yAxisCol : `${s.aggregation} : ${s.yAxisCol}`;
+};
+
+const KpiWidget = ({ widget, kpiValues }: any) => (
+  <div className="flex flex-col h-full justify-center items-center px-4 gap-6 overflow-y-auto">
+    {widget.series.map((s: ChartSeries, idx: number) => (
+      <div key={s.id} className="text-center w-full">
+        <div className="text-4xl font-black tracking-tight" style={{ color: s.color }}>
+          {new Intl.NumberFormat('fr-FR').format(kpiValues[idx] || 0)}
+        </div>
+        <p className="text-xs text-muted-foreground mt-2 font-black uppercase tracking-widest truncate" title={s.yAxisCol}>{getSeriesName(s)}</p>
+      </div>
+    ))}
+  </div>
+);
+
+const PieWidget = ({ widget, chartData, kpiValues }: any) => {
+  const pieData = !widget.xAxisCol
+    ? widget.series.map((s: ChartSeries, idx: number) => ({ name: getSeriesName(s), value: kpiValues[idx] || 0, color: s.color })).filter((d: any) => d.value > 0)
+    : chartData.map((d: any, index: number) => ({ name: d[widget.xAxisCol!], value: d[widget.series[0].id], color: COLORS[index % COLORS.length] })).filter((d: any) => d.value > 0);
+
+  if (pieData.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée exploitable.</div>;
+
+  const renderPieTooltip = (value: number, name: string, props: any) => {
+    const percentStr = props.payload.percent !== undefined ? ` (${(props.payload.percent * 100).toFixed(1).replace('.', ',')}%)` : '';
+    return [`${new Intl.NumberFormat('fr-FR').format(value)}${percentStr}`, name];
+  };
+
+  const renderCustomizedPieLabel = (props: any) => {
+    const { cx, cy, midAngle, outerRadius, percent, index, name, fill } = props;
+    if (percent < 0.02) return null;
+    const RADIAN = Math.PI / 180;
+    const sx = cx + (outerRadius) * Math.cos(-RADIAN * midAngle);
+    const sy = cy + (outerRadius) * Math.sin(-RADIAN * midAngle);
+    const mx = cx + (outerRadius + (index % 2 === 0 ? 15 : 35)) * Math.cos(-RADIAN * midAngle);
+    const my = cy + (outerRadius + (index % 2 === 0 ? 15 : 35)) * Math.sin(-RADIAN * midAngle);
+    const ex = mx + (Math.cos(-RADIAN * midAngle) >= 0 ? 1 : -1) * 20;
+    return (
+      <g>
+        <path d={`M${sx},${sy}L${mx},${my}L${ex},${my}`} stroke={fill} fill="none" strokeWidth={1} />
+        <circle cx={ex} cy={my} r={2.5} fill={fill} stroke="none" />
+        <text x={ex + (Math.cos(-RADIAN * midAngle) >= 0 ? 1 : -1) * 8} y={my} textAnchor={Math.cos(-RADIAN * midAngle) >= 0 ? 'start' : 'end'} fill="currentColor" className="text-muted-foreground" dominantBaseline="central" fontSize={10} fontWeight="600">
+          {`${truncateText(name, 12)} : ${(percent * 100).toFixed(1).replace('.', ',')}%`}
+        </text>
+      </g>
+    );
+  };
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <PieChart margin={{ top: 20, right: 30, left: 30, bottom: 20 }}>
+        <Pie data={pieData} cx="50%" cy="50%" innerRadius={widget.widgetSize === 'large' ? "40%" : "30%"} outerRadius={widget.widgetSize === 'large' ? "65%" : "55%"} paddingAngle={2} dataKey="value" nameKey="name" labelLine={false} label={widget.showLabels !== false ? renderCustomizedPieLabel : false} stroke="hsl(var(--background))" strokeWidth={2}>
+          {pieData.map((entry: any) => <Cell key={entry.name} fill={entry.color} />)}
+        </Pie>
+        <Tooltip formatter={renderPieTooltip} contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+        {renderLegendComponent(widget.legendPosition || 'bottom')}
+      </PieChart>
+    </ResponsiveContainer>
+  );
+};
+
+const ChartWidget = ({ widget, chartData }: any) => {
+  const isHorizontal = widget.orientation === 'horizontal';
+  const marginConfig = { top: 20, right: isHorizontal ? 30 : 10, left: 0, bottom: 0 };
+  const formatLabel = (value: number) => new Intl.NumberFormat('fr-FR').format(value);
+
+  if (widget.type === 'bar') {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={chartData} margin={marginConfig} layout={isHorizontal ? "vertical" : "horizontal"}>
+          <CartesianGrid strokeDasharray="3 3" horizontal={!isHorizontal} vertical={isHorizontal} stroke="hsl(var(--border))" opacity={0.5} />
+          <XAxis type={isHorizontal ? "number" : "category"} dataKey={isHorizontal ? undefined : widget.xAxisCol} tick={isHorizontal ? { fontSize: 10 } : <CustomXAxisTick />} height={isHorizontal ? 30 : 80} axisLine={false} tickLine={false} interval={0} />
+          <YAxis type={isHorizontal ? "category" : "number"} dataKey={isHorizontal ? widget.xAxisCol : undefined} tick={{ fontSize: 10 }} width={isHorizontal ? 250 : 70} axisLine={false} tickLine={false} tickFormatter={(val) => isHorizontal ? truncateText(val, 40) : val} />
+          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+          {renderLegendComponent(widget.legendPosition || 'bottom')}
+          {widget.series.map((s: ChartSeries) => (
+            <Bar key={`bar-${s.id}`} dataKey={s.id} name={getSeriesName(s)} fill={s.color} radius={isHorizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]} label={widget.showLabels !== false ? { position: isHorizontal ? 'right' : 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={chartData} margin={marginConfig}>
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" opacity={0.5} />
+        <XAxis dataKey={widget.xAxisCol} tick={<CustomXAxisTick />} height={80} axisLine={false} tickLine={false} interval={0} />
+        <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={50} />
+        <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+        {renderLegendComponent(widget.legendPosition || 'bottom')}
+        {widget.series.map((s: ChartSeries) => (
+          <Area key={s.id} type="monotone" dataKey={s.id} name={getSeriesName(s)} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2} label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
+        ))}
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+};
+
 const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: WidgetConfig, datasets: Dataset[], measures: CustomMeasure[] }) => {
   const dataset = datasets.find(d => d.id === widget.datasetId);
-
-  const getSeriesName = (s: ChartSeries) => {
-    if (s.alias && s.alias.trim() !== "") return s.alias;
-    return s.isMeasure ? s.yAxisCol : `${s.aggregation} : ${s.yAxisCol}`;
-  };
 
   const chartData = useMemo(() => {
     if (!dataset || widget.type === 'kpi' || !widget.xAxisCol || widget.series.length === 0) return [];
@@ -501,85 +586,78 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
   if (widget.series.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Sélectionnez les données à analyser.</div>;
   if (widget.type !== 'kpi' && widget.type !== 'pie' && !widget.xAxisCol) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center px-4">Définissez l'Axe de répartition.</div>;
 
-  if (widget.type === 'kpi') {
-    return (
-      <div className="flex flex-col h-full justify-center items-center px-4 gap-6 overflow-y-auto">
-        {widget.series.map((s, idx) => (
-          <div key={s.id} className="text-center w-full">
-            <div className="text-4xl font-black tracking-tight" style={{ color: s.color }}>
-              {new Intl.NumberFormat('fr-FR').format(kpiValues[idx] || 0)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-2 font-black uppercase tracking-widest truncate" title={s.yAxisCol}>{getSeriesName(s)}</p>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  const formatLabel = (value: number) => new Intl.NumberFormat('fr-FR').format(value);
-  const legendPos = widget.legendPosition || 'bottom';
-
-  if (widget.type === 'pie') {
-    const pieData = !widget.xAxisCol
-      ? widget.series.map((s, idx) => ({ name: getSeriesName(s), value: kpiValues[idx] || 0, color: s.color })).filter(d => d.value > 0)
-      : chartData.map((d, index) => ({ name: d[widget.xAxisCol!], value: d[widget.series[0].id], color: COLORS[index % COLORS.length] })).filter(d => d.value > 0);
-
-    if (pieData.length === 0) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground text-center">Aucune donnée exploitable.</div>;
-
-    return (
-      <ResponsiveContainer width="100%" height="100%">
-        <PieChart margin={{ top: 20, right: 30, left: 30, bottom: 20 }}>
-          <Pie
-            data={pieData} cx="50%" cy="50%"
-            innerRadius={widget.widgetSize === 'large' ? "40%" : "30%"}
-            outerRadius={widget.widgetSize === 'large' ? "65%" : "55%"}
-            paddingAngle={2} dataKey="value" nameKey="name"
-            stroke="hsl(var(--background))" strokeWidth={2}
-          >
-            {pieData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
-          </Pie>
-          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
-          {renderLegendComponent(legendPos)}
-        </PieChart>
-      </ResponsiveContainer>
-    );
-  }
-
-  const isHorizontal = widget.orientation === 'horizontal';
-  const marginConfig = { top: 20, right: isHorizontal ? 30 : 10, left: isHorizontal ? 0 : 0, bottom: 0 }; // Sonar: Redundant conditional removed
-
-  return (
-    <ResponsiveContainer width="100%" height="100%">
-      {widget.type === 'bar' ? (
-        <BarChart data={chartData} margin={marginConfig} layout={isHorizontal ? "vertical" : "horizontal"}>
-          <CartesianGrid strokeDasharray="3 3" horizontal={!isHorizontal} vertical={isHorizontal} stroke="hsl(var(--border))" opacity={0.5} />
-          <XAxis type={isHorizontal ? "number" : "category"} dataKey={isHorizontal ? undefined : widget.xAxisCol} tick={isHorizontal ? { fontSize: 10 } : <CustomXAxisTick />} height={isHorizontal ? 30 : 80} axisLine={false} tickLine={false} interval={0} />
-          <YAxis type={isHorizontal ? "category" : "number"} dataKey={isHorizontal ? widget.xAxisCol : undefined} tick={{ fontSize: 10 }} width={isHorizontal ? 250 : 70} axisLine={false} tickLine={false} tickFormatter={(val) => isHorizontal ? truncateText(val, 40) : val} />
-          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
-          {renderLegendComponent(legendPos)}
-          {widget.series.map(s => (
-            <Bar key={`bar-${s.id}`} dataKey={s.id} name={getSeriesName(s)} fill={s.color} radius={isHorizontal ? [0, 2, 2, 0] : [2, 2, 0, 0]} label={widget.showLabels !== false ? { position: isHorizontal ? 'right' : 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
-          ))}
-        </BarChart>
-      ) : (
-        <AreaChart data={chartData} margin={marginConfig}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" opacity={0.5} />
-          <XAxis dataKey={widget.xAxisCol} tick={<CustomXAxisTick />} height={80} axisLine={false} tickLine={false} interval={0} />
-          <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={50} />
-          <Tooltip contentStyle={{ fontSize: '12px', borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
-          {renderLegendComponent(legendPos)}
-          {widget.series.map(s => (
-            <Area key={s.id} type="monotone" dataKey={s.id} name={getSeriesName(s)} stroke={s.color} fill={s.color} fillOpacity={0.1} strokeWidth={2} label={widget.showLabels !== false ? { position: 'top', fontSize: 10, fill: 'currentColor', formatter: formatLabel } : false} />
-          ))}
-        </AreaChart>
-      )}
-    </ResponsiveContainer>
-  );
+  if (widget.type === 'kpi') return <KpiWidget widget={widget} kpiValues={kpiValues} />;
+  if (widget.type === 'pie') return <PieWidget widget={widget} chartData={chartData} kpiValues={kpiValues} />;
+  return <ChartWidget widget={widget} chartData={chartData} />;
 });
 
 // ============================================================================
-// MODALES ET COMPOSANTS D'AIDE
+// COMPOSANT RUBAN ET MENUS (Extraction pour réduire la complexité de RisksView)
 // ============================================================================
+const DashboardRibbon = ({
+  activeRiskTitle, isRibbonCollapsed, setIsRibbonCollapsed, activeRibbonTab, setActiveRibbonTab,
+  onBack, onAddData, onOpenPowerQuery, onAddWidget, onAddTab, onAppendData
+}: any) => {
+  return (
+    <div className="flex flex-col bg-background shadow-sm z-20 relative">
+      <div className="flex items-end justify-between px-2 pt-2 text-sm border-b bg-muted/20">
+        <div className="flex items-end gap-4">
+          <div className="flex items-center gap-2 pr-4 border-r pb-1">
+            <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onBack}><ArrowLeft className="w-4 h-4" /></Button>
+            <span className="font-bold truncate max-w-[200px]">{activeRiskTitle}</span>
+          </div>
+          <div className="flex gap-1">
+            {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
+              <button type="button" key={tab} onClick={() => { setActiveRibbonTab(tab); if (isRibbonCollapsed) setIsRibbonCollapsed(false); }} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] ${activeRibbonTab === tab && !isRibbonCollapsed ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>{tab}</button>
+            ))}
+          </div>
+        </div>
+        <div className="pb-1 pr-2"><button type="button" onClick={() => setIsRibbonCollapsed(!isRibbonCollapsed)} className="p-1 text-muted-foreground hover:bg-muted hover:text-foreground rounded transition-colors" title={isRibbonCollapsed ? "Développer" : "Réduire"}>{isRibbonCollapsed ? <ChevronDown className="w-4 h-4"/> : <ChevronUp className="w-4 h-4"/>}</button></div>
+      </div>
+      <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
+        <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
+          {activeRibbonTab === 'Fichier' && (<div className="flex items-center text-xs text-muted-foreground px-4 italic">Menu fichier (Enregistrer, Exporter, Imprimer...)</div>)}
+          {activeRibbonTab === 'Accueil' && (
+            <>
+              <div className="flex gap-1 border-r pr-4">
+                <button type="button" className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[50px] opacity-40 cursor-not-allowed"><Clipboard className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Coller</span></button>
+                <div className="flex flex-col justify-center gap-1">
+                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Scissors className="w-3 h-3" /> Couper</button>
+                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Copy className="w-3 h-3" /> Copier</button>
+                  <button type="button" className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Paintbrush className="w-3 h-3" /> Reproduire</button>
+                </div>
+              </div>
+              <div className="flex gap-1 border-r pr-4">
+                <button type="button" onClick={onAddData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><DatabaseZap className="w-6 h-6 text-yellow-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Obtenir<br/>les données</span></button>
+                <button type="button" onClick={onAddData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><FileSpreadsheet className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Classeur<br/>Excel</span></button>
+              </div>
+              <div className="flex gap-1 border-r pr-4">
+                <button type="button" onClick={onOpenPowerQuery} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-orange-50 hover:bg-orange-100 border border-orange-200"><FileEdit className="w-6 h-6 text-orange-600" /><span className="text-[10px] leading-tight text-center text-orange-700 font-bold">Transformer<br/>les données</span></button>
+                <button type="button" className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><RefreshCw className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Actualiser</span></button>
+              </div>
+              <div className="flex gap-1 border-r pr-4">
+                <button type="button" onClick={onAddWidget} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><BarChart3 className="w-6 h-6 text-blue-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveau<br/>visuel</span></button>
+              </div>
+            </>
+          )}
+          {activeRibbonTab === 'Insérer' && (
+            <>
+              <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAddTab} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Plus className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouvelle<br/>page</span></button></div>
+              <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAddWidget} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><PieChartIcon className="w-6 h-6 text-primary" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveaux<br/>visuels</span></button></div>
+            </>
+          )}
+          {activeRibbonTab === 'Modélisation' && (
+            <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onAppendData} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Combine className="w-6 h-6 text-purple-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Gérer les<br/>relations</span></button></div>
+          )}
+          {(activeRibbonTab === 'Affichage' || activeRibbonTab === 'Optimiser' || activeRibbonTab === 'Aide') && (
+            <div className="flex items-center text-xs text-muted-foreground px-4 italic">Options spécifiques à venir...</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }: { isOpen: boolean, onClose: () => void, activeRisk?: TrackedRisk, updateActiveRisk: (u: Partial<TrackedRisk>) => void }) => {
   const [pqRibbonTab, setPqRibbonTab] = useState<string>('Transformer');
   const [pqSelectedDatasetId, setPqSelectedDatasetId] = useState<string>("");
@@ -646,52 +724,41 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
         <DialogTitle className="sr-only">Éditeur Power Query</DialogTitle>
         <div className="bg-[#f3f2f1] dark:bg-slate-800 border-b flex items-center justify-between px-3 py-1.5 shrink-0">
           <div className="flex items-center gap-2"><FileEdit className="w-4 h-4 text-orange-600" /><span className="text-sm font-semibold">Éditeur Power Query</span></div>
-          <button onClick={onClose} className="p-1 hover:bg-rose-500 hover:text-white rounded transition-colors text-muted-foreground"><X className="w-4 h-4" /></button>
+          <button type="button" onClick={onClose} className="p-1 hover:bg-rose-500 hover:text-white rounded transition-colors text-muted-foreground"><X className="w-4 h-4" /></button>
         </div>
 
         <div className="flex flex-col bg-background shadow-sm border-b shrink-0">
           <div className="flex items-end px-2 pt-2 text-sm bg-muted/20">
             <div className="flex gap-1">
               {['Accueil', 'Transformer', 'Ajouter une colonne', 'Affichage'].map(tab => (
-                <button key={tab} onClick={() => setPqRibbonTab(tab)} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] ${pqRibbonTab === tab ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>{tab}</button>
+                <button type="button" key={tab} onClick={() => setPqRibbonTab(tab)} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] ${pqRibbonTab === tab ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>{tab}</button>
               ))}
             </div>
           </div>
           <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
             {pqRibbonTab === 'Accueil' && (
-              <div className="flex gap-1 border-r pr-4"><button onClick={onClose} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Save className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Fermer et<br/>appliquer</span></button></div>
+              <div className="flex gap-1 border-r pr-4"><button type="button" onClick={onClose} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Save className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Fermer et<br/>appliquer</span></button></div>
             )}
             {pqRibbonTab === 'Transformer' && (
-              <>
-                <div className="flex gap-1 border-r pr-4">
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Columns className="w-6 h-6 text-blue-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Fractionner<br/>la colonne</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Table2 className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Regrouper<br/>par</span></button>
-                </div>
-                <div className="flex flex-col gap-1 border-r pr-4 justify-center">
-                  <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Type className="w-4 h-4 text-blue-500" /> Type de données : Texte</button>
-                  <button onClick={executePromoteHeaders} className="flex items-center gap-2 px-2 py-1 hover:bg-emerald-50 text-emerald-700 font-medium rounded text-[10px] transition-colors"><ArrowUpToLine className="w-4 h-4 text-emerald-500" /> Utiliser la première ligne pour les en-têtes</button>
-                  <button onClick={() => { if(!pqSelectedColumn) return toast.error("Cliquez sur l'en-tête d'une colonne."); setIsReplaceModalOpen(true); }} className="flex items-center gap-2 px-2 py-1 hover:bg-yellow-50 text-yellow-700 font-medium rounded text-[10px] transition-colors"><Replace className="w-4 h-4 text-yellow-600" /> Remplacer les valeurs</button>
-                </div>
-              </>
+              <div className="flex flex-col gap-1 border-r pr-4 justify-center">
+                <button type="button" onClick={executePromoteHeaders} className="flex items-center gap-2 px-2 py-1 hover:bg-emerald-50 text-emerald-700 font-medium rounded text-[10px] transition-colors"><ArrowUpToLine className="w-4 h-4 text-emerald-500" /> Utiliser la première ligne pour les en-têtes</button>
+                <button type="button" onClick={() => { if(!pqSelectedColumn) { toast.error("Cliquez sur l'en-tête d'une colonne."); return; } setIsReplaceModalOpen(true); }} className="flex items-center gap-2 px-2 py-1 hover:bg-yellow-50 text-yellow-700 font-medium rounded text-[10px] transition-colors"><Replace className="w-4 h-4 text-yellow-600" /> Remplacer les valeurs</button>
+              </div>
             )}
             {pqRibbonTab === 'Ajouter une colonne' && (
               <>
                 <div className="flex gap-1 border-r pr-4">
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Wand2 className="w-6 h-6 text-yellow-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Colonne à partir<br/>d'exemples</span></button>
-                  <button onClick={() => setIsCustomColumnModalOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Braces className="w-6 h-6 text-yellow-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Colonne<br/>personnalisée</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><FunctionSquare className="w-6 h-6 text-blue-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Appeler une fonction</span></button>
+                  <button type="button" onClick={() => setIsCustomColumnModalOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Braces className="w-6 h-6 text-yellow-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Colonne<br/>personnalisée</span></button>
                 </div>
                 <div className="flex flex-col gap-1 border-r pr-4 justify-center">
-                  <button className="flex items-center gap-2 px-2 py-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Waypoints className="w-4 h-4 text-emerald-500" /> Colonne conditionnelle</button>
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild><button className="flex items-center gap-2 px-2 py-1 hover:bg-blue-50 text-blue-700 font-medium rounded text-[10px] transition-colors outline-none"><ListOrdered className="w-4 h-4 text-blue-500" /> Colonne d'index <ChevronDown className="w-3 h-3" /></button></DropdownMenuTrigger>
+                    <DropdownMenuTrigger asChild><button type="button" className="flex items-center gap-2 px-2 py-1 hover:bg-blue-50 text-blue-700 font-medium rounded text-[10px] transition-colors outline-none"><ListOrdered className="w-4 h-4 text-blue-500" /> Colonne d'index <ChevronDown className="w-3 h-3" /></button></DropdownMenuTrigger>
                     <DropdownMenuContent><DropdownMenuItem className="text-xs cursor-pointer" onClick={() => executeAddIndexColumn(0)}>À partir de 0</DropdownMenuItem><DropdownMenuItem className="text-xs cursor-pointer" onClick={() => executeAddIndexColumn(1)}>À partir de 1</DropdownMenuItem></DropdownMenuContent>
                   </DropdownMenu>
-                  <button onClick={executeDuplicateColumn} className="flex items-center gap-2 px-2 py-1 hover:bg-muted font-medium rounded text-[10px] transition-colors"><Copy className="w-4 h-4 text-muted-foreground" /> Duplication de la colonne</button>
+                  <button type="button" onClick={executeDuplicateColumn} className="flex items-center gap-2 px-2 py-1 hover:bg-muted font-medium rounded text-[10px] transition-colors"><Copy className="w-4 h-4 text-muted-foreground" /> Duplication de la colonne</button>
                 </div>
               </>
             )}
-            {pqRibbonTab === 'Affichage' && <div className="flex items-center text-xs text-muted-foreground px-4 italic">Paramètres d'affichage...</div>}
           </div>
         </div>
 
@@ -700,7 +767,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
             <div className="bg-secondary/30 p-2 border-b text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Requêtes</div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {activeRisk?.datasets.map(d => (
-                <div key={d.id} onClick={() => { setPqSelectedDatasetId(d.id); setPqSelectedColumn(null); }} className={`text-xs p-2 rounded cursor-pointer truncate flex items-center gap-2 ${pqSelectedDatasetId === d.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-muted-foreground'}`}><Table2 className="w-3.5 h-3.5 shrink-0" />{d.name}</div>
+                <button type="button" key={d.id} onClick={() => { setPqSelectedDatasetId(d.id); setPqSelectedColumn(null); }} className={`w-full text-left text-xs p-2 rounded cursor-pointer truncate flex items-center gap-2 ${pqSelectedDatasetId === d.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-muted-foreground'}`}><Table2 className="w-3.5 h-3.5 shrink-0" />{d.name}</button>
               ))}
             </div>
           </div>
@@ -736,18 +803,18 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               <div className="text-xs p-2 bg-muted/20 rounded border flex items-center justify-between text-muted-foreground"><span>Source initiale</span></div>
               {pqSelectedDatasetObj?.transformations?.map((step) => (
-                <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm"><span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span><button onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all"><X className="w-3.5 h-3.5" /></button></div>
+                <div key={step.id} className="text-xs p-2 bg-white rounded border flex items-center justify-between group shadow-sm"><span className="truncate pr-2 font-medium" title={step.name}>{step.name}</span><button type="button" onClick={() => handleRemoveTransformation(step.id)} className="opacity-0 group-hover:opacity-100 text-rose-500 hover:bg-rose-50 p-1 rounded transition-all"><X className="w-3.5 h-3.5" /></button></div>
               ))}
             </div>
           </div>
         </div>
 
         {isReplaceModalOpen && (
-          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center backdrop-blur-sm"><div className="bg-background rounded-xl shadow-2xl w-[400px] border overflow-hidden animate-in zoom-in-95 duration-200"><div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2"><Replace className="w-4 h-4 text-yellow-600" /><h3 className="font-bold text-sm">Remplacer les valeurs</h3></div><div className="p-4 space-y-4"><div className="space-y-1"><Label className="text-xs">Valeur à rechercher</Label><Input value={replaceSearchValue} onChange={e => setReplaceSearchValue(e.target.value)} autoFocus className="text-sm" /></div><div className="space-y-1"><Label className="text-xs">Remplacer par</Label><Input value={replaceNewValue} onChange={e => setReplaceNewValue(e.target.value)} className="text-sm" /></div></div><div className="px-4 py-3 bg-muted/30 border-t flex justify-end gap-2"><Button variant="outline" size="sm" onClick={() => setIsReplaceModalOpen(false)}>Annuler</Button><Button size="sm" className="bg-yellow-600 hover:bg-yellow-700 text-white" onClick={executeReplaceValues}>OK</Button></div></div></div>
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center backdrop-blur-sm"><div className="bg-background rounded-xl shadow-2xl w-[400px] border overflow-hidden animate-in zoom-in-95 duration-200"><div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2"><Replace className="w-4 h-4 text-yellow-600" /><h3 className="font-bold text-sm">Remplacer les valeurs</h3></div><div className="p-4 space-y-4"><div className="space-y-1"><Label className="text-xs">Valeur à rechercher</Label><Input value={replaceSearchValue} onChange={e => setReplaceSearchValue(e.target.value)} autoFocus className="text-sm" /></div><div className="space-y-1"><Label className="text-xs">Remplacer par</Label><Input value={replaceNewValue} onChange={e => setReplaceNewValue(e.target.value)} className="text-sm" /></div></div><div className="px-4 py-3 bg-muted/30 border-t flex justify-end gap-2"><Button type="button" variant="outline" size="sm" onClick={() => setIsReplaceModalOpen(false)}>Annuler</Button><Button type="button" size="sm" className="bg-yellow-600 hover:bg-yellow-700 text-white" onClick={executeReplaceValues}>OK</Button></div></div></div>
         )}
 
         {isCustomColumnModalOpen && (
-          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center backdrop-blur-sm"><div className="bg-background rounded-xl shadow-2xl w-[500px] border overflow-hidden animate-in zoom-in-95 duration-200"><div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2"><Braces className="w-4 h-4 text-yellow-600" /><h3 className="font-bold text-sm">Ajouter une colonne</h3></div><div className="p-4 space-y-4"><div className="space-y-1"><Label className="text-xs font-bold">Nouveau nom de colonne</Label><Input value={customColName} onChange={e => setCustomColName(e.target.value)} autoFocus className="text-sm font-bold" /></div><div className="space-y-1"><Label className="text-xs font-bold">Formule</Label><textarea value={customColValue} onChange={e => setCustomColValue(e.target.value)} placeholder="=" className="w-full h-32 rounded-md border p-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50" /></div></div><div className="px-4 py-3 bg-muted/30 border-t flex justify-end gap-2"><Button variant="outline" size="sm" onClick={() => setIsCustomColumnModalOpen(false)}>Annuler</Button><Button size="sm" className="bg-yellow-600 hover:bg-yellow-700 text-white" onClick={executeAddCustomColumn}>OK</Button></div></div></div>
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center backdrop-blur-sm"><div className="bg-background rounded-xl shadow-2xl w-[500px] border overflow-hidden animate-in zoom-in-95 duration-200"><div className="px-4 py-3 border-b bg-muted/30 flex items-center gap-2"><Braces className="w-4 h-4 text-yellow-600" /><h3 className="font-bold text-sm">Ajouter une colonne</h3></div><div className="p-4 space-y-4"><div className="space-y-1"><Label className="text-xs font-bold">Nouveau nom de colonne</Label><Input value={customColName} onChange={e => setCustomColName(e.target.value)} autoFocus className="text-sm font-bold" /></div><div className="space-y-1"><Label className="text-xs font-bold">Formule</Label><textarea value={customColValue} onChange={e => setCustomColValue(e.target.value)} placeholder="=" className="w-full h-32 rounded-md border p-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50" /></div></div><div className="px-4 py-3 bg-muted/30 border-t flex justify-end gap-2"><Button type="button" variant="outline" size="sm" onClick={() => setIsCustomColumnModalOpen(false)}>Annuler</Button><Button type="button" size="sm" className="bg-yellow-600 hover:bg-yellow-700 text-white" onClick={executeAddCustomColumn}>OK</Button></div></div></div>
         )}
       </DialogContent>
     </Dialog>
@@ -756,7 +823,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
 
 
 // ============================================================================
-// COMPOSANT PRINCIPAL (VIEW) - Refactorisé pour réduire la complexité
+// COMPOSANT PRINCIPAL (VIEW) - Refactorisé
 // ============================================================================
 export default function RisksView() {
   const [risks, setRisks] = useState<TrackedRisk[]>([]);
@@ -819,7 +886,7 @@ export default function RisksView() {
           setRisks(formattedRisks);
         }
       } catch (error) {
-        console.error(error); // Sonar: Empty catch block handled
+        console.error(error);
         toast.error("Impossible de charger les données depuis le cloud.");
       } finally {
         setIsInitialized(true);
@@ -836,7 +903,7 @@ export default function RisksView() {
         if (JSON.stringify(recordsToUpsert).length > MAX_PAYLOAD_SIZE) throw new Error("Payload too large");
         if (recordsToUpsert.length > 0) await supabase.from('risk_dashboards' as any).upsert(recordsToUpsert);
       } catch (err: any) {
-        console.error(err); // Sonar: Empty catch block handled
+        console.error(err);
         if (err.message === "Payload too large") toast.error("Volume de données trop important pour le Cloud.");
         try {
           const safeBackup = risks.map(r => ({ ...r, datasets: r.datasets.map(d => ({ ...d, data: d.data.slice(0, 100) })) }));
@@ -853,7 +920,7 @@ export default function RisksView() {
 
     setIsImporting(true);
     try {
-      const data = await file.arrayBuffer(); // Sonar: Blob#arrayBuffer() over FileReader
+      const data = await file.arrayBuffer();
       const wb = XLSX.read(data, { type: 'array', cellDates: true });
       const sheetsData = processExcelData(wb);
 
@@ -904,7 +971,7 @@ export default function RisksView() {
     try {
       await supabase.from('risk_dashboards' as any).delete().eq('id', id);
       toast.success("Analyse supprimée.");
-    } catch(err) { console.error(err); } // Sonar: Empty catch block handled
+    } catch(err) { console.error(err); }
     setRiskToDelete(null);
   };
 
@@ -929,21 +996,21 @@ export default function RisksView() {
   };
 
   const handleDuplicateTab = (tabId: string) => {
-    if (!activeRisk) return;
-    const tabToCopy = activeRisk.tabs?.find(t => t.id === tabId);
+    if (!activeRisk?.tabs) return;
+    const tabToCopy = activeRisk.tabs.find(t => t.id === tabId);
     if (!tabToCopy) return;
 
     const newTabId = generateId('tab');
     const newTab = { id: newTabId, name: `${tabToCopy.name} (Copie)` };
     const widgetsToCopy = activeRisk.widgets.filter(w => w.tabId === tabId);
-    const clonedWidgets = widgetsToCopy.map(w => ({ ...w, id: generateId('w'), tabId: newTabId })); // Sonar: crypto.randomUUID
+    const clonedWidgets = widgetsToCopy.map(w => ({ ...w, id: generateId('w'), tabId: newTabId }));
 
-    updateActiveRisk({ tabs: [...(activeRisk.tabs || []), newTab], widgets: [...activeRisk.widgets, ...clonedWidgets] });
+    updateActiveRisk({ tabs: [...activeRisk.tabs, newTab], widgets: [...activeRisk.widgets, ...clonedWidgets] });
     setActiveTabId(newTabId); toast.success("Page dupliquée !");
   };
 
   const handleMoveTab = (tabId: string, direction: 'left' | 'right') => {
-    if (!activeRisk || !activeRisk.tabs) return;
+    if (!activeRisk?.tabs) return;
     const tabs = [...activeRisk.tabs];
     const currentIndex = tabs.findIndex(t => t.id === tabId);
     if (currentIndex < 0) return;
@@ -980,7 +1047,15 @@ export default function RisksView() {
     setWidgetToDelete(null);
   };
 
-  const toggleDatasetCollapse = (datasetId: string) => setCollapsedDatasets(prev => { const next = new Set(prev); if (next.has(datasetId)) next.delete(datasetId); else next.add(datasetId); return next; });
+  const toggleDatasetCollapse = (datasetId: string) => setCollapsedDatasets(prev => {
+    const next = new Set(prev);
+    if (next.has(datasetId)) {
+      next.delete(datasetId);
+    } else {
+      next.add(datasetId);
+    }
+    return next;
+  });
 
   const toggleDatasetVisibility = (e: React.MouseEvent, datasetId: string) => {
     e.stopPropagation();
@@ -1025,11 +1100,14 @@ export default function RisksView() {
     if (activeWidget.datasetId !== datasetId) return toast.error("Source différente.");
     const isX = activeWidget.xAxisCol === colName;
     const seriesMatch = activeWidget.series.find(s => s.yAxisCol === colName);
-    if (isX) updateActiveWidget({ xAxisCol: "" });
-    else if (seriesMatch) removeSeries(seriesMatch.id);
-    else {
-      if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') updateActiveWidget({ xAxisCol: colName });
-      else addSeriesWithData(colName, isMeasure);
+    if (isX) {
+      updateActiveWidget({ xAxisCol: "" });
+    } else if (seriesMatch) {
+      removeSeries(seriesMatch.id);
+    } else if (!activeWidget.xAxisCol && !isMeasure && activeWidget.type !== 'kpi') {
+      updateActiveWidget({ xAxisCol: colName });
+    } else {
+      addSeriesWithData(colName, isMeasure);
     }
   };
 
@@ -1062,10 +1140,10 @@ export default function RisksView() {
     const previewCols = computeDatasetPreview(ds).columns;
     return (
       <div key={ds.id} className="text-sm min-w-0 group/dataset mb-2">
-        <div className={`flex items-center justify-between p-2 rounded font-bold cursor-pointer transition-colors ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`} onClick={() => toggleDatasetCollapse(ds.id)}>
+        <button type="button" className={`w-full text-left flex items-center justify-between p-2 rounded font-bold cursor-pointer transition-colors ${isHiddenList ? 'bg-muted/30 text-muted-foreground italic' : 'bg-muted/50 text-foreground hover:bg-muted/80'}`} onClick={() => toggleDatasetCollapse(ds.id)}>
           <div className="flex items-center gap-2 truncate">{collapsedDatasets.has(ds.id) ? <ChevronRight className="w-3.5 h-3.5 shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 shrink-0" />}<Database className={`w-3.5 h-3.5 shrink-0 ${isHiddenList ? 'opacity-40' : 'text-muted-foreground'}`}/><span className="truncate">{ds.name}</span></div>
-          <div className="flex items-center gap-1 shrink-0"><button onClick={(e) => toggleDatasetVisibility(e, ds.id)} className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1">{isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}</button>{!isHiddenList && (<button onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity p-1"><Trash2 className="w-3 h-3"/></button>)}</div>
-        </div>
+          <div className="flex items-center gap-1 shrink-0"><span onClick={(e) => toggleDatasetVisibility(e, ds.id)} className="opacity-0 group-hover/dataset:opacity-100 text-muted-foreground hover:text-primary transition-opacity p-1">{isHiddenList ? <Eye className="w-3.5 h-3.5"/> : <EyeOff className="w-3 h-3"/>}</span>{!isHiddenList && (<span onClick={(e) => { e.stopPropagation(); setDatasetToDelete(ds.id); }} className="opacity-0 group-hover/dataset:opacity-100 text-rose-500 hover:text-rose-700 transition-opacity p-1"><Trash2 className="w-3 h-3"/></span>)}</div>
+        </button>
         {(!collapsedDatasets.has(ds.id)) && (
           <div className="pl-2 flex flex-col gap-1 mt-1 border-l ml-3 pb-2 min-w-0 animate-in slide-in-from-top-1">
             {activeRisk?.measures.filter(m => m.datasetId === ds.id).map(m => {
@@ -1096,11 +1174,11 @@ export default function RisksView() {
             <p className="text-sm text-muted-foreground mt-1">Gérez vos modèles d'analyse et suivez vos indicateurs de risques.</p>
           </div>
           <Dialog open={isAddOpen} onOpenChange={(o) => { setIsAddOpen(o); if(!o) resetWizard(); }}>
-            <DialogTrigger asChild><Button className="gap-2"><Plus className="w-4 h-4" /> Nouvelle Analyse</Button></DialogTrigger>
+            <DialogTrigger asChild><Button type="button" className="gap-2"><Plus className="w-4 h-4" /> Nouvelle Analyse</Button></DialogTrigger>
             <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Configuration de l'Analyse</DialogTitle></DialogHeader>
-              {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label>Nom de l'analyse</Label><Input value={newRiskTitle} onChange={e => setNewRiskTitle(e.target.value)} /></div><div className="space-y-2"><Label>Description de l'objectif</Label><Input value={newRiskDesc} onChange={e => setNewRiskDesc(e.target.value)} /></div><div className="space-y-2 pt-4 border-t"><Label className="text-primary font-bold">Source de données (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={!newRiskTitle} /><Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2" disabled={!newRiskTitle}><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
-              {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button onClick={finalizeRiskCreation} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer</Button></div></div>)}
+              {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label>Nom de l'analyse</Label><Input value={newRiskTitle} onChange={e => setNewRiskTitle(e.target.value)} /></div><div className="space-y-2"><Label>Description de l'objectif</Label><Input value={newRiskDesc} onChange={e => setNewRiskDesc(e.target.value)} /></div><div className="space-y-2 pt-4 border-t"><Label className="text-primary font-bold">Source de données (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={!newRiskTitle} /><Button type="button" variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2" disabled={!newRiskTitle}><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
+              {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="bg-primary/10 text-primary p-3 rounded-lg flex items-center gap-3"><Database className="w-6 h-6 shrink-0"/><div><h4 className="font-bold text-sm">Données analysées</h4><p className="text-xs">Sélectionnez les tables à inclure.</p></div></div><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<button type="button" key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`w-full flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge></button>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeRiskCreation} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Créer</Button></div></div>)}
             </DialogContent>
           </Dialog>
         </div>
@@ -1109,7 +1187,7 @@ export default function RisksView() {
           {risks.length === 0 && <div className="col-span-full py-12 text-center text-muted-foreground border-2 border-dashed rounded-xl">Ce module de suivi est vide. Ajoutez une première analyse de risques.</div>}
           {risks.map((risk) => (
             <Card key={risk.id} onClick={() => { setActiveRiskId(risk.id); setActiveTabId(risk.tabs?.[0]?.id || null); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); }} className="group cursor-pointer border-l-4 border-l-primary hover:-translate-y-1 shadow-sm relative">
-              <button onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }} className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-10 transition-all"><Trash2 className="w-4 h-4" /></button>
+              <button type="button" onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }} className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-10 transition-all"><Trash2 className="w-4 h-4" /></button>
               <CardContent className="p-6">
                 <div className="flex items-center gap-3 mb-4 pr-8"><div className="p-2.5 rounded-lg bg-primary/10 text-primary"><Shield className="w-6 h-6" /></div><div className="min-w-0"><h3 className="font-bold text-lg truncate">{risk.title}</h3></div></div>
                 <div className="flex gap-2 mb-4"><Badge variant="outline" className="text-[10px] bg-secondary/50"><Database className="w-3 h-3 mr-1"/> {risk.datasets.length} Sources</Badge><Badge variant="outline" className="text-[10px] bg-secondary/50"><BarChart3 className="w-3 h-3 mr-1"/> {risk.widgets.length} Indicateurs</Badge></div>
@@ -1135,85 +1213,12 @@ export default function RisksView() {
     <div className="flex flex-col h-[calc(100vh-6rem)] animate-in fade-in duration-300 -m-4 bg-slate-50 dark:bg-slate-900/50">
       <PowerQueryEditorModal isOpen={isPowerQueryOpen} onClose={() => setIsPowerQueryOpen(false)} activeRisk={activeRisk} updateActiveRisk={updateActiveRisk} />
 
-      <div className="flex flex-col bg-background shadow-sm z-20 relative">
-        <div className="flex items-end justify-between px-2 pt-2 text-sm border-b bg-muted/20">
-          <div className="flex items-end gap-4">
-            <div className="flex items-center gap-2 pr-4 border-r pb-1">
-              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => {setActiveRiskId(null); setActiveWidgetId(null)}}><ArrowLeft className="w-4 h-4" /></Button>
-              <span className="font-bold truncate max-w-[200px]">{activeRisk?.title}</span>
-            </div>
-            <div className="flex gap-1">
-              {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
-                <button key={tab} onClick={() => { setActiveRibbonTab(tab); if (isRibbonCollapsed) setIsRibbonCollapsed(false); }} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] ${activeRibbonTab === tab && !isRibbonCollapsed ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'}`}>{tab}</button>
-              ))}
-            </div>
-          </div>
-          <div className="pb-1 pr-2"><button onClick={() => setIsRibbonCollapsed(!isRibbonCollapsed)} className="p-1 text-muted-foreground hover:bg-muted hover:text-foreground rounded transition-colors" title={isRibbonCollapsed ? "Développer le ruban" : "Réduire le ruban"}>{isRibbonCollapsed ? <ChevronDown className="w-4 h-4"/> : <ChevronUp className="w-4 h-4"/>}</button></div>
-        </div>
-
-        <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
-          <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
-            {activeRibbonTab === 'Fichier' && (<div className="flex items-center text-xs text-muted-foreground px-4 italic">Menu fichier (Enregistrer, Exporter, Imprimer...)</div>)}
-            {activeRibbonTab === 'Accueil' && (
-              <>
-                <div className="flex gap-1 border-r pr-4">
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[50px] opacity-40 cursor-not-allowed"><Clipboard className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Coller</span></button>
-                  <div className="flex flex-col justify-center gap-1">
-                    <button className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Scissors className="w-3 h-3" /> Couper</button>
-                    <button className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Copy className="w-3 h-3" /> Copier</button>
-                    <button className="flex items-center gap-1 px-1 hover:bg-muted rounded opacity-40 cursor-not-allowed text-[10px]"><Paintbrush className="w-3 h-3" /> Reproduire</button>
-                  </div>
-                </div>
-                <div className="flex gap-1 border-r pr-4">
-                  <button onClick={() => setIsAddDataOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><DatabaseZap className="w-6 h-6 text-yellow-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Obtenir<br/>les données</span></button>
-                  <button onClick={() => setIsAddDataOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><FileSpreadsheet className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Classeur<br/>Excel</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Database className="w-6 h-6 text-blue-600" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Hub de<br/>données</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><TableProperties className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Entrer les<br/>données</span></button>
-                </div>
-                <div className="flex gap-1 border-r pr-4">
-                  <button onClick={() => setIsPowerQueryOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] bg-orange-50 hover:bg-orange-100 border border-orange-200"><FileEdit className="w-6 h-6 text-orange-600" /><span className="text-[10px] leading-tight text-center text-orange-700 font-bold">Transformer<br/>les données</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><RefreshCw className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Actualiser</span></button>
-                </div>
-                <div className="flex gap-1 border-r pr-4">
-                  <button onClick={addWidgetToStudio} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><BarChart3 className="w-6 h-6 text-blue-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveau<br/>visuel</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Type className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Zone de<br/>texte</span></button>
-                </div>
-                <div className="flex gap-1 border-r pr-4"><button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Calculator className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>mesure</span></button></div>
-                <div className="flex gap-1 pr-4"><button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><UploadCloud className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Publier</span></button></div>
-              </>
-            )}
-            {activeRibbonTab === 'Insérer' && (
-              <>
-                <div className="flex gap-1 border-r pr-4"><button onClick={handleAddNewTab} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Plus className="w-6 h-6 text-emerald-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouvelle<br/>page</span></button></div>
-                <div className="flex gap-1 border-r pr-4"><button onClick={addWidgetToStudio} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><PieChartIcon className="w-6 h-6 text-primary" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Nouveaux<br/>visuels</span></button></div>
-                <div className="flex gap-1 border-r pr-4">
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Type className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Zone de<br/>texte</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><MousePointerClick className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Boutons</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Shapes className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Formes</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><ImageIcon className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Images</span></button>
-                </div>
-              </>
-            )}
-            {activeRibbonTab === 'Modélisation' && (
-              <>
-                <div className="flex gap-1 border-r pr-4"><button onClick={() => setIsAppendOpen(true)} className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px]"><Combine className="w-6 h-6 text-purple-600" /><span className="text-[10px] leading-tight text-center text-foreground font-medium">Gérer les<br/>relations</span></button></div>
-                <div className="flex gap-1 border-r pr-4">
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Calculator className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>mesure</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Sigma className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>colonne</span></button>
-                  <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><TableProperties className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Nouvelle<br/>table</span></button>
-                </div>
-              </>
-            )}
-            {activeRibbonTab === 'Affichage' && (
-              <div className="flex gap-1 border-r pr-4">
-                <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Palette className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Thèmes</span></button>
-                <button className="flex flex-col items-center justify-center p-2 hover:bg-muted rounded-md gap-1.5 min-w-[72px] opacity-40 cursor-not-allowed"><Maximize className="w-6 h-6 text-muted-foreground" /><span className="text-[10px] leading-tight text-center text-muted-foreground">Vue Page</span></button>
-              </div>
-            )}
-            {(activeRibbonTab === 'Optimiser' || activeRibbonTab === 'Aide') && <div className="flex items-center text-xs text-muted-foreground px-4 italic">Options spécifiques à venir...</div>}
-          </div>
-        </div>
-      </div>
+      <DashboardRibbon
+        activeRiskTitle={activeRisk?.title} isRibbonCollapsed={isRibbonCollapsed} setIsRibbonCollapsed={setIsRibbonCollapsed}
+        activeRibbonTab={activeRibbonTab} setActiveRibbonTab={setActiveRibbonTab} onBack={() => {setActiveRiskId(null); setActiveWidgetId(null);}}
+        onAddData={() => setIsAddDataOpen(true)} onOpenPowerQuery={() => setIsPowerQueryOpen(true)} onAddWidget={addWidgetToStudio}
+        onAddTab={handleAddNewTab} onAppendData={() => setIsAppendOpen(true)}
+      />
 
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 flex flex-col min-w-0 bg-[#f3f2f1] dark:bg-slate-900/50">
@@ -1242,7 +1247,7 @@ export default function RisksView() {
                 )}
                 {activeTabId === tab.id && editingTabId !== tab.id && (
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild><button className="p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-primary transition-colors ml-1 shrink-0 outline-none" onClick={(e) => e.stopPropagation()}><MoreVertical className="w-3.5 h-3.5" /></button></DropdownMenuTrigger>
+                    <DropdownMenuTrigger asChild><button type="button" className="p-1 rounded-full hover:bg-muted text-muted-foreground hover:text-primary transition-colors ml-1 shrink-0 outline-none" onClick={(e) => e.stopPropagation()}><MoreVertical className="w-3.5 h-3.5" /></button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-48">
                       <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'left'); }} disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === 0} className="text-xs cursor-pointer"><ChevronLeft className="w-3.5 h-3.5 mr-2" /> Déplacer à gauche</DropdownMenuItem>
                       <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleMoveTab(tab.id, 'right'); }} disabled={activeRisk.tabs?.findIndex(t => t.id === tab.id) === (activeRisk.tabs?.length || 1) - 1} className="text-xs cursor-pointer"><ChevronRightIcon className="w-3.5 h-3.5 mr-2" /> Déplacer à droite</DropdownMenuItem>
@@ -1254,24 +1259,24 @@ export default function RisksView() {
                 )}
               </div>
             ))}
-            <div className="px-2 border-l ml-2 pl-4"><Button variant="ghost" size="sm" onClick={handleAddNewTab} className="h-8 px-2 text-muted-foreground hover:text-primary"><Plus className="w-4 h-4 mr-1"/> Page</Button></div>
+            <div className="px-2 border-l ml-2 pl-4"><Button type="button" variant="ghost" size="sm" onClick={handleAddNewTab} className="h-8 px-2 text-muted-foreground hover:text-primary"><Plus className="w-4 h-4 mr-1"/> Page</Button></div>
           </div>
         </div>
 
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-lg transition-all duration-300 overflow-hidden ${isFiltersOpen ? 'w-64' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-            <div onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1"><Filter className="w-4 h-4 text-muted-foreground shrink-0" />{isFiltersOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Filtres</h3>}</div>
-            {isFiltersOpen ? <button onClick={() => setIsFiltersOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0"><ChevronRight className="w-4 h-4" /></button> : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsFiltersOpen(true)} />}
+            <button type="button" onClick={() => setIsFiltersOpen(!isFiltersOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1"><Filter className="w-4 h-4 text-muted-foreground shrink-0" />{isFiltersOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Filtres</h3>}</button>
+            {isFiltersOpen ? <button type="button" onClick={() => setIsFiltersOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer"><ChevronRight className="w-4 h-4" onClick={() => setIsFiltersOpen(true)} /></button>}
           </div>
           <div className={`flex-1 overflow-y-auto p-3 ${!isFiltersOpen && 'hidden'}`}>
             {!activeWidget ? (<div className="text-center py-8 text-muted-foreground opacity-50 text-xs">Sélectionnez un indicateur.</div>) : (
               <div className="space-y-4 animate-in fade-in">
-                <div className="flex items-center justify-between min-w-0"><h4 className="text-[10px] font-black uppercase text-primary truncate">Sur cet indicateur</h4><Button variant="ghost" size="sm" onClick={addFilter} className="h-6 px-1 text-[10px] text-primary shrink-0"><Plus className="w-3 h-3 mr-1"/> Ajouter</Button></div>
+                <div className="flex items-center justify-between min-w-0"><h4 className="text-[10px] font-black uppercase text-primary truncate">Sur cet indicateur</h4><Button type="button" variant="ghost" size="sm" onClick={addFilter} className="h-6 px-1 text-[10px] text-primary shrink-0"><Plus className="w-3 h-3 mr-1"/> Ajouter</Button></div>
                 {(!activeWidget.filters || activeWidget.filters.length === 0) && <div className="p-3 text-center border border-dashed rounded bg-muted/20 text-[10px] text-muted-foreground">Aucun filtre actif.</div>}
                 <div className="space-y-3">
                   {activeWidget.filters?.map(f => (
                     <div key={f.id} className="p-2 border border-primary/20 bg-primary/5 rounded relative group flex flex-col gap-2 shadow-sm min-w-0">
-                      <button onClick={() => removeFilter(f.id)} className="absolute -top-2 -right-2 bg-rose-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10"><Trash2 className="w-3 h-3" /></button>
+                      <button type="button" onClick={() => removeFilter(f.id)} className="absolute -top-2 -right-2 bg-rose-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10"><Trash2 className="w-3 h-3" /></button>
                       <select value={f.column} onChange={e => updateFilter(f.id, { column: e.target.value, value: '' })} className="w-full h-7 rounded border px-1 text-xs font-bold bg-background truncate"><option value="">Donnée...</option>{activeDataset?.columns.map(c => <option key={c} value={c}>{c}</option>)}</select>
                       <select value={f.operator} onChange={e => updateFilter(f.id, { operator: e.target.value as FilterOperator })} className="w-full h-7 rounded border px-1 text-[10px] text-muted-foreground bg-background truncate"><option value="eq">Égal à</option><option value="neq">Différent de</option><option value="contains">Contient</option><option value="gt">Supérieur à</option><option value="lt">Inférieur à</option><option value="last_n_days">Derniers X jours</option></select>
                       <Input type={f.operator === 'last_n_days' ? 'number' : 'text'} value={f.value} onChange={e => updateFilter(f.id, { value: e.target.value })} placeholder={f.operator === 'last_n_days' ? 'Nombre de jours...' : 'Valeur...'} className="h-7 text-xs bg-background w-full" />
@@ -1285,19 +1290,19 @@ export default function RisksView() {
 
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-xl transition-all duration-300 overflow-hidden ${isVisOpen ? 'w-72' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-            <div onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1"><LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />{isVisOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Apparence</h3>}</div>
-            {isVisOpen ? <button onClick={() => setIsVisOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0"><ChevronRight className="w-4 h-4" /></button> : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsVisOpen(true)} />}
+            <button type="button" onClick={() => setIsVisOpen(!isVisOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1"><LayoutDashboard className="w-4 h-4 text-muted-foreground shrink-0" />{isVisOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Apparence</h3>}</button>
+            {isVisOpen ? <button type="button" onClick={() => setIsVisOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground shrink-0"><ChevronRight className="w-4 h-4" /></button> : <button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer"><ChevronRight className="w-4 h-4" onClick={() => setIsVisOpen(true)} /></button>}
           </div>
           <div className={`flex-1 overflow-y-auto p-4 ${!isVisOpen && 'hidden'}`}>
             {!activeWidget ? (<div className="text-center py-8 text-muted-foreground opacity-50 text-xs">Sélectionnez un indicateur pour configurer ses axes.</div>) : (
               <div className="space-y-4 animate-in fade-in">
                 <div className="space-y-2 flex flex-col min-w-0">
-                  <div className="flex justify-between items-center min-w-0 gap-2"><Input value={activeWidget.title} onChange={e => updateActiveWidget({ title: e.target.value })} className="h-8 text-xs font-bold w-full truncate" /><button onClick={() => setWidgetToDelete(activeWidget.id)} className="text-rose-500 hover:bg-rose-50 p-1.5 rounded shrink-0"><Trash2 className="w-4 h-4"/></button></div>
+                  <div className="flex justify-between items-center min-w-0 gap-2"><Input value={activeWidget.title} onChange={e => updateActiveWidget({ title: e.target.value })} className="h-8 text-xs font-bold w-full truncate" /><button type="button" onClick={() => setWidgetToDelete(activeWidget.id)} className="text-rose-500 hover:bg-rose-50 p-1.5 rounded shrink-0"><Trash2 className="w-4 h-4"/></button></div>
                   <div className="grid grid-cols-4 gap-1.5 border-b pb-4">
-                    <button onClick={() => updateActiveWidget({ type: 'bar' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'bar' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><BarChart3 className="w-4 h-4"/></button>
-                    <button onClick={() => updateActiveWidget({ type: 'area' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'area' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><LineChartIcon className="w-4 h-4"/></button>
-                    <button onClick={() => updateActiveWidget({ type: 'pie' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'pie' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><PieChartIcon className="w-4 h-4"/></button>
-                    <button onClick={() => updateActiveWidget({ type: 'kpi' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'kpi' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><Hash className="w-4 h-4"/></button>
+                    <button type="button" onClick={() => updateActiveWidget({ type: 'bar' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'bar' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><BarChart3 className="w-4 h-4"/></button>
+                    <button type="button" onClick={() => updateActiveWidget({ type: 'area' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'area' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><LineChartIcon className="w-4 h-4"/></button>
+                    <button type="button" onClick={() => updateActiveWidget({ type: 'pie' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'pie' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><PieChartIcon className="w-4 h-4"/></button>
+                    <button type="button" onClick={() => updateActiveWidget({ type: 'kpi' })} className={`p-2 flex items-center justify-center rounded border transition-colors ${activeWidget.type === 'kpi' ? 'bg-primary/10 border-primary text-primary' : 'hover:bg-muted text-muted-foreground'}`}><Hash className="w-4 h-4"/></button>
                   </div>
                 </div>
                 <div className="space-y-1 flex flex-col min-w-0">
@@ -1308,7 +1313,7 @@ export default function RisksView() {
                 </div>
                 {activeWidget.type !== 'kpi' && (
                   <div onDragOver={e => e.preventDefault()} onDrop={handleDropOnX} className="p-3 border rounded bg-secondary/10 flex flex-col gap-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors min-w-0">
-                    <div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{activeWidget.type === 'pie' ? 'Catégorie de découpage' : 'Axe d\'analyse (X)'}</Label>{activeWidget.type === 'pie' && activeWidget.xAxisCol && (<button onClick={() => updateActiveWidget({ xAxisCol: "" })} className="text-[10px] text-rose-500 font-bold hover:underline shrink-0">Vider</button>)}</div>
+                    <div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{activeWidget.type === 'pie' ? 'Catégorie de découpage' : 'Axe d\'analyse (X)'}</Label>{activeWidget.type === 'pie' && activeWidget.xAxisCol && (<button type="button" onClick={() => updateActiveWidget({ xAxisCol: "" })} className="text-[10px] text-rose-500 font-bold hover:underline shrink-0">Vider</button>)}</div>
                     <select value={activeWidget.xAxisCol || ''} onChange={e => updateActiveWidget({ xAxisCol: e.target.value })} className="w-full h-8 rounded border px-2 text-xs bg-background truncate"><option value="">Sélectionner...</option>{activeDataset?.columns.map(c => <option key={c} value={c}>{c}</option>)}</select>
                     {activeWidget.xAxisCol && (
                       <div className="flex flex-col gap-1 pt-1 border-t border-muted-foreground/10 min-w-0">
@@ -1319,11 +1324,11 @@ export default function RisksView() {
                   </div>
                 )}
                 <div onDragOver={e => e.preventDefault()} onDrop={handleDropOnY} className="p-3 border rounded bg-secondary/10 flex flex-col gap-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors min-w-0">
-                  <div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{activeWidget.type === 'pie' ? 'Données évaluées' : activeWidget.type === 'kpi' ? 'Valeur du KPI' : 'Mesure de l\'Axe Y'}</Label><button onClick={addSeries} className="text-[10px] text-primary font-bold hover:underline shrink-0">+ Ajouter</button></div>
+                  <div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{activeWidget.type === 'pie' ? 'Données évaluées' : activeWidget.type === 'kpi' ? 'Valeur du KPI' : 'Mesure de l\'Axe Y'}</Label><button type="button" onClick={addSeries} className="text-[10px] text-primary font-bold hover:underline shrink-0">+ Ajouter</button></div>
                   {activeWidget.series.length === 0 && <div className="text-[10px] text-muted-foreground italic text-center w-full">Déposez vos données ici.</div>}
                   {activeWidget.series.map((s) => (
                     <div key={s.id} className="p-2 bg-background border rounded flex flex-col gap-2 relative group min-w-0">
-                      <button onClick={() => removeSeries(s.id)} className="absolute -top-2 -right-2 bg-rose-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10"><Trash2 className="w-3 h-3" /></button>
+                      <button type="button" onClick={() => removeSeries(s.id)} className="absolute -top-2 -right-2 bg-rose-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10"><Trash2 className="w-3 h-3" /></button>
                       <select value={s.yAxisCol} onChange={e => { const val = e.target.value; const isMeas = activeRisk?.measures.some(m => m.name === val); updateSeries(s.id, { yAxisCol: val, isMeasure: isMeas }); }} className="w-full h-7 rounded border px-1 text-xs font-bold bg-background truncate">
                         <option value="">Sélectionner...</option>
                         {activeRisk?.measures.filter(m => m.datasetId === activeWidget.datasetId).length! > 0 && (<optgroup label="✨ Règles d'analyse personnalisées">{activeRisk?.measures.filter(m => m.datasetId === activeWidget.datasetId).map(m => <option key={m.name} value={m.name}>{m.name}</option>)}</optgroup>)}
@@ -1331,7 +1336,7 @@ export default function RisksView() {
                       </select>
                       {!s.isMeasure && (<select value={s.aggregation} onChange={e => updateSeries(s.id, { aggregation: e.target.value as AggregationType })} className="w-full h-7 rounded border px-1 text-[10px] bg-secondary/30 text-muted-foreground truncate"><option value="SUM">Faire la Somme</option><option value="AVERAGE">Calculer la Moyenne</option><option value="COUNT">Compter le nombre</option><option value="MAX">Valeur Maximum</option><option value="MIN">Valeur Minimum</option><option value="DISTINCTCOUNT">Valeurs Uniques</option></select>)}
                       <div className="flex items-center gap-1 mt-1"><Edit2 className="w-3 h-3 text-muted-foreground shrink-0"/><Input value={s.alias || ''} onChange={e => updateSeries(s.id, { alias: e.target.value })} placeholder="Renommer l'étiquette..." className="h-6 text-[10px] bg-background w-full placeholder:italic"/></div>
-                      {!(activeWidget.type === 'pie' && activeWidget.xAxisCol) && (<div className="flex gap-1 overflow-x-auto pb-1 pt-1">{COLORS.map(c => <button key={c} onClick={() => updateSeries(s.id, { color: c })} className={`w-4 h-4 shrink-0 rounded-full ${s.color === c ? 'ring-2 ring-primary ring-offset-1' : ''}`} style={{backgroundColor: c}}/>)}</div>)}
+                      {!(activeWidget.type === 'pie' && activeWidget.xAxisCol) && (<div className="flex gap-1 overflow-x-auto pb-1 pt-1">{COLORS.map(c => <button type="button" key={c} onClick={() => updateSeries(s.id, { color: c })} className={`w-4 h-4 shrink-0 rounded-full ${s.color === c ? 'ring-2 ring-primary ring-offset-1' : ''}`} style={{backgroundColor: c}}/>)}</div>)}
                     </div>
                   ))}
                 </div>
@@ -1349,12 +1354,12 @@ export default function RisksView() {
 
         <div className={`border-l bg-background flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 overflow-hidden ${isDataOpen ? 'w-64' : 'w-10'}`}>
           <div className="p-3 border-b bg-secondary/30 flex items-center justify-between min-w-0">
-            <div onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1"><Database className="w-4 h-4 text-muted-foreground shrink-0" />{isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Données</h3>}</div>
-            {isDataOpen ? (<div className="flex items-center gap-1 shrink-0"><Button variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner (Append)"><Combine className="w-3.5 h-3.5" /></Button><Button variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source"><Plus className="w-3.5 h-3.5" /></Button><button onClick={() => setIsDataOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground"><ChevronRight className="w-4 h-4" /></button></div>) : (<ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 cursor-pointer" onClick={() => setIsDataOpen(true)} />)}
+            <button type="button" onClick={() => setIsDataOpen(!isDataOpen)} className="flex items-center gap-2 truncate cursor-pointer hover:text-primary transition-colors flex-1"><Database className="w-4 h-4 text-muted-foreground shrink-0" />{isDataOpen && <h3 className="font-bold text-xs uppercase tracking-wider truncate">Données</h3>}</button>
+            {isDataOpen ? (<div className="flex items-center gap-1 shrink-0"><Button type="button" variant="ghost" size="sm" onClick={() => setIsAppendOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Fusionner (Append)"><Combine className="w-3.5 h-3.5" /></Button><Button type="button" variant="ghost" size="sm" onClick={() => setIsAddDataOpen(true)} className="h-6 px-1.5 text-primary hover:bg-primary/10" title="Ajouter une source"><Plus className="w-3.5 h-3.5" /></Button><button type="button" onClick={() => setIsDataOpen(false)} className="p-1 hover:bg-secondary rounded text-muted-foreground"><ChevronRight className="w-4 h-4" /></button></div>) : (<button type="button" className="p-0 text-muted-foreground shrink-0 cursor-pointer"><ChevronRight className="w-4 h-4" onClick={() => setIsDataOpen(true)} /></button>)}
           </div>
           <div className={`flex-1 overflow-y-auto p-2 ${!isDataOpen && 'hidden'}`}>
             {activeRisk?.datasets.filter(ds => !ds.isHidden).map(ds => renderDatasetItem(ds, false))}
-            {activeRisk && activeRisk.datasets.some(ds => ds.isHidden) && (<div className="mt-4 pt-2 border-t border-dashed"><Button variant="ghost" className="w-full h-8 text-[10px] uppercase font-bold tracking-wider text-muted-foreground hover:bg-muted/50" onClick={() => setShowHiddenDatasets(!showHiddenDatasets)}>{showHiddenDatasets ? <EyeOff className="w-3 h-3 mr-2" /> : <Eye className="w-3 h-3 mr-2" />}{showHiddenDatasets ? "Masquer les tables retirées" : `Voir ${activeRisk.datasets.filter(d => d.isHidden).length} table(s) retirée(s)`}</Button></div>)}
+            {activeRisk && activeRisk.datasets.some(ds => ds.isHidden) && (<div className="mt-4 pt-2 border-t border-dashed"><Button type="button" variant="ghost" className="w-full h-8 text-[10px] uppercase font-bold tracking-wider text-muted-foreground hover:bg-muted/50" onClick={() => setShowHiddenDatasets(!showHiddenDatasets)}>{showHiddenDatasets ? <EyeOff className="w-3 h-3 mr-2" /> : <Eye className="w-3 h-3 mr-2" />}{showHiddenDatasets ? "Masquer les tables retirées" : `Voir ${activeRisk.datasets.filter(d => d.isHidden).length} table(s) retirée(s)`}</Button></div>)}
             {showHiddenDatasets && <div className="mt-2 pl-2 border-l-2 border-muted">{activeRisk?.datasets.filter(ds => ds.isHidden).map(ds => renderDatasetItem(ds, true))}</div>}
           </div>
         </div>
@@ -1362,8 +1367,8 @@ export default function RisksView() {
         <Dialog open={isAddDataOpen} onOpenChange={(o) => { setIsAddDataOpen(o); if(!o) resetWizard(); }}>
           <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
             <DialogHeader><DialogTitle>Ajouter des sources au modèle</DialogTitle></DialogHeader>
-            {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label className="text-primary font-bold">Fichier source (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" /><Button variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2"><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
-            {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<div key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge></div>))}</div><div className="flex gap-2 pt-4"><Button variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button></div></div>)}
+            {wizardStep === 1 && (<div className="space-y-4 py-4"><div className="space-y-2"><Label className="text-primary font-bold">Fichier source (.xlsx, .csv)</Label>{isImporting ? (<div className="border-2 border-dashed rounded-xl p-8 text-center bg-muted/10"><Loader2 className="w-8 h-8 text-primary animate-spin mx-auto mb-2" /></div>) : (<div className="relative"><input type="file" accept=".csv, .xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" /><Button type="button" variant="outline" className="w-full h-24 border-dashed border-2 flex-col gap-2"><FileSpreadsheet className="w-6 h-6" /><span>Sélectionner le fichier</span></Button></div>)}</div></div>)}
+            {wizardStep === 2 && (<div className="space-y-6 py-4"><div className="max-h-[200px] overflow-y-auto space-y-2 border p-2 rounded-md">{availableSheets.map(sheet => (<button type="button" key={sheet.id} onClick={() => toggleSheetSelection(sheet.id)} className={`w-full flex justify-between p-3 rounded border cursor-pointer ${selectedSheets.includes(sheet.id) ? 'bg-primary/5 border-primary shadow-sm' : 'hover:bg-muted'}`}><div className="flex items-center gap-3"><CheckSquare className={`w-5 h-5 ${selectedSheets.includes(sheet.id) ? 'text-primary' : 'opacity-30'}`} /><p className="font-bold text-sm">{sheet.name}</p></div><Badge variant="secondary">{sheet.data.length} entrées</Badge></button>))}</div><div className="flex gap-2 pt-4"><Button type="button" variant="outline" onClick={() => setWizardStep(1)} className="flex-1">Retour</Button><Button type="button" onClick={finalizeAddData} className="flex-1 bg-emerald-600 hover:bg-emerald-700" disabled={selectedSheets.length === 0}>Ajouter</Button></div></div>)}
           </DialogContent>
         </Dialog>
 
@@ -1371,7 +1376,7 @@ export default function RisksView() {
           <DialogContent className="sm:max-w-[500px]">
             <DialogHeader><DialogTitle className="flex items-center gap-2"><Combine className="w-5 h-5 text-primary" /> Fusionner des tables</DialogTitle></DialogHeader>
             <div className="space-y-4 py-4"><div className="space-y-2"><Label>Première table</Label><select value={appendSource1} onChange={e => setAppendSource1(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background"><option value="">Sélectionner...</option>{activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}</select></div><div className="flex justify-center"><Plus className="w-4 h-4 text-muted-foreground" /></div><div className="space-y-2"><Label>Table à empiler</Label><select value={appendSource2} onChange={e => setAppendSource2(e.target.value)} className="w-full h-10 rounded border px-3 text-sm bg-background"><option value="">Sélectionner...</option>{activeRisk?.datasets.map(d => <option key={d.id} value={d.id}>{d.name} {d.isHidden ? '(Masqué)' : ''}</option>)}</select></div><div className="space-y-2 pt-4 border-t"><Label className="text-primary font-bold">Nom de la table fusionnée</Label><Input value={appendNewName} onChange={e => setAppendNewName(e.target.value)} /></div></div>
-            <DialogFooter><Button variant="outline" onClick={() => setIsAppendOpen(false)}>Annuler</Button><Button onClick={handleAppendDatasets} disabled={!appendSource1 || !appendSource2 || !appendNewName}>Fusionner</Button></DialogFooter>
+            <DialogFooter><Button type="button" variant="outline" onClick={() => setIsAppendOpen(false)}>Annuler</Button><Button type="button" onClick={handleAppendDatasets} disabled={!appendSource1 || !appendSource2 || !appendNewName}>Fusionner</Button></DialogFooter>
           </DialogContent>
         </Dialog>
 
