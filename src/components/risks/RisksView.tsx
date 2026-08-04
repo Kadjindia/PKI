@@ -280,7 +280,7 @@ const applyFiltersToData = (data: any[], filters: FilterConfig[]): any[] => {
 };
 
 // ============================================================================
-// LECTURE & PARSING EXCEL (Évite l'imbrication profonde)
+// LECTURE & PARSING EXCEL
 // ============================================================================
 const cleanDatasetRows = (rawData: any[], dateColumn: string | undefined): any[] => {
   const filtered = rawData.filter(row => {
@@ -471,6 +471,12 @@ const getSeriesName = (s: ChartSeries) => {
   return s.isMeasure ? s.yAxisCol : `${s.aggregation} : ${s.yAxisCol}`;
 };
 
+const getYAxisLabelTitle = (type: string) => {
+  if (type === 'pie') return 'Données évaluées';
+  if (type === 'kpi') return 'Valeur du KPI';
+  return 'Mesure de l\'Axe Y';
+};
+
 const KpiWidget = ({ widget, kpiValues }: any) => (
   <div className="flex flex-col h-full justify-center items-center px-4 gap-6 overflow-y-auto">
     {widget.series.map((s: ChartSeries, idx: number) => (
@@ -592,7 +598,7 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
 });
 
 // ============================================================================
-// COMPOSANT RUBAN ET MENUS (Extraction pour réduire la complexité de RisksView)
+// COMPOSANT RUBAN ET MENUS
 // ============================================================================
 const DashboardRibbon = ({
   activeRiskTitle, isRibbonCollapsed, setIsRibbonCollapsed, activeRibbonTab, setActiveRibbonTab,
@@ -820,7 +826,6 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
     </Dialog>
   );
 };
-
 
 // ============================================================================
 // COMPOSANT PRINCIPAL (VIEW) - Refactorisé
@@ -1324,7 +1329,7 @@ export default function RisksView() {
                   </div>
                 )}
                 <div onDragOver={e => e.preventDefault()} onDrop={handleDropOnY} className="p-3 border rounded bg-secondary/10 flex flex-col gap-3 shadow-sm border-dashed hover:bg-primary/5 transition-colors min-w-0">
-                  <div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{activeWidget.type === 'pie' ? 'Données évaluées' : activeWidget.type === 'kpi' ? 'Valeur du KPI' : 'Mesure de l\'Axe Y'}</Label><button type="button" onClick={addSeries} className="text-[10px] text-primary font-bold hover:underline shrink-0">+ Ajouter</button></div>
+                  <div className="flex items-center justify-between min-w-0 gap-2"><Label className="text-[10px] uppercase font-bold text-muted-foreground truncate">{getYAxisLabelTitle(activeWidget.type)}</Label><button type="button" onClick={addSeries} className="text-[10px] text-primary font-bold hover:underline shrink-0">+ Ajouter</button></div>
                   {activeWidget.series.length === 0 && <div className="text-[10px] text-muted-foreground italic text-center w-full">Déposez vos données ici.</div>}
                   {activeWidget.series.map((s) => (
                     <div key={s.id} className="p-2 bg-background border rounded flex flex-col gap-2 relative group min-w-0">
