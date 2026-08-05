@@ -28,16 +28,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import {
-  Users, Loader2, Trash2, Plus,
-  TrendingUp, AlertTriangle, Upload, ShieldCheck, UserX, Activity,
+  Users, Loader2, Trash2, Plus, TrendingUp, AlertTriangle, Upload, ShieldCheck, UserX, Activity,
   Mail, MousePointer, Key, Flag, Paperclip, BookOpen, Search,
   ArrowUpDown, ArrowDown, ArrowUp, Eye, Target, BarChart3, CalendarDays, Clock, CheckCircle2,
   Monitor, Video, CheckSquare, Mic, UserMinus
@@ -46,6 +40,7 @@ import {
 // ============================================================================
 // UTILITAIRES DE SÉCURITÉ ET CALCULS
 // ============================================================================
+
 const safeNum = (val: unknown): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
@@ -54,8 +49,9 @@ const safeNum = (val: unknown): number => {
 
 // Sécurité contre la casse de recherche et protection contre le [object Object]
 const safeString = (val: unknown): string => {
-  if (!val || typeof val === 'object') return "";
-  return String(val).toLowerCase();
+  if (typeof val === 'string') return val.trim().toLowerCase();
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val).toLowerCase();
+  return "";
 };
 
 const calculatePercentage = (part: number, total: number) => {
@@ -90,7 +86,7 @@ const parseExcelDate = (excelDate: unknown) => {
   return undefined;
 };
 
-// Analyseur CSV sécurisé sans regex vulnérable (Correction du ReDoS Catastrophic Backtracking)
+// Analyseur CSV sécurisé avec boucle for-of
 const parseCSVLine = (text: string): string[] => {
   const result: string[] = [];
   let current = '';
@@ -126,23 +122,75 @@ const isAffirmative = (val: string | undefined) => val !== undefined && val.leng
 // ============================================================================
 // MOTEURS D'EXTRACTION DE DONNÉES (Séparés pour réduire la complexité cognitive)
 // ============================================================================
+
+const processSingleProofpointLine = (
+  cols: string[], headers: string[], indices: Record<string, number>, existingProfilesMap: Map<string, PhishingProfile>
+) => {
+  if (cols.length < headers.length - 2) return null;
+
+  const email = cols[indices.idxEmail].toLowerCase();
+  let hasOpened = isAffirmative(cols[indices.idxOpened]);
+  const hasAttachmentOpened = isAffirmative(cols[indices.idxAttachment]);
+  let hasClicked = isAffirmative(cols[indices.idxClicked]);
+  const hasCompromised = isAffirmative(cols[indices.idxCompromised]);
+  const hasTraining = isAffirmative(cols[indices.idxTraining]);
+  const hasReported = isAffirmative(cols[indices.idxReported]);
+
+  if (hasTraining || hasCompromised) hasClicked = true;
+  if (hasClicked || hasAttachmentOpened) hasOpened = true;
+
+  const existing = existingProfilesMap.get(email) || {
+    email, firstName: '', lastName: '', department: '', totalCampaigns: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, riskScore: 0, lastCampaignClicked: false, isConsecutive: false
+  };
+
+  const finalFirstName = existing.firstName || (indices.idxFirstName !== -1 ? cols[indices.idxFirstName] : '');
+  const finalLastName = existing.lastName || (indices.idxLastName !== -1 ? cols[indices.idxLastName] : '');
+  const finalDepartment = existing.department || (indices.idxOrg !== -1 ? cols[indices.idxOrg] : '');
+
+  const newOpenedCount = safeNum(existing.openedCount) + (hasOpened ? 1 : 0);
+  const newAttachmentCount = safeNum(existing.attachmentOpenedCount) + (hasAttachmentOpened ? 1 : 0);
+  const newClickedCount = safeNum(existing.clickedCount) + (hasClicked ? 1 : 0);
+  const newCompromisedCount = safeNum(existing.compromisedCount) + (hasCompromised ? 1 : 0);
+  const newTrainingCount = safeNum(existing.trainingCompletedCount) + (hasTraining ? 1 : 0);
+  const newReportedCount = safeNum(existing.reportedCount) + (hasReported ? 1 : 0);
+  const newTotalCampaigns = safeNum(existing.totalCampaigns) + 1;
+
+  const fellThisTime = hasClicked || hasAttachmentOpened;
+  const fellInPast = safeNum(existing.clickedCount) > 0 || safeNum(existing.attachmentOpenedCount) > 0;
+  const isRecidivist = fellThisTime && fellInPast;
+  const newConsecutive = existing.isConsecutive || isRecidivist;
+
+  const riskScore = calculateRiskScore(newClickedCount, newAttachmentCount, newCompromisedCount, newReportedCount, newTrainingCount, newConsecutive);
+
+  const updatedProfile: PhishingProfile = {
+    email, firstName: finalFirstName, lastName: finalLastName, department: finalDepartment,
+    totalCampaigns: newTotalCampaigns, openedCount: newOpenedCount, attachmentOpenedCount: newAttachmentCount, clickedCount: newClickedCount,
+    compromisedCount: newCompromisedCount, trainingCompletedCount: newTrainingCount, reportedCount: newReportedCount,
+    riskScore: riskScore, lastCampaignClicked: fellThisTime, isConsecutive: newConsecutive
+  };
+
+  return { email, hasOpened, hasAttachmentOpened, hasClicked, hasCompromised, hasTraining, hasReported, isRecidivist, updatedProfile };
+};
+
 const processProofpointData = (text: string, profiles: PhishingProfile[]) => {
   const lines = text.split('\n');
   if (lines.length < 2) throw new Error("Fichier vide ou invalide.");
 
   const headers = parseCSVLine(lines[0]);
-  const idxEmail = headers.indexOf('Email Address');
-  const idxFirstName = headers.indexOf('First Name');
-  const idxLastName = headers.indexOf('Last Name');
-  const idxOrg = headers.findIndex(h => ['DOMAINE', 'ORGANISATION', 'Group', 'EMPLOI'].includes(h));
-  const idxOpened = headers.findIndex(h => ['Date Email Opened', 'Primary Email Opened'].includes(h));
-  const idxAttachment = headers.findIndex(h => ['Primary Attachment Opened', 'Attachment Opened'].includes(h));
-  const idxClicked = headers.findIndex(h => ['Date Clicked', 'Primary Clicked'].includes(h));
-  const idxCompromised = headers.findIndex(h => ['Primary Compromised Login', 'Weak Egress'].includes(h));
-  const idxTraining = headers.indexOf('Acknowledgement Completed');
-  const idxReported = headers.findIndex(h => ['Date Reported', 'Reported'].includes(h));
+  const indices = {
+    idxEmail: headers.indexOf('Email Address'),
+    idxFirstName: headers.indexOf('First Name'),
+    idxLastName: headers.indexOf('Last Name'),
+    idxOrg: headers.findIndex(h => ['DOMAINE', 'ORGANISATION', 'Group', 'EMPLOI'].includes(h)),
+    idxOpened: headers.findIndex(h => ['Date Email Opened', 'Primary Email Opened'].includes(h)),
+    idxAttachment: headers.findIndex(h => ['Primary Attachment Opened', 'Attachment Opened'].includes(h)),
+    idxClicked: headers.findIndex(h => ['Date Clicked', 'Primary Clicked'].includes(h)),
+    idxCompromised: headers.findIndex(h => ['Primary Compromised Login', 'Weak Egress'].includes(h)),
+    idxTraining: headers.indexOf('Acknowledgement Completed'),
+    idxReported: headers.findIndex(h => ['Date Reported', 'Reported'].includes(h))
+  };
 
-  if (idxEmail === -1) throw new Error("Colonne 'Email Address' introuvable dans le CSV.");
+  if (indices.idxEmail === -1) throw new Error("Colonne 'Email Address' introuvable dans le CSV.");
 
   let target = 0, opened = 0, attachmentOpened = 0, clicked = 0, compromised = 0, trainingCompleted = 0, reported = 0, recidivists = 0;
   const failedEmails: string[] = [];
@@ -154,84 +202,77 @@ const processProofpointData = (text: string, profiles: PhishingProfile[]) => {
     const line = lines[i];
     if (!line.trim()) continue;
     const cols = parseCSVLine(line);
-    if (cols.length < headers.length - 2) continue;
 
-    const email = cols[idxEmail].toLowerCase();
-    let hasOpened = isAffirmative(cols[idxOpened]);
-    const hasAttachmentOpened = isAffirmative(cols[idxAttachment]);
-    let hasClicked = isAffirmative(cols[idxClicked]);
-    const hasCompromised = isAffirmative(cols[idxCompromised]);
-    const hasTraining = isAffirmative(cols[idxTraining]);
-    const hasReported = isAffirmative(cols[idxReported]);
-
-    if (hasTraining) hasClicked = true;
-    if (hasCompromised) hasClicked = true;
-    if (hasClicked || hasAttachmentOpened) hasOpened = true;
+    const res = processSingleProofpointLine(cols, headers, indices, existingProfilesMap);
+    if (!res) continue;
 
     target++;
-    if (hasOpened) opened++;
-    if (hasAttachmentOpened) attachmentOpened++;
-    if (hasClicked) { clicked++; failedEmails.push(email); }
-    if (hasCompromised) compromised++;
-    if (hasTraining) trainingCompleted++;
-    if (hasReported) reported++;
+    if (res.hasOpened) opened++;
+    if (res.hasAttachmentOpened) attachmentOpened++;
+    if (res.hasClicked) { clicked++; failedEmails.push(res.email); }
+    if (res.hasCompromised) compromised++;
+    if (res.hasTraining) trainingCompleted++;
+    if (res.hasReported) reported++;
+    if (res.isRecidivist) recidivists++;
 
-    const existing = existingProfilesMap.get(email) || {
-      email, firstName: '', lastName: '', department: '', totalCampaigns: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, riskScore: 0, lastCampaignClicked: false, isConsecutive: false
-    };
-
-    const newOpenedCount = safeNum(existing.openedCount) + (hasOpened ? 1 : 0);
-    const newAttachmentCount = safeNum(existing.attachmentOpenedCount) + (hasAttachmentOpened ? 1 : 0);
-    const newClickedCount = safeNum(existing.clickedCount) + (hasClicked ? 1 : 0);
-    const newCompromisedCount = safeNum(existing.compromisedCount) + (hasCompromised ? 1 : 0);
-    const newTrainingCount = safeNum(existing.trainingCompletedCount) + (hasTraining ? 1 : 0);
-    const newReportedCount = safeNum(existing.reportedCount) + (hasReported ? 1 : 0);
-    const newTotalCampaigns = safeNum(existing.totalCampaigns) + 1;
-
-    const fellThisTime = hasClicked || hasAttachmentOpened;
-    const fellInPast = safeNum(existing.clickedCount) > 0 || safeNum(existing.attachmentOpenedCount) > 0;
-    const isRecidivist = fellThisTime && fellInPast;
-    const newConsecutive = existing.isConsecutive || isRecidivist;
-    if (isRecidivist) recidivists++;
-
-    detailedResults.push({ email, opened: hasOpened, attachment: hasAttachmentOpened, clicked: hasClicked, compromised: hasCompromised, training: hasTraining, reported: hasReported, isRecidivist: isRecidivist });
-    const riskScore = calculateRiskScore(newClickedCount, newAttachmentCount, newCompromisedCount, newReportedCount, newTrainingCount, newConsecutive);
-
-    updatedProfiles.push({
-      email, firstName: existing.firstName || (idxFirstName !== -1 ? cols[idxFirstName] : ''), lastName: existing.lastName || (idxLastName !== -1 ? cols[idxLastName] : ''), department: existing.department || (idxOrg !== -1 ? cols[idxOrg] : ''),
-      totalCampaigns: newTotalCampaigns, openedCount: newOpenedCount, attachmentOpenedCount: newAttachmentCount, clickedCount: newClickedCount,
-      compromisedCount: newCompromisedCount, trainingCompletedCount: newTrainingCount, reportedCount: newReportedCount,
-      riskScore: riskScore, lastCampaignClicked: fellThisTime, isConsecutive: newConsecutive
-    });
+    detailedResults.push({ email: res.email, opened: res.hasOpened, attachment: res.hasAttachmentOpened, clicked: res.hasClicked, compromised: res.hasCompromised, training: res.hasTraining, reported: res.hasReported, isRecidivist: res.isRecidivist });
+    updatedProfiles.push(res.updatedProfile);
   }
 
   return { target, opened, attachmentOpened, clicked, compromised, trainingCompleted, reported, recidivists, failedEmails, updatedProfiles, detailedResults };
 };
 
+const processLmsRow = (row: any, keys: Record<string, string>, currentProfilesMap: Map<string, PhishingProfile>, existingCompletedEmails: string[]) => {
+  const email = String(row[keys.mailKey] || "").trim().toLowerCase();
+  const etat = String(row[keys.etatKey] || "").trim().toLowerCase();
+  const parcours = String(row[keys.parcoursKey] || "").trim();
+
+  if (!email || email === "undefined" || email === "") return null;
+
+  let isCompleted = false;
+  let status = "notStarted";
+
+  if (etat.includes('terminé') || etat.includes('validé') || etat.includes('complété') || etat === 'achevé') {
+    isCompleted = true; status = "completed";
+  } else if (etat.includes('en cours') || etat.includes('progress') || etat.includes('initié')) {
+    status = "inProgress";
+  }
+
+  let updatedProfile = null;
+  if (isCompleted && currentProfilesMap.has(email) && !existingCompletedEmails.includes(email)) {
+    const p = { ...currentProfilesMap.get(email)! };
+    p.trainingCompletedCount = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count) + 1;
+    p.riskScore = calculateRiskScore(safeNum(p.clickedCount), safeNum(p.attachmentOpenedCount), safeNum(p.compromisedCount), safeNum(p.reportedCount), p.trainingCompletedCount, p.isConsecutive || false);
+    updatedProfile = p;
+  }
+
+  return { email, parcours, status, updatedProfile };
+};
+
 const processLmsWorkbookData = (workbook: XLSX.WorkBook, modules: ElearningModule[], profiles: PhishingProfile[]) => {
   let validRows: any[] = [];
-  let mailKey: string | undefined;
-  let parcoursKey: string | undefined;
-  let etatKey: string | undefined;
-  let startDateKey: string | undefined;
-  let endDateKey: string | undefined;
+  let keys: Record<string, string> = {} as any;
 
   for (const sheetName of workbook.SheetNames) {
     const worksheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet);
     if (rows.length > 0) {
-      const keys = Object.keys(rows[0]);
-      const mKey = keys.find(k => k.trim().toLowerCase() === 'mail');
-      const pKey = keys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
-      const eKey = keys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
-      startDateKey = keys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début');
-      endDateKey = keys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin');
+      const objKeys = Object.keys(rows[0]);
+      const mKey = objKeys.find(k => k.trim().toLowerCase() === 'mail');
+      const pKey = objKeys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
+      const eKey = objKeys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
+      const startKey = objKeys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début');
+      const endKey = objKeys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin');
 
-      if (mKey && pKey && eKey) { validRows = rows; mailKey = mKey; parcoursKey = pKey; etatKey = eKey; break; }
+      if (mKey && pKey && eKey) {
+        validRows = rows;
+        keys = { mailKey: mKey, parcoursKey: pKey, etatKey: eKey, startDateKey: startKey || '', endDateKey: endKey || '' };
+        break;
+      }
     }
   }
 
-  if (validRows.length === 0 || !mailKey || !parcoursKey || !etatKey) throw new Error("Colonnes obligatoires introuvables.");
+  if (validRows.length === 0 || !keys.mailKey) throw new Error("Colonnes obligatoires introuvables dans l'Excel.");
 
   let moduleName = "";
   let startDateFound: string | undefined = undefined;
@@ -241,11 +282,11 @@ const processLmsWorkbookData = (workbook: XLSX.WorkBook, modules: ElearningModul
   const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
 
   validRows.forEach((row) => {
-    if (!endDateFound && endDateKey && row[endDateKey]) endDateFound = parseExcelDate(row[endDateKey]);
-    if (!startDateFound && startDateKey && row[startDateKey]) startDateFound = parseExcelDate(row[startDateKey]);
+    if (!endDateFound && keys.endDateKey && row[keys.endDateKey]) endDateFound = parseExcelDate(row[keys.endDateKey]);
+    if (!startDateFound && keys.startDateKey && row[keys.startDateKey]) startDateFound = parseExcelDate(row[keys.startDateKey]);
   });
 
-  const tempName = String(validRows[0][parcoursKey] || "").trim();
+  const tempName = String(validRows[0][keys.parcoursKey] || "").trim();
   const matchingModules = modules.filter(m => m.name.toLowerCase() === tempName.toLowerCase() && (m.formatType === 'E-Learning' || (m as any).format_type === 'E-Learning'));
   let matchedModule: ElearningModule | undefined = undefined;
   let isRenewal = false;
@@ -262,24 +303,22 @@ const processLmsWorkbookData = (workbook: XLSX.WorkBook, modules: ElearningModul
   const newlyCompletedEmails: string[] = [];
 
   validRows.forEach((row) => {
-    const email = String(row[mailKey!] || "").trim().toLowerCase();
-    const etat = String(row[etatKey!] || "").trim().toLowerCase();
-    const parcours = String(row[parcoursKey!] || "").trim();
-    if (!email || email === "undefined" || email === "") return;
-    if (parcours && !moduleName) moduleName = parcours;
+    const res = processLmsRow(row, keys, currentProfilesMap, existingCompletedEmails);
+    if (!res) return;
 
+    if (res.parcours && !moduleName) moduleName = res.parcours;
     total++;
-    let isCompleted = false;
-    if (etat.includes('terminé') || etat.includes('validé') || etat.includes('complété') || etat === 'achevé') { completed++; isCompleted = true; }
-    else if (etat.includes('en cours') || etat.includes('progress') || etat.includes('initié')) { inProgress++; }
-    else { notStarted++; }
 
-    if (isCompleted && currentProfilesMap.has(email) && !existingCompletedEmails.includes(email)) {
-      newlyCompletedEmails.push(email);
-      const p = { ...currentProfilesMap.get(email)! };
-      p.trainingCompletedCount = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count) + 1;
-      p.riskScore = calculateRiskScore(safeNum(p.clickedCount), safeNum(p.attachmentOpenedCount), safeNum(p.compromisedCount), safeNum(p.reportedCount), p.trainingCompletedCount, p.isConsecutive || false);
-      profilesToUpdate.push(p);
+    if (res.status === "completed") {
+      completed++;
+      if (res.updatedProfile && !newlyCompletedEmails.includes(res.email)) {
+        newlyCompletedEmails.push(res.email);
+        profilesToUpdate.push(res.updatedProfile);
+      }
+    } else if (res.status === "inProgress") {
+      inProgress++;
+    } else {
+      notStarted++;
     }
   });
 
@@ -293,6 +332,541 @@ const processLmsWorkbookData = (workbook: XLSX.WorkBook, modules: ElearningModul
 };
 
 // ============================================================================
+// SOUS-COMPOSANTS DE RENDU
+// ============================================================================
+
+const KpiGrid = ({ campaigns, profiles, elearningModules, sessionModules }: any) => {
+  const highRiskProfiles = profiles.filter((p: PhishingProfile) => safeNum(p.riskScore) >= 60);
+  const currentYear = new Date().getFullYear();
+  const campaignsThisYear = campaigns.filter((c: PhishingCampaign) => new Date(c.sendDate).getFullYear() === currentYear);
+  const targetCampaignsPerYear = 4;
+  const campaignProgress = Math.min(100, Math.round((campaignsThisYear.length / targetCampaignsPerYear) * 100));
+  const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
+
+  const totalElearningAssigned = elearningModules.reduce((acc: number, m: ElearningModule) => acc + safeNum(m.totalAssigned), 0);
+  const totalElearningCompleted = elearningModules.reduce((acc: number, m: ElearningModule) => acc + safeNum(m.completedCount), 0);
+  const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
+  const elearningGoalReached = elearningRate >= 95;
+  const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100));
+
+  const sessionsThisYear = sessionModules.filter((m: ElearningModule) => {
+    const dStr = m.startDate || m.createdAt || "";
+    if (!dStr) return false;
+    return new Date(dStr).getFullYear() === currentYear;
+  });
+  const targetSessionsPerYear = 4;
+  const sessionProgress = Math.min(100, Math.round((sessionsThisYear.length / targetSessionsPerYear) * 100));
+  const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Phishing</CardTitle>
+          <Target className={`w-4 h-4 ${isGoalReached ? 'text-emerald-500' : 'text-blue-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold flex items-baseline gap-1">{campaignsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetCampaignsPerYear}</span></div>
+          <Progress value={campaignProgress} className={`h-1 mt-2 ${isGoalReached ? '[&>div]:bg-emerald-500' : ''}`} />
+          <p className="text-[9px] text-muted-foreground mt-1">Campagnes annuelles</p>
+        </CardContent>
+      </Card>
+
+      <Card className={`border-l-4 shadow-sm ${campaigns.length > 0 && (safeNum(campaigns[0].compromisedCount) / safeNum(campaigns[0].targetCount) * 100) > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Compromission</CardTitle>
+          <AlertTriangle className="w-4 h-4 text-rose-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].compromisedCount, campaigns[0].targetCount) : 0}%</div>
+          <p className="text-[9px] text-muted-foreground mt-1">Dernière campagne</p>
+        </CardContent>
+      </Card>
+
+      <Card className="border-l-4 border-l-blue-500 shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Signalements</CardTitle>
+          <ShieldCheck className="w-4 h-4 text-blue-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].reportedCount, campaigns[0].targetCount) : 0}%</div>
+          <p className="text-[9px] text-muted-foreground mt-1">Dernière campagne</p>
+        </CardContent>
+      </Card>
+
+      <Card className={`border-l-4 shadow-sm ${highRiskProfiles.length > 0 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Risque &gt; 60</CardTitle>
+          <UserX className="w-4 h-4 text-amber-500" />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold">{highRiskProfiles.length}</div>
+          <p className="text-[9px] text-muted-foreground mt-1">Collaborateurs à suivre</p>
+        </CardContent>
+      </Card>
+
+      <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
+          <Mic className={`w-4 h-4 ${isSessionGoalReached ? 'text-emerald-500' : 'text-amber-500'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold flex items-baseline gap-1">{sessionsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetSessionsPerYear}</span></div>
+          <Progress value={sessionProgress} className={`h-1 mt-2 ${isSessionGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-amber-500'}`} />
+          <p className="text-[9px] text-muted-foreground mt-1">Webinaires / Présentiel</p>
+        </CardContent>
+      </Card>
+
+      <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Couverture E-Learning</CardTitle>
+          <Target className={`w-4 h-4 ${elearningGoalReached ? 'text-emerald-500' : 'text-primary'}`} />
+        </CardHeader>
+        <CardContent>
+          <div className="text-xl font-bold flex items-baseline gap-1">{elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span></div>
+          <Progress value={elearningProgress} className={`h-1 mt-2 ${elearningGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-primary'}`} />
+          <p className="text-[9px] text-muted-foreground mt-1">Objectif de réalisation</p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+const PhishingTabContent = ({ campaigns, setSelectedCampaign, phishingView, setPhishingView }: any) => {
+  if (campaigns.length === 0) {
+    return <div className="p-12 text-center text-muted-foreground">Aucune campagne. Importez un CSV Proofpoint pour commencer.</div>;
+  }
+
+  if (phishingView === "historique") {
+    return (
+      <>
+        <div className="px-6 py-4 flex gap-2 border-b border-border bg-muted/10">
+          <Button variant="default" size="sm" onClick={() => setPhishingView("historique")}><Activity className="w-4 h-4 mr-2" /> Historique et Tableau</Button>
+          <Button variant="outline" size="sm" onClick={() => setPhishingView("bilan")}><BarChart3 className="w-4 h-4 mr-2" /> Bilan et Évolution</Button>
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/30">
+              <TableHead>Scénario</TableHead>
+              <TableHead>Date</TableHead>
+              <TableHead>Cibles</TableHead>
+              <TableHead>Ouverts</TableHead>
+              <TableHead>Taux Clic</TableHead>
+              <TableHead>Compromissions</TableHead>
+              <TableHead>Mini-Formation</TableHead>
+              <TableHead className="text-right">Signalements</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {campaigns.map((c: PhishingCampaign) => (
+              <TableRow key={c.id} className="relative hover:bg-muted/50 group">
+                <TableCell className="font-medium">
+                  {c.name}
+                  {/* Stretched Link Strategy */}
+                  <button type="button" aria-label={`Détails ${c.name}`} onClick={() => setSelectedCampaign(c)} className="absolute inset-0 w-full h-full bg-transparent border-none outline-none cursor-pointer z-0" />
+                </TableCell>
+                <TableCell className="text-muted-foreground relative z-10 pointer-events-none">{new Date(c.sendDate).toLocaleDateString()}</TableCell>
+                <TableCell className="relative z-10 pointer-events-none">{c.targetCount}</TableCell>
+                <TableCell className="text-blue-600 dark:text-blue-400 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.openedCount, c.targetCount)}%</TableCell>
+                <TableCell className="font-medium text-amber-600 dark:text-amber-500 relative z-10 pointer-events-none">{calculatePercentage(c.clickedCount, c.targetCount)}%</TableCell>
+                <TableCell className="font-bold text-rose-600 dark:text-rose-500 relative z-10 pointer-events-none">{calculatePercentage(c.compromisedCount, c.targetCount)}%</TableCell>
+                <TableCell className="text-indigo-600 dark:text-indigo-400 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.trainingCompletedCount || 0, c.targetCount)}%</TableCell>
+                <TableCell className="text-right text-emerald-600 dark:text-emerald-500 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.reportedCount, c.targetCount)}%</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </>
+    );
+  }
+
+  const totalMailsSent = campaigns.reduce((acc: number, c: PhishingCampaign) => acc + safeNum(c.targetCount), 0);
+  const avgClickRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc: number, c: PhishingCampaign) => acc + safeNum(c.clickedCount), 0) / totalMailsSent) * 100) : 0;
+  const avgCompromiseRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc: number, c: PhishingCampaign) => acc + safeNum(c.compromisedCount), 0) / totalMailsSent) * 100) : 0;
+  const avgReportRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc: number, c: PhishingCampaign) => acc + safeNum(c.reportedCount), 0) / totalMailsSent) * 100) : 0;
+  const sortedCampaigns = [...campaigns].sort((a, b) => new Date(a.sendDate).getTime() - new Date(b.sendDate).getTime());
+
+  const allValues = sortedCampaigns.flatMap(c => [
+    calculatePercentage(c.clickedCount, c.targetCount),
+    calculatePercentage(c.compromisedCount, c.targetCount)
+  ]);
+  const maxValueInData = Math.max(...allValues, 10);
+  const scaleMax = Math.ceil(maxValueInData / 5) * 5 + 5;
+
+  return (
+    <>
+      <div className="px-6 py-4 flex gap-2 border-b border-border bg-muted/10">
+        <Button variant="outline" size="sm" onClick={() => setPhishingView("historique")}><Activity className="w-4 h-4 mr-2" /> Historique et Tableau</Button>
+        <Button variant="default" size="sm" onClick={() => setPhishingView("bilan")}><BarChart3 className="w-4 h-4 mr-2" /> Bilan et Évolution</Button>
+      </div>
+      <div className="p-6 space-y-8 animate-in fade-in zoom-in-95 duration-300">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+           <Card className="shadow-sm">
+             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mails envoyés</CardTitle></CardHeader>
+             <CardContent><div className="text-2xl font-bold">{totalMailsSent.toLocaleString()}</div></CardContent>
+           </Card>
+           <Card className="shadow-sm border-amber-500/50 bg-amber-500/5">
+             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-amber-700 dark:text-amber-500 uppercase tracking-wider">Clic moyen</CardTitle></CardHeader>
+             <CardContent><div className="text-2xl font-bold text-amber-700 dark:text-amber-500">{avgClickRate}%</div></CardContent>
+           </Card>
+           <Card className="shadow-sm border-rose-500/50 bg-rose-500/5">
+             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-rose-700 dark:text-rose-500 uppercase tracking-wider">Compromission moy.</CardTitle></CardHeader>
+             <CardContent><div className="text-2xl font-bold text-rose-700 dark:text-rose-500">{avgCompromiseRate}%</div></CardContent>
+           </Card>
+           <Card className="shadow-sm border-emerald-500/50 bg-emerald-500/5">
+             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-emerald-700 dark:text-emerald-500 uppercase tracking-wider">Signalement moyen</CardTitle></CardHeader>
+             <CardContent><div className="text-2xl font-bold text-emerald-700 dark:text-emerald-500">{avgReportRate}%</div></CardContent>
+           </Card>
+        </div>
+
+        <Card className="shadow-sm border-muted">
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-primary" /> Évolution des risques
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">Échelle dynamique basée sur vos résultats réels.</p>
+          </CardHeader>
+          <CardContent>
+            <div className="relative w-full h-64 mt-8 mb-8 border-b border-l border-muted ml-4">
+              {[0, 0.5, 1].map((ratio) => (
+                <div key={ratio} className="absolute w-full border-t border-dashed border-muted/50 pointer-events-none" style={{ top: `${(1 - ratio) * 100}%` }}>
+                  <span className="absolute -left-10 -top-2 text-[10px] text-muted-foreground w-8 text-right">{Math.round(ratio * scaleMax)}%</span>
+                </div>
+              ))}
+
+              <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <polyline points={sortedCampaigns.map((c, i) => `${sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50},${100 - (calculatePercentage(c.clickedCount, c.targetCount) / scaleMax * 100)}`).join(' ')} fill="none" className="stroke-amber-500" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+                <polyline points={sortedCampaigns.map((c, i) => `${sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50},${100 - (calculatePercentage(c.compromisedCount, c.targetCount) / scaleMax * 100)}`).join(' ')} fill="none" className="stroke-rose-500" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
+              </svg>
+
+              {sortedCampaigns.map((c, i) => {
+                const x = sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50;
+                const clickRate = calculatePercentage(c.clickedCount, c.targetCount);
+                const compRate = calculatePercentage(c.compromisedCount, c.targetCount);
+                return (
+                  <div key={c.id} className="absolute top-0 bottom-0 w-8 -ml-4 group cursor-crosshair z-10" style={{ left: `${x}%` }}>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 opacity-0 group-hover:opacity-100 transition-opacity bg-popover border p-2 rounded shadow-xl pointer-events-none whitespace-nowrap z-50 text-[11px]">
+                      <p className="font-bold border-b mb-1">{c.name}</p>
+                      <p className="text-amber-600">Clics : {clickRate}%</p>
+                      <p className="text-rose-600">Saisies : {compRate}%</p>
+                    </div>
+                    <div className="absolute w-2.5 h-2.5 bg-amber-500 rounded-full border-2 border-background left-1/2 -translate-x-1/2" style={{ top: `${100 - (clickRate / scaleMax * 100)}%`, marginTop: '-5px' }}></div>
+                    <div className="absolute w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-background left-1/2 -translate-x-1/2" style={{ top: `${100 - (compRate / scaleMax * 100)}%`, marginTop: '-5px' }}></div>
+                    <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground">
+                      {new Date(c.sendDate).toLocaleDateString(undefined, {month: 'short'})}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-center gap-6 mt-10">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground"><div className="w-3 h-3 bg-amber-500 rounded-full"></div> Clics</div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground"><div className="w-3 h-3 bg-rose-500 rounded-full"></div> Compromissions</div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  );
+};
+
+const ProfilageTabContent = ({ profiles, uniqueDepartments }: any) => {
+  const [profileSearch, setProfileSearch] = useState("");
+  const [riskFilter, setRiskFilter] = useState("all");
+  const [departmentFilter, setDepartmentFilter] = useState("all");
+  const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
+
+  const filteredProfiles = profiles.filter((p: PhishingProfile) => {
+    const searchLower = profileSearch.toLowerCase();
+    const matchesSearch = safeString(p.firstName).includes(searchLower) || safeString(p.lastName).includes(searchLower) || safeString(p.email).includes(searchLower);
+    const matchesDept = departmentFilter === "all" || p.department === departmentFilter;
+    let matchesRisk = true;
+    const currentScore = safeNum(p.riskScore);
+    if (riskFilter === "high") matchesRisk = currentScore >= 60;
+    else if (riskFilter === "moderate") matchesRisk = currentScore >= 30 && currentScore < 60;
+    else if (riskFilter === "low") matchesRisk = currentScore < 30;
+    return matchesSearch && matchesDept && matchesRisk;
+  });
+
+  const sortedAndFilteredProfiles = [...filteredProfiles].sort((a, b) => {
+    if (!sortConfig) return 0;
+    const { key, direction } = sortConfig;
+    let valA: any, valB: any;
+    switch (key) {
+      case 'name': valA = `${safeString(a.lastName)} ${safeString(a.firstName)}`; valB = `${safeString(b.lastName)} ${safeString(b.firstName)}`; break;
+      case 'department': valA = a.department || ""; valB = b.department || ""; break;
+      case 'behavior': valA = safeNum(a.clickedCount) + safeNum(a.attachmentOpenedCount) + safeNum(a.compromisedCount); valB = safeNum(b.clickedCount) + safeNum(b.attachmentOpenedCount) + safeNum(b.compromisedCount); break;
+      case 'recidive': valA = a.isConsecutive ? 1 : 0; valB = b.isConsecutive ? 1 : 0; break;
+      case 'score': valA = safeNum(a.riskScore); valB = safeNum(b.riskScore); break;
+      default: return 0;
+    }
+    if (valA < valB) return direction === 'asc' ? -1 : 1;
+    if (valA > valB) return direction === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  const handleSort = (key: string) => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (sortConfig?.key === key && sortConfig?.direction === 'asc') direction = 'desc';
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key: string) => {
+    if (sortConfig?.key !== key) return <ArrowUpDown className="w-4 h-4 ml-1 opacity-50 inline" />;
+    return sortConfig?.direction === 'asc' ? <ArrowUp className="w-4 h-4 ml-1 inline" /> : <ArrowDown className="w-4 h-4 ml-1 inline" />;
+  };
+
+  if (profiles.length === 0) {
+    return <div className="p-12 text-center text-muted-foreground">Les profils se génèrent automatiquement lors de l'import CSV.</div>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row gap-4 items-end bg-muted/20 p-3 rounded-lg border border-border">
+        <div className="relative flex-1 w-full">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input placeholder="Chercher un nom, email..." className="pl-9 bg-background" value={profileSearch} onChange={(e) => setProfileSearch(e.target.value)} />
+        </div>
+        <div className="w-full sm:w-48">
+          <Label className="text-xs text-muted-foreground mb-1 block">Département</Label>
+          <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
+            <SelectTrigger className="bg-background"><SelectValue placeholder="Tous" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tous les départements</SelectItem>
+              {uniqueDepartments.map((dept: any) => <SelectItem key={dept} value={dept}>{dept}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-full sm:w-48">
+          <Label className="text-xs text-muted-foreground mb-1 block">Niveau de risque</Label>
+          <Select value={riskFilter} onValueChange={setRiskFilter}>
+            <SelectTrigger className="bg-background flex items-center gap-2"><SelectValue placeholder="Tous" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tous les niveaux</SelectItem>
+              <SelectItem value="high"><span className="text-rose-500 font-medium">Risque Élevé (&ge; 60)</span></SelectItem>
+              <SelectItem value="moderate"><span className="text-amber-500 font-medium">Risque Modéré (30-59)</span></SelectItem>
+              <SelectItem value="low"><span className="text-emerald-500 font-medium">Risque Faible (&lt; 30)</span></SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {sortedAndFilteredProfiles.length === 0 ? (
+        <div className="p-8 text-center text-muted-foreground">Aucun collaborateur ne correspond à ces critères.</div>
+      ) : (
+        <div className="border rounded-md overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-muted/30">
+                <TableHead><button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('name')}>Collaborateur {getSortIcon('name')}</button></TableHead>
+                <TableHead><button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('department')}>Département {getSortIcon('department')}</button></TableHead>
+                <TableHead><button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('behavior')}>Comportement {getSortIcon('behavior')}</button></TableHead>
+                <TableHead><button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('recidive')}>Récidive {getSortIcon('recidive')}</button></TableHead>
+                <TableHead className="text-right"><button type="button" className="flex items-center justify-end w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-right hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('score')}>Risk Score {getSortIcon('score')}</button></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortedAndFilteredProfiles.map((p) => {
+                const tCamp = safeNum(p.totalCampaigns);
+                const oCount = safeNum(p.openedCount);
+                const aCount = safeNum(p.attachmentOpenedCount);
+                const cCount = safeNum(p.clickedCount);
+                const sCount = safeNum(p.compromisedCount);
+                const tRead = safeNum(p.trainingCompletedCount);
+                const hasHistory = tCamp > 0 || oCount > 0 || aCount > 0 || cCount > 0 || sCount > 0 || tRead > 0;
+
+                return (
+                  <TableRow key={p.email}>
+                    <TableCell>
+                      <div className="font-medium">{p.firstName} {p.lastName}</div>
+                      <div className="text-xs text-muted-foreground">{p.email}</div>
+                    </TableCell>
+                    <TableCell className="text-sm">{p.department || "-"}</TableCell>
+                    <TableCell>
+                      {hasHistory ? (
+                        <div className="flex flex-wrap gap-2 items-center text-xs">
+                          {tCamp > 0 && <Badge variant="outline" className="bg-muted/50 border-transparent">Cibles: {tCamp}</Badge>}
+                          {oCount > 0 && <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200">Ouverts: {oCount}</Badge>}
+                          {aCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">PJ: {aCount}</Badge>}
+                          {cCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">Clics: {cCount}</Badge>}
+                          {sCount > 0 && <Badge variant="outline" className="bg-rose-500/10 text-rose-600 border-rose-200 font-bold">Saisies: {sCount}</Badge>}
+                          {tRead > 0 && <Badge variant="outline" className="bg-indigo-500/10 text-indigo-600 border-indigo-200">Formations lues: {tRead}</Badge>}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground text-xs italic">Aucun historique</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {p.isConsecutive ? <Badge variant="outline" className="bg-rose-500 text-white border-transparent">Oui (Alerte)</Badge> : <span className="text-muted-foreground text-sm">Non</span>}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className={`inline-flex items-center justify-center w-10 h-10 rounded-full font-bold ${getRiskBadgeClassSolid(safeNum(p.riskScore))}`}>
+                        {safeNum(p.riskScore)}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ElearningTabContent = ({ elearningModules, sessionModules, handleLmsExcelUpload, setIsAddModuleOpen, setNewModule, newModule, setSelectedModule, setModuleToDelete, setIsAttendanceModalOpen }: any) => {
+  return (
+    <>
+      <Input type="file" id="lms-upload" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleLmsExcelUpload} />
+      <div>
+        <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Monitor className="w-5 h-5 text-primary" /> Parcours E-Learning </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="relative">
+            <Card className="border-dashed border-2 hover:bg-muted/50 transition-colors min-h-[200px] flex flex-col items-center justify-center p-6 h-full cursor-pointer">
+              <label htmlFor="lms-upload" className="absolute inset-0 w-full h-full cursor-pointer z-10" aria-label="Importer un fichier Excel pour un nouveau parcours" />
+              <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4 relative z-0 pointer-events-none"><Upload className="w-6 h-6 text-primary" /></div>
+              <p className="font-semibold text-primary relative z-0 pointer-events-none">Nouveau parcours</p>
+              <p className="text-xs text-muted-foreground text-center mt-1 relative z-0 pointer-events-none">Cliquer pour importer un fichier Excel</p>
+            </Card>
+          </div>
+
+          {elearningModules.map((m: ElearningModule) => {
+            const completed = safeNum(m.completedCount);
+            const total = safeNum(m.totalAssigned);
+            const completionRate = calculatePercentage(completed, total);
+
+            return (
+              <div key={m.id} className="relative group">
+                <Card className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
+                  <button type="button" aria-label={`Voir détails ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-primary focus:ring-inset" />
+
+                  <CardHeader className="pb-2 relative z-10 pointer-events-none">
+                    <div className="flex justify-between items-start pointer-events-auto">
+                      <div className="flex flex-col gap-2">
+                        <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
+                      </div>
+                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
+                        <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
+                      </Button>
+                    </div>
+                    <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
+                  </CardHeader>
+
+                  <CardContent className="flex-1 space-y-4 relative z-10 pointer-events-none">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Progression</span>
+                        <span className="font-bold">{completionRate}%</span>
+                      </div>
+                      <Progress value={completionRate} className="h-2" />
+                    </div>
+                    <div className="flex items-center justify-between text-xs py-2 border-t border-border">
+                      <div className="flex items-center gap-1 text-muted-foreground">
+                        <Users className="w-3 h-3" />
+                        <span>{completed} / {total} validés</span>
+                      </div>
+                      {(m.startDate || m.deadline) && (
+                        <div className="flex items-center gap-1 text-amber-600 font-medium">
+                          <CalendarDays className="w-3 h-3" />
+                          <span>Échéance: {m.deadline ? new Date(m.deadline).toLocaleDateString() : '--'}</span>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+
+                  <div className="p-4 bg-muted/30 border-t flex gap-2 relative z-10 pointer-events-auto">
+                    <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); }}>
+                      <Eye className="w-3 h-3 mr-2" /> Détails
+                    </Button>
+                    <Button variant="outline" size="sm" className="w-full text-xs text-primary border-primary/20 hover:bg-primary/5" onClick={(e) => { e.stopPropagation(); toast.success("Relance envoyée aux retardataires"); }}>
+                      <Mail className="w-3 h-3 mr-2" /> Relancer
+                    </Button>
+                  </div>
+                </Card>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-12">
+        <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Mic className="w-5 h-5 text-amber-500" /> Sessions de Sensibilisation</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+          <div className="relative">
+            <Card className="border-dashed border-2 border-amber-500/30 bg-amber-500/5 flex flex-col items-center justify-center p-6 hover:bg-amber-500/10 transition-colors min-h-[200px]">
+              <button type="button" aria-label="Nouvelle session" onClick={() => { setIsAddModuleOpen(true); setNewModule({...newModule, formatType: "Webinaire"}); }} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-amber-500 focus:ring-inset" />
+              <div className="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center mb-4 relative z-10 pointer-events-none"><Plus className="w-6 h-6 text-amber-600" /></div>
+              <p className="font-semibold text-amber-700 relative z-10 pointer-events-none">Nouvelle session</p>
+              <p className="text-xs text-amber-700/70 text-center mt-1 relative z-10 pointer-events-none">Déclarer un Webinaire ou du Présentiel</p>
+            </Card>
+          </div>
+
+          {sessionModules.map((m: ElearningModule) => {
+            const completed = safeNum(m.completedCount);
+            const total = safeNum(m.totalAssigned);
+            const completionRate = calculatePercentage(completed, total);
+            const formatType = m.formatType || "Webinaire";
+            const icon = formatType === "Présentiel" ? <Users className="w-3 h-3 mr-1" /> : <Video className="w-3 h-3 mr-1" />;
+
+            return (
+              <div key={m.id} className="relative group">
+                <Card className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
+                  <button type="button" aria-label={`Ouvrir session ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-amber-500 focus:ring-inset" />
+
+                  <CardHeader className="pb-2 relative z-10 pointer-events-none">
+                    <div className="flex justify-between items-start pointer-events-auto">
+                      <div className="flex flex-col gap-2">
+                        <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 w-fit">{icon} {formatType}</Badge>
+                        <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
+                      </div>
+                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
+                        <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
+                      </Button>
+                    </div>
+                    <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
+                  </CardHeader>
+
+                  <CardContent className="flex-1 space-y-4 relative z-10 pointer-events-none">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Présence</span>
+                        <span className="font-bold">{completionRate}%</span>
+                      </div>
+                      <Progress value={completionRate} className="h-2 [&>div]:bg-amber-500" />
+                    </div>
+                    <div className="flex items-center justify-between text-xs py-2 border-t border-border">
+                      <div className="flex items-center gap-1 text-muted-foreground">
+                        <Users className="w-3 h-3" />
+                        <span>{completed} / {total} présents</span>
+                      </div>
+                      {m.startDate && (
+                        <div className="flex items-center gap-1 text-amber-600 font-medium">
+                          <CalendarDays className="w-3 h-3" />
+                          <span>Le {new Date(m.startDate).toLocaleDateString()}</span>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+
+                  <div className="p-4 bg-muted/30 border-t flex gap-2 relative z-10 pointer-events-auto">
+                    <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); setIsAttendanceModalOpen(true); }}>
+                      <CheckSquare className="w-3 h-3 mr-2" /> Présences
+                    </Button>
+                  </div>
+                </Card>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+};
+
+// ============================================================================
 // COMPOSANT PRINCIPAL
 // ============================================================================
 export default function AwarenessView() {
@@ -300,7 +874,6 @@ export default function AwarenessView() {
   const [activeTab, setActiveTab] = useState("phishing");
   const [phishingView, setPhishingView] = useState<"historique" | "bilan">("historique");
 
-  // ÉTATS DES MODALES ET PANNEAUX
   const [isAddCampaignOpen, setIsAddCampaignOpen] = useState(false);
   const [isAddModuleOpen, setIsAddModuleOpen] = useState(false);
   const [isLmsImportOpen, setIsLmsImportOpen] = useState(false);
@@ -315,13 +888,6 @@ export default function AwarenessView() {
   const [moduleToDelete, setModuleToDelete] = useState<ElearningModule | null>(null);
   const [participantToRemove, setParticipantToRemove] = useState<string | null>(null);
 
-  // FILTRES ET TRI
-  const [profileSearch, setProfileSearch] = useState("");
-  const [riskFilter, setRiskFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState("all");
-  const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' } | null>(null);
-
-  // ÉTATS DE FORMULAIRES
   const [newCampaign, setNewCampaign] = useState({
     name: "", sendDate: new Date().toISOString().split('T')[0], difficulty: "moyen",
     targetCount: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0,
@@ -345,6 +911,8 @@ export default function AwarenessView() {
 
   const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
   const sessionModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning");
+
+  const uniqueDepartments = Array.from(new Set(profiles.map(p => p.department).filter(d => d && d.trim() !== ""))).sort((a, b) => a.localeCompare(b));
 
   // --- MUTATIONS ---
   const resetProfilesMutation = useMutation({
@@ -453,7 +1021,8 @@ export default function AwarenessView() {
     mutationFn: async ({ moduleId, rawEmails }: { moduleId: string, rawEmails: string }) => {
       const module = modules.find(m => m.id === moduleId);
       if (!module) throw new Error("Module introuvable");
-      const emailRegex = /([a-z0-9._-]+@[a-z0-9._-]+\.[a-z0-9._-]+)/gi;
+
+      const emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,10}/gi;
       const extractedEmails = rawEmails.match(emailRegex) || [];
       const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
       const newlyCompletedEmails: string[] = [];
@@ -462,10 +1031,10 @@ export default function AwarenessView() {
 
       let completedAdded = 0;
       extractedEmails.forEach(email => {
-        email = email.toLowerCase().trim();
-        if (!existingCompletedEmails.includes(email) && !newlyCompletedEmails.includes(email) && currentProfilesMap.has(email)) {
-          newlyCompletedEmails.push(email);
-          const p = { ...currentProfilesMap.get(email)! };
+        const lowerEmail = email.toLowerCase().trim();
+        if (!existingCompletedEmails.includes(lowerEmail) && !newlyCompletedEmails.includes(lowerEmail) && currentProfilesMap.has(lowerEmail)) {
+          newlyCompletedEmails.push(lowerEmail);
+          const p = { ...currentProfilesMap.get(lowerEmail)! };
           p.trainingCompletedCount = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count) + 1;
           p.riskScore = calculateRiskScore(safeNum(p.clickedCount), safeNum(p.attachmentOpenedCount), safeNum(p.compromisedCount), safeNum(p.reportedCount), p.trainingCompletedCount, p.isConsecutive || false);
           profilesToUpdate.push(p);
@@ -548,17 +1117,6 @@ export default function AwarenessView() {
     e.target.value = '';
   };
 
-  const handleSort = (key: string) => {
-    let direction: 'asc' | 'desc' = 'asc';
-    if (sortConfig?.key === key && sortConfig?.direction === 'asc') direction = 'desc';
-    setSortConfig({ key, direction });
-  };
-
-  const getSortIcon = (key: string) => {
-    if (sortConfig?.key !== key) return <ArrowUpDown className="w-4 h-4 ml-1 opacity-50 inline" />;
-    return sortConfig.direction === 'asc' ? <ArrowUp className="w-4 h-4 ml-1 inline" /> : <ArrowDown className="w-4 h-4 ml-1 inline" />;
-  };
-
   const renderTabActions = () => {
     if (activeTab === "profilage") {
       return (
@@ -601,301 +1159,12 @@ export default function AwarenessView() {
     return "Créer le module et mettre à jour";
   };
 
-  // --- FILTRES ET VARIABLES DERIVÉES ---
-  const uniqueDepartments = Array.from(new Set(profiles.map(p => p.department).filter(d => d && d.trim() !== ""))).sort((a, b) => a.localeCompare(b));
-
-  const filteredProfiles = profiles.filter(p => {
-    const searchLower = profileSearch.toLowerCase();
-    const matchesSearch = safeString(p.firstName).includes(searchLower) || safeString(p.lastName).includes(searchLower) || safeString(p.email).includes(searchLower);
-    const matchesDept = departmentFilter === "all" || p.department === departmentFilter;
-    let matchesRisk = true;
-    const currentScore = safeNum(p.riskScore);
-    if (riskFilter === "high") matchesRisk = currentScore >= 60;
-    else if (riskFilter === "moderate") matchesRisk = currentScore >= 30 && currentScore < 60;
-    else if (riskFilter === "low") matchesRisk = currentScore < 30;
-    return matchesSearch && matchesDept && matchesRisk;
-  });
-
-  const sortedAndFilteredProfiles = [...filteredProfiles].sort((a, b) => {
-    if (!sortConfig) return 0;
-    const { key, direction } = sortConfig;
-    let valA: any, valB: any;
-    switch (key) {
-      case 'name': valA = `${safeString(a.lastName)} ${safeString(a.firstName)}`; valB = `${safeString(b.lastName)} ${safeString(b.firstName)}`; break;
-      case 'department': valA = a.department || ""; valB = b.department || ""; break;
-      case 'behavior': valA = safeNum(a.clickedCount) + safeNum(a.attachmentOpenedCount) + safeNum(a.compromisedCount); valB = safeNum(b.clickedCount) + safeNum(b.attachmentOpenedCount) + safeNum(b.compromisedCount); break;
-      case 'recidive': valA = a.isConsecutive ? 1 : 0; valB = b.isConsecutive ? 1 : 0; break;
-      case 'score': valA = safeNum(a.riskScore); valB = safeNum(b.riskScore); break;
-      default: return 0;
-    }
-    if (valA < valB) return direction === 'asc' ? -1 : 1;
-    if (valA > valB) return direction === 'asc' ? 1 : -1;
-    return 0;
-  });
-
   if (isLoadingCampaigns || isLoadingProfiles || isLoadingModules) return <div className="flex justify-center p-12"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
-
-  const highRiskProfiles = profiles.filter(p => safeNum(p.riskScore) >= 60);
-  const currentYear = new Date().getFullYear();
-  const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === currentYear);
-  const targetCampaignsPerYear = 4;
-  const campaignProgress = Math.min(100, Math.round((campaignsThisYear.length / targetCampaignsPerYear) * 100));
-  const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
-
-  const totalMailsSent = campaigns.reduce((acc, c) => acc + safeNum(c.targetCount), 0);
-  const avgClickRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.clickedCount), 0) / totalMailsSent) * 100) : 0;
-  const avgCompromiseRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.compromisedCount), 0) / totalMailsSent) * 100) : 0;
-  const avgReportRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.reportedCount), 0) / totalMailsSent) * 100) : 0;
-
-  const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + safeNum(m.totalAssigned), 0);
-  const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + safeNum(m.completedCount), 0);
-  const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
-  const elearningGoalReached = elearningRate >= 95;
-  const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100));
-
-  const sessionsThisYear = sessionModules.filter(m => {
-    const dStr = m.startDate || m.createdAt || "";
-    if (!dStr) return false;
-    return new Date(dStr).getFullYear() === currentYear;
-  });
-  const targetSessionsPerYear = 4;
-  const sessionProgress = Math.min(100, Math.round((sessionsThisYear.length / targetSessionsPerYear) * 100));
-  const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
-  const sortedCampaigns = [...campaigns].sort((a, b) => new Date(a.sendDate).getTime() - new Date(b.sendDate).getTime());
-
-  const renderPhishingTab = () => {
-    if (campaigns.length === 0) {
-      return <div className="p-12 text-center text-muted-foreground">Aucune campagne. Importez un CSV Proofpoint pour commencer.</div>;
-    }
-
-    if (phishingView === "historique") {
-      return (
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-muted/30">
-              <TableHead>Scénario</TableHead>
-              <TableHead>Date</TableHead>
-              <TableHead>Cibles</TableHead>
-              <TableHead>Ouverts</TableHead>
-              <TableHead>Taux Clic</TableHead>
-              <TableHead>Compromissions</TableHead>
-              <TableHead>Mini-Formation</TableHead>
-              <TableHead className="text-right">Signalements</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {campaigns.map((c) => (
-              <TableRow key={c.id} className="relative hover:bg-muted/50 group">
-                <TableCell className="font-medium">
-                  {c.name}
-                  {/* Stretched Link Strategy: makes the whole row clickable without breaking DOM */}
-                  <button type="button" aria-label={`Détails ${c.name}`} onClick={() => setSelectedCampaign(c)} className="absolute inset-0 w-full h-full bg-transparent border-none outline-none cursor-pointer z-0" />
-                </TableCell>
-                <TableCell className="text-muted-foreground relative z-10 pointer-events-none">{new Date(c.sendDate).toLocaleDateString()}</TableCell>
-                <TableCell className="relative z-10 pointer-events-none">{c.targetCount}</TableCell>
-                <TableCell className="text-blue-600 dark:text-blue-400 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.openedCount, c.targetCount)}%</TableCell>
-                <TableCell className="font-medium text-amber-600 dark:text-amber-500 relative z-10 pointer-events-none">{calculatePercentage(c.clickedCount, c.targetCount)}%</TableCell>
-                <TableCell className="font-bold text-rose-600 dark:text-rose-500 relative z-10 pointer-events-none">{calculatePercentage(c.compromisedCount, c.targetCount)}%</TableCell>
-                <TableCell className="text-indigo-600 dark:text-indigo-400 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.trainingCompletedCount || 0, c.targetCount)}%</TableCell>
-                <TableCell className="text-right text-emerald-600 dark:text-emerald-500 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.reportedCount, c.targetCount)}%</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      );
-    }
-
-    const allValues = sortedCampaigns.flatMap(c => [
-      calculatePercentage(c.clickedCount, c.targetCount),
-      calculatePercentage(c.compromisedCount, c.targetCount)
-    ]);
-    const maxValueInData = Math.max(...allValues, 10);
-    const scaleMax = Math.ceil(maxValueInData / 5) * 5 + 5;
-
-    return (
-      <div className="p-6 space-y-8 animate-in fade-in zoom-in-95 duration-300">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-           <Card className="shadow-sm">
-             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mails envoyés</CardTitle></CardHeader>
-             <CardContent><div className="text-2xl font-bold">{totalMailsSent.toLocaleString()}</div></CardContent>
-           </Card>
-           <Card className="shadow-sm border-amber-500/50 bg-amber-500/5">
-             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-amber-700 dark:text-amber-500 uppercase tracking-wider">Clic moyen</CardTitle></CardHeader>
-             <CardContent><div className="text-2xl font-bold text-amber-700 dark:text-amber-500">{avgClickRate}%</div></CardContent>
-           </Card>
-           <Card className="shadow-sm border-rose-500/50 bg-rose-500/5">
-             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-rose-700 dark:text-rose-500 uppercase tracking-wider">Compromission moy.</CardTitle></CardHeader>
-             <CardContent><div className="text-2xl font-bold text-rose-700 dark:text-rose-500">{avgCompromiseRate}%</div></CardContent>
-           </Card>
-           <Card className="shadow-sm border-emerald-500/50 bg-emerald-500/5">
-             <CardHeader className="pb-2"><CardTitle className="text-xs font-medium text-emerald-700 dark:text-emerald-500 uppercase tracking-wider">Signalement moyen</CardTitle></CardHeader>
-             <CardContent><div className="text-2xl font-bold text-emerald-700 dark:text-emerald-500">{avgReportRate}%</div></CardContent>
-           </Card>
-        </div>
-
-        <Card className="shadow-sm border-muted">
-          <CardHeader>
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-primary" /> Évolution des risques
-            </CardTitle>
-            <p className="text-xs text-muted-foreground">Échelle dynamique basée sur vos résultats réels.</p>
-          </CardHeader>
-          <CardContent>
-            <div className="relative w-full h-64 mt-8 mb-8 border-b border-l border-muted ml-4">
-              {[0, 0.5, 1].map((ratio) => (
-                <div
-                  key={ratio}
-                  className="absolute w-full border-t border-dashed border-muted/50 pointer-events-none"
-                  style={{ top: `${(1 - ratio) * 100}%` }}
-                >
-                  <span className="absolute -left-10 -top-2 text-[10px] text-muted-foreground w-8 text-right">
-                    {Math.round(ratio * scaleMax)}%
-                  </span>
-                </div>
-              ))}
-
-              <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
-                <polyline
-                  points={sortedCampaigns.map((c, i) => {
-                    const x = sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50;
-                    const y = 100 - (calculatePercentage(c.clickedCount, c.targetCount) / scaleMax * 100);
-                    return `${x},${y}`;
-                  }).join(' ')}
-                  fill="none"
-                  className="stroke-amber-500"
-                  strokeWidth="3"
-                  vectorEffect="non-scaling-stroke"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                />
-                <polyline
-                  points={sortedCampaigns.map((c, i) => {
-                    const x = sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50;
-                    const y = 100 - (calculatePercentage(c.compromisedCount, c.targetCount) / scaleMax * 100);
-                    return `${x},${y}`;
-                  }).join(' ')}
-                  fill="none"
-                  className="stroke-rose-500"
-                  strokeWidth="3"
-                  vectorEffect="non-scaling-stroke"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                />
-              </svg>
-
-              {sortedCampaigns.map((c, i) => {
-                const x = sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50;
-                const clickRate = calculatePercentage(c.clickedCount, c.targetCount);
-                const compRate = calculatePercentage(c.compromisedCount, c.targetCount);
-
-                return (
-                  <div key={c.id} className="absolute top-0 bottom-0 w-8 -ml-4 group cursor-crosshair z-10" style={{ left: `${x}%` }}>
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 opacity-0 group-hover:opacity-100 transition-opacity bg-popover border p-2 rounded shadow-xl pointer-events-none whitespace-nowrap z-50 text-[11px]">
-                      <p className="font-bold border-b mb-1">{c.name}</p>
-                      <p className="text-amber-600">Clics : {clickRate}%</p>
-                      <p className="text-rose-600">Saisies : {compRate}%</p>
-                    </div>
-                    <div className="absolute w-2.5 h-2.5 bg-amber-500 rounded-full border-2 border-background left-1/2 -translate-x-1/2" style={{ top: `${100 - (clickRate / scaleMax * 100)}%`, marginTop: '-5px' }}></div>
-                    <div className="absolute w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-background left-1/2 -translate-x-1/2" style={{ top: `${100 - (compRate / scaleMax * 100)}%`, marginTop: '-5px' }}></div>
-                    <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground">
-                      {new Date(c.sendDate).toLocaleDateString(undefined, {month: 'short'})}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex justify-center gap-6 mt-10">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground"><div className="w-3 h-3 bg-amber-500 rounded-full"></div> Clics</div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground"><div className="w-3 h-3 bg-rose-500 rounded-full"></div> Compromissions</div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  };
 
   return (
     <div className="space-y-6">
 
-      {/* --- KPIs SECTION --- */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
-
-        <Card className={`border-l-4 shadow-sm ${isGoalReached ? 'border-l-emerald-500' : 'border-l-blue-500'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Phishing</CardTitle>
-            <Target className={`w-4 h-4 ${isGoalReached ? 'text-emerald-500' : 'text-blue-500'}`} />
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl font-bold flex items-baseline gap-1">
-              {campaignsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetCampaignsPerYear}</span>
-            </div>
-            <Progress value={campaignProgress} className={`h-1 mt-2 ${isGoalReached ? '[&>div]:bg-emerald-500' : ''}`} />
-            <p className="text-[9px] text-muted-foreground mt-1">Campagnes annuelles</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${campaigns.length > 0 && (safeNum(campaigns[0].compromisedCount) / safeNum(campaigns[0].targetCount) * 100) > 5 ? 'border-l-rose-500' : 'border-l-emerald-500'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Compromission</CardTitle>
-            <AlertTriangle className="w-4 h-4 text-rose-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].compromisedCount, campaigns[0].targetCount) : 0}%</div>
-            <p className="text-[9px] text-muted-foreground mt-1">Dernière campagne</p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-l-4 border-l-blue-500 shadow-sm">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Signalements</CardTitle>
-            <ShieldCheck className="w-4 h-4 text-blue-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl font-bold">{campaigns.length > 0 ? calculatePercentage(campaigns[0].reportedCount, campaigns[0].targetCount) : 0}%</div>
-            <p className="text-[9px] text-muted-foreground mt-1">Dernière campagne</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${highRiskProfiles.length > 0 ? 'border-l-amber-500' : 'border-l-emerald-500'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Risque &gt; 60</CardTitle>
-            <UserX className="w-4 h-4 text-amber-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl font-bold">{highRiskProfiles.length}</div>
-            <p className="text-[9px] text-muted-foreground mt-1">Collaborateurs à suivre</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${isSessionGoalReached ? 'border-l-emerald-500' : 'border-l-amber-500'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Sessions Animées</CardTitle>
-            <Mic className={`w-4 h-4 ${isSessionGoalReached ? 'text-emerald-500' : 'text-amber-500'}`} />
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl font-bold flex items-baseline gap-1">
-              {sessionsThisYear.length} <span className="text-sm font-normal text-muted-foreground">/ {targetSessionsPerYear}</span>
-            </div>
-            <Progress value={sessionProgress} className={`h-1 mt-2 ${isSessionGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-amber-500'}`} />
-            <p className="text-[9px] text-muted-foreground mt-1">Webinaires / Présentiel</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${elearningGoalReached ? 'border-l-emerald-500' : 'border-l-primary'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-xs font-medium text-muted-foreground uppercase">Couverture E-Learning</CardTitle>
-            <Target className={`w-4 h-4 ${elearningGoalReached ? 'text-emerald-500' : 'text-primary'}`} />
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl font-bold flex items-baseline gap-1">
-              {elearningRate}% <span className="text-sm font-normal text-muted-foreground">/ 95%</span>
-            </div>
-            <Progress value={elearningProgress} className={`h-1 mt-2 ${elearningGoalReached ? '[&>div]:bg-emerald-500' : '[&>div]:bg-primary'}`} />
-            <p className="text-[9px] text-muted-foreground mt-1">Objectif de réalisation</p>
-          </CardContent>
-        </Card>
-      </div>
+      <KpiGrid campaigns={campaigns} profiles={profiles} elearningModules={elearningModules} sessionModules={sessionModules} />
 
       {/* --- TABS MAIN SECTION --- */}
       <Card className="shadow-sm">
@@ -911,299 +1180,32 @@ export default function AwarenessView() {
           </div>
 
           <TabsContent value="phishing" className="m-0">
-            {renderPhishingTab()}
+            <PhishingTabContent campaigns={campaigns} setSelectedCampaign={setSelectedCampaign} phishingView={phishingView} setPhishingView={setPhishingView} />
           </TabsContent>
 
           <TabsContent value="profilage" className="p-6">
-            {profiles.length === 0 ? (
-              <div className="p-12 text-center text-muted-foreground">Les profils se génèrent automatiquement lors de l'import CSV.</div>
-            ) : (
-            <div className="space-y-4">
-
-              <div className="flex flex-col sm:flex-row gap-4 items-end bg-muted/20 p-3 rounded-lg border border-border">
-                <div className="relative flex-1 w-full">
-                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Chercher un nom, email..."
-                    className="pl-9 bg-background"
-                    value={profileSearch}
-                    onChange={(e) => setProfileSearch(e.target.value)}
-                  />
-                </div>
-
-                <div className="w-full sm:w-48">
-                  <Label className="text-xs text-muted-foreground mb-1 block">Département</Label>
-                  <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
-                    <SelectTrigger className="bg-background"><SelectValue placeholder="Tous" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Tous les départements</SelectItem>
-                      {uniqueDepartments.map(dept => (
-                        <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="w-full sm:w-48">
-                  <Label className="text-xs text-muted-foreground mb-1 block">Niveau de risque</Label>
-                  <Select value={riskFilter} onValueChange={setRiskFilter}>
-                    <SelectTrigger className="bg-background flex items-center gap-2"><SelectValue placeholder="Tous" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Tous les niveaux</SelectItem>
-                      <SelectItem value="high"><span className="text-rose-500 font-medium">Risque Élevé (&ge; 60)</span></SelectItem>
-                      <SelectItem value="moderate"><span className="text-amber-500 font-medium">Risque Modéré (30-59)</span></SelectItem>
-                      <SelectItem value="low"><span className="text-emerald-500 font-medium">Risque Faible (&lt; 30)</span></SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {sortedAndFilteredProfiles.length === 0 ? (
-                <div className="p-8 text-center text-muted-foreground">Aucun collaborateur ne correspond à ces critères.</div>
-              ) : (
-                <div className="border rounded-md overflow-hidden">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-muted/30">
-                        <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('name')}>
-                              Collaborateur {getSortIcon('name')}
-                           </button>
-                        </TableHead>
-                        <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('department')}>
-                              Département {getSortIcon('department')}
-                           </button>
-                        </TableHead>
-                        <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('behavior')}>
-                              Comportement {getSortIcon('behavior')}
-                           </button>
-                        </TableHead>
-                        <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('recidive')}>
-                              Récidive {getSortIcon('recidive')}
-                           </button>
-                        </TableHead>
-                        <TableHead className="text-right">
-                           <button type="button" className="flex items-center justify-end w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-right hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('score')}>
-                              Risk Score {getSortIcon('score')}
-                           </button>
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sortedAndFilteredProfiles.map((p) => {
-                        const tCamp = safeNum(p.totalCampaigns);
-                        const oCount = safeNum(p.openedCount);
-                        const aCount = safeNum(p.attachmentOpenedCount);
-                        const cCount = safeNum(p.clickedCount);
-                        const sCount = safeNum(p.compromisedCount);
-                        const tRead = safeNum(p.trainingCompletedCount);
-
-                        const hasHistory = tCamp > 0 || oCount > 0 || aCount > 0 || cCount > 0 || sCount > 0 || tRead > 0;
-
-                        return (
-                          <TableRow key={p.email}>
-                            <TableCell>
-                              <div className="font-medium">{p.firstName} {p.lastName}</div>
-                              <div className="text-xs text-muted-foreground">{p.email}</div>
-                            </TableCell>
-                            <TableCell className="text-sm">{p.department || "-"}</TableCell>
-                            <TableCell>
-                              {hasHistory ? (
-                                <div className="flex flex-wrap gap-2 items-center text-xs">
-                                  {tCamp > 0 && <Badge variant="outline" className="bg-muted/50 border-transparent">Cibles: {tCamp}</Badge>}
-                                  {oCount > 0 && <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200">Ouverts: {oCount}</Badge>}
-                                  {aCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">PJ: {aCount}</Badge>}
-                                  {cCount > 0 && <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200">Clics: {cCount}</Badge>}
-                                  {sCount > 0 && <Badge variant="outline" className="bg-rose-500/10 text-rose-600 border-rose-200 font-bold">Saisies: {sCount}</Badge>}
-                                  {tRead > 0 && <Badge variant="outline" className="bg-indigo-500/10 text-indigo-600 border-indigo-200">Formations lues: {tRead}</Badge>}
-                                </div>
-                              ) : (
-                                <span className="text-muted-foreground text-xs italic">Aucun historique</span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              {p.isConsecutive ? <Badge variant="outline" className="bg-rose-500 text-white border-transparent">Oui (Alerte)</Badge> : <span className="text-muted-foreground text-sm">Non</span>}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <div className={`inline-flex items-center justify-center w-10 h-10 rounded-full font-bold ${getRiskBadgeClassSolid(safeNum(p.riskScore))}`}>
-                                {safeNum(p.riskScore)}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </div>
-            )}
+            <ProfilageTabContent profiles={profiles} uniqueDepartments={uniqueDepartments} />
           </TabsContent>
 
           <TabsContent value="elearning" className="p-6">
-
-            <Input type="file" id="lms-upload" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleLmsExcelUpload} />
-
-            {/* SELECTION 1 : E-LEARNING (LMS) */}
-            <div>
-              <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Monitor className="w-5 h-5 text-primary" /> Parcours E-Learning </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-
-                <div className="relative">
-                  <Card className="border-dashed border-2 hover:bg-muted/50 transition-colors min-h-[200px] flex flex-col items-center justify-center p-6 h-full cursor-pointer">
-                    <label htmlFor="lms-upload" className="absolute inset-0 w-full h-full cursor-pointer z-10" aria-label="Importer un fichier Excel pour un nouveau parcours" />
-                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4 relative z-0 pointer-events-none"><Upload className="w-6 h-6 text-primary" /></div>
-                    <p className="font-semibold text-primary relative z-0 pointer-events-none">Nouveau parcours</p>
-                    <p className="text-xs text-muted-foreground text-center mt-1 relative z-0 pointer-events-none">Cliquer pour importer un fichier Excel</p>
-                  </Card>
-                </div>
-
-                {elearningModules.map((m) => {
-                  const completed = safeNum(m.completedCount);
-                  const total = safeNum(m.totalAssigned);
-                  const completionRate = calculatePercentage(completed, total);
-
-                  return (
-                    <div key={m.id} className="relative group">
-                      <Card className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
-                        <button type="button" aria-label={`Voir détails ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-primary focus:ring-inset" />
-
-                        <CardHeader className="pb-2 relative z-10 pointer-events-none">
-                          <div className="flex justify-between items-start pointer-events-auto">
-                            <div className="flex flex-col gap-2">
-                              <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
-                            </div>
-                            <Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
-                              <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
-                            </Button>
-                          </div>
-                          <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
-                        </CardHeader>
-
-                        <CardContent className="flex-1 space-y-4 relative z-10 pointer-events-none">
-                          <div className="space-y-2">
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Progression</span>
-                              <span className="font-bold">{completionRate}%</span>
-                            </div>
-                            <Progress value={completionRate} className="h-2" />
-                          </div>
-                          <div className="flex items-center justify-between text-xs py-2 border-t border-border">
-                            <div className="flex items-center gap-1 text-muted-foreground">
-                              <Users className="w-3 h-3" />
-                              <span>{completed} / {total} validés</span>
-                            </div>
-                            {(m.startDate || m.deadline) && (
-                              <div className="flex items-center gap-1 text-amber-600 font-medium">
-                                <CalendarDays className="w-3 h-3" />
-                                <span>Échéance: {m.deadline ? new Date(m.deadline).toLocaleDateString() : '--'}</span>
-                              </div>
-                            )}
-                          </div>
-                        </CardContent>
-
-                        <div className="p-4 bg-muted/30 border-t flex gap-2 relative z-10 pointer-events-auto">
-                          <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); }}>
-                            <Eye className="w-3 h-3 mr-2" /> Détails
-                          </Button>
-                          <Button variant="outline" size="sm" className="w-full text-xs text-primary border-primary/20 hover:bg-primary/5" onClick={(e) => { e.stopPropagation(); toast.success("Relance envoyée aux retardataires"); }}>
-                            <Mail className="w-3 h-3 mr-2" /> Relancer
-                          </Button>
-                        </div>
-                      </Card>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* SELECTION 2 : SESSIONS DE SENSIBILISATION */}
-            <div className="mt-12">
-              <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Mic className="w-5 h-5 text-amber-500" /> Sessions de Sensibilisation</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-
-                <div className="relative">
-                  <Card className="border-dashed border-2 border-amber-500/30 bg-amber-500/5 flex flex-col items-center justify-center p-6 hover:bg-amber-500/10 transition-colors min-h-[200px]">
-                    <button type="button" aria-label="Nouvelle session" onClick={() => { setIsAddModuleOpen(true); setNewModule({...newModule, formatType: "Webinaire"}); }} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-amber-500 focus:ring-inset" />
-                    <div className="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center mb-4 relative z-10 pointer-events-none"><Plus className="w-6 h-6 text-amber-600" /></div>
-                    <p className="font-semibold text-amber-700 relative z-10 pointer-events-none">Nouvelle session</p>
-                    <p className="text-xs text-amber-700/70 text-center mt-1 relative z-10 pointer-events-none">Déclarer un Webinaire ou du Présentiel</p>
-                  </Card>
-                </div>
-
-                {sessionModules.map((m) => {
-                  const completed = safeNum(m.completedCount);
-                  const total = safeNum(m.totalAssigned);
-                  const completionRate = calculatePercentage(completed, total);
-                  const formatType = m.formatType || "Webinaire";
-                  let icon = <Video className="w-3 h-3 mr-1" />;
-                  if (formatType === "Présentiel") icon = <Users className="w-3 h-3 mr-1" />;
-
-                  return (
-                    <div key={m.id} className="relative group">
-                      <Card className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
-                        <button type="button" aria-label={`Ouvrir session ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-amber-500 focus:ring-inset" />
-
-                        <CardHeader className="pb-2 relative z-10 pointer-events-none">
-                          <div className="flex justify-between items-start pointer-events-auto">
-                            <div className="flex flex-col gap-2">
-                              <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 w-fit">{icon} {formatType}</Badge>
-                              <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
-                            </div>
-                            <Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
-                              <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
-                            </Button>
-                          </div>
-                          <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
-                        </CardHeader>
-
-                        <CardContent className="flex-1 space-y-4 relative z-10 pointer-events-none">
-                          <div className="space-y-2">
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Présence</span>
-                              <span className="font-bold">{completionRate}%</span>
-                            </div>
-                            <Progress value={completionRate} className="h-2 [&>div]:bg-amber-500" />
-                          </div>
-                          <div className="flex items-center justify-between text-xs py-2 border-t border-border">
-                            <div className="flex items-center gap-1 text-muted-foreground">
-                              <Users className="w-3 h-3" />
-                              <span>{completed} / {total} présents</span>
-                            </div>
-                            {m.startDate && (
-                              <div className="flex items-center gap-1 text-amber-600 font-medium">
-                                <CalendarDays className="w-3 h-3" />
-                                <span>Le {new Date(m.startDate).toLocaleDateString()}</span>
-                              </div>
-                            )}
-                          </div>
-                        </CardContent>
-
-                        <div className="p-4 bg-muted/30 border-t flex gap-2 relative z-10 pointer-events-auto">
-                          <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); setIsAttendanceModalOpen(true); }}>
-                            <CheckSquare className="w-3 h-3 mr-2" /> Présences
-                          </Button>
-                        </div>
-                      </Card>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
+             <ElearningTabContent
+               elearningModules={elearningModules}
+               sessionModules={sessionModules}
+               handleLmsExcelUpload={handleLmsExcelUpload}
+               setIsAddModuleOpen={setIsAddModuleOpen}
+               setNewModule={setNewModule}
+               newModule={newModule}
+               setSelectedModule={setSelectedModule}
+               setModuleToDelete={setModuleToDelete}
+               setIsAttendanceModalOpen={setIsAttendanceModalOpen}
+             />
           </TabsContent>
         </Tabs>
       </Card>
 
       {/* --- PANNEAUX DE DÉTAILS --- */}
 
-      {/* PANNEAU PHISHING */}
-      <Sheet open={!!selectedCampaign} onOpenChange={(open) => {
-        if(!open) setSelectedCampaign(null);
-      }}>
+      <Sheet open={!!selectedCampaign} onOpenChange={(open) => { if(!open) setSelectedCampaign(null); }}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
             <SheetTitle className="text-xl">{selectedCampaign?.name}</SheetTitle>
@@ -1212,7 +1214,6 @@ export default function AwarenessView() {
 
           {selectedCampaign && (
             <div className="space-y-6">
-
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 border border-border rounded-lg bg-card text-center space-y-1 shadow-sm">
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Cibles</p>
@@ -1222,7 +1223,7 @@ export default function AwarenessView() {
                 <div className="relative">
                   <div className={`p-4 border rounded-lg text-center space-y-1 shadow-sm transition-all h-full flex flex-col justify-center ${selectedCampaign.recidivistsCount > 0 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-500/5 border-amber-500/10 opacity-50'}`}>
                     {selectedCampaign.recidivistsCount > 0 && (
-                       <button type="button" aria-label="Voir la liste des récidivistes" onClick={() => setIsRecidivistsDialogOpen(true)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none appearance-none z-0 hover:bg-amber-500/5 focus:ring-2 focus:ring-amber-500" />
+                       <button type="button" aria-label="Voir la liste des récidivistes" onClick={() => setIsRecidivistsDialogOpen(true)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer z-0 hover:bg-amber-500/5 focus:ring-2 focus:ring-amber-500" />
                     )}
                     <p className="text-xs font-semibold text-amber-700 dark:text-amber-500 uppercase tracking-wider relative z-10 pointer-events-none">Récidivistes</p>
                     <p className="text-2xl font-bold text-amber-700 dark:text-amber-500 relative z-10 pointer-events-none">{selectedCampaign.recidivistsCount}</p>
@@ -1239,33 +1240,27 @@ export default function AwarenessView() {
                 <h4 className="text-sm font-semibold flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-primary" /> Entonnoir de conversion
                 </h4>
-
                 <div className="space-y-3">
                   <div className="flex items-center justify-between p-3 rounded-md bg-blue-500/10 border border-blue-500/20">
                     <span className="text-sm font-medium flex items-center gap-2 text-blue-700 dark:text-blue-400"><Mail className="w-4 h-4"/> Mails ouverts</span>
                     <span className="font-bold text-blue-700 dark:text-blue-400">{selectedCampaign.openedCount} <span className="opacity-70 text-xs font-normal">({calculatePercentage(selectedCampaign.openedCount, selectedCampaign.targetCount)}%)</span></span>
                   </div>
-
                   <div className="flex items-center justify-between p-3 rounded-md bg-amber-500/10 border border-amber-500/20 ml-4">
                     <span className="text-sm font-medium flex items-center gap-2 text-amber-700 dark:text-amber-500"><MousePointer className="w-4 h-4"/> Liens cliqués</span>
                     <span className="font-bold text-amber-700 dark:text-amber-500">{selectedCampaign.clickedCount} <span className="opacity-70 text-xs font-normal">({calculatePercentage(selectedCampaign.clickedCount, selectedCampaign.targetCount)}%)</span></span>
                   </div>
-
                   <div className="flex items-center justify-between p-3 rounded-md bg-amber-500/10 border border-amber-500/20 ml-4">
                     <span className="text-sm font-medium flex items-center gap-2 text-amber-700 dark:text-amber-500"><Paperclip className="w-4 h-4"/> PJ Ouvertes</span>
                     <span className="font-bold text-amber-700 dark:text-amber-500">{selectedCampaign.attachmentOpenedCount || 0} <span className="opacity-70 text-xs font-normal">({calculatePercentage(selectedCampaign.attachmentOpenedCount || 0, selectedCampaign.targetCount)}%)</span></span>
                   </div>
-
                   <div className="flex items-center justify-between p-3 rounded-md bg-rose-500/10 border border-rose-500/20 ml-8">
                     <span className="text-sm font-medium flex items-center gap-2 text-rose-700 dark:text-rose-400"><Key className="w-4 h-4"/> Saisies (Compromis)</span>
                     <span className="font-bold text-rose-700 dark:text-rose-400">{selectedCampaign.compromisedCount} <span className="opacity-70 text-xs font-normal">({calculatePercentage(selectedCampaign.compromisedCount, selectedCampaign.targetCount)}%)</span></span>
                   </div>
-
                   <div className="flex items-center justify-between p-3 rounded-md bg-indigo-500/10 border border-indigo-500/20 ml-12 mt-2">
                     <span className="text-sm font-medium flex items-center gap-2 text-indigo-700 dark:text-indigo-400"><BookOpen className="w-4 h-4"/> Formations lues</span>
                     <span className="font-bold text-indigo-700 dark:text-indigo-400">{selectedCampaign.trainingCompletedCount || 0} <span className="opacity-70 text-xs font-normal">({calculatePercentage(selectedCampaign.trainingCompletedCount || 0, selectedCampaign.targetCount)}%)</span></span>
                   </div>
-
                   <div className="flex items-center justify-between p-3 rounded-md bg-emerald-500/10 border border-emerald-500/20 mt-6">
                     <span className="text-sm font-medium flex items-center gap-2 text-emerald-700 dark:text-emerald-400"><Flag className="w-4 h-4"/> Signalements SSI</span>
                     <span className="font-bold text-emerald-700 dark:text-emerald-400">{selectedCampaign.reportedCount} <span className="opacity-70 text-xs font-normal">({calculatePercentage(selectedCampaign.reportedCount, selectedCampaign.targetCount)}%)</span></span>
@@ -1301,7 +1296,6 @@ export default function AwarenessView() {
 
             return (
               <div className="space-y-6">
-
                 {(selectedModule.startDate || selectedModule.deadline) && (
                   <div className="bg-muted/30 p-3 rounded-lg flex items-center justify-center gap-4 text-sm font-medium border border-border/50">
                     <div className="flex flex-col items-center">
