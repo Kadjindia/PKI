@@ -36,9 +36,9 @@ import {
 } from "@/components/ui/tooltip";
 
 import {
-  ShieldAlert, GraduationCap, Users, Loader2, Trash2, Plus,
+  Users, Loader2, Trash2, Plus,
   TrendingUp, AlertTriangle, Upload, ShieldCheck, UserX, Activity,
-  Mail, MousePointer, Key, Flag, Paperclip, BookOpen, Search, Filter,
+  Mail, MousePointer, Key, Flag, Paperclip, BookOpen, Search,
   ArrowUpDown, ArrowDown, ArrowUp, Eye, Target, BarChart3, CalendarDays, Clock, CheckCircle2,
   Monitor, Video, CheckSquare, Mic, UserMinus
 } from "lucide-react";
@@ -47,7 +47,7 @@ import {
 const safeNum = (val: any): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
-  return isNaN(n) ? 0 : n;
+  return Number.isNaN(n) ? 0 : n;
 };
 
 // Sécurité contre la casse de recherche si un nom est vide
@@ -61,7 +61,7 @@ const calculatePercentage = (part: number, total: number) => {
   const t = safeNum(total);
   if (t === 0) return 0;
   const result = Math.round((p / t) * 100);
-  return isNaN(result) ? 0 : result;
+  return Number.isNaN(result) ? 0 : result;
 };
 
 const calculateRiskScore = (
@@ -93,9 +93,29 @@ const parseExcelDate = (excelDate: any) => {
       if (parts.length === 3) return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`).toISOString();
     }
     const d = new Date(excelDate);
-    if (!isNaN(d.getTime())) return d.toISOString();
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
   }
   return undefined;
+};
+
+// Fonction sécurisée pour parser une ligne CSV sans Regex (évite le backtracking super-linéaire)
+const parseCSVLine = (text: string): string[] => {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim().replace(/^"|"$/g, ''));
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim().replace(/^"|"$/g, ''));
+  return result;
 };
 
 export default function AwarenessView() {
@@ -368,7 +388,7 @@ export default function AwarenessView() {
       const module = modules.find(m => m.id === moduleId);
       if (!module) throw new Error("Module introuvable");
 
-      const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/gi;
+      const emailRegex = /([a-z0-9._-]+@[a-z0-9._-]+\.[a-z0-9._-]+)/gi;
       const extractedEmails = rawEmails.match(emailRegex) || [];
 
       const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
@@ -482,18 +502,18 @@ export default function AwarenessView() {
       const lines = text.split('\n');
       if (lines.length < 2) return toast.error("Fichier vide ou invalide.");
 
-      const headers = lines[0].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.trim().replace(/^"|"$/g, ''));
+      const headers = parseCSVLine(lines[0]);
 
-      const idxEmail = headers.findIndex(h => h === 'Email Address');
-      const idxFirstName = headers.findIndex(h => h === 'First Name');
-      const idxLastName = headers.findIndex(h => h === 'Last Name');
+      const idxEmail = headers.indexOf('Email Address');
+      const idxFirstName = headers.indexOf('First Name');
+      const idxLastName = headers.indexOf('Last Name');
       const idxOrg = headers.findIndex(h => h === 'DOMAINE' || h === 'ORGANISATION' || h === 'Group' || h === 'EMPLOI');
 
       const idxOpened = headers.findIndex(h => h === 'Date Email Opened' || h === 'Primary Email Opened');
       const idxAttachment = headers.findIndex(h => h === 'Primary Attachment Opened' || h === 'Attachment Opened');
       const idxClicked = headers.findIndex(h => h === 'Date Clicked' || h === 'Primary Clicked');
       const idxCompromised = headers.findIndex(h => h === 'Primary Compromised Login' || h === 'Weak Egress');
-      const idxTraining = headers.findIndex(h => h === 'Acknowledgement Completed');
+      const idxTraining = headers.indexOf('Acknowledgement Completed');
       const idxReported = headers.findIndex(h => h === 'Date Reported' || h === 'Reported');
 
       if (idxEmail === -1) return toast.error("Colonne 'Email Address' introuvable dans le CSV.");
@@ -507,7 +527,7 @@ export default function AwarenessView() {
 
       lines.forEach((line, index) => {
         if (index === 0 || !line.trim()) return;
-        const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.trim().replace(/^"|"$/g, ''));
+        const cols = parseCSVLine(line);
         if (cols.length < headers.length - 2) return;
 
         const email = cols[idxEmail].toLowerCase();
