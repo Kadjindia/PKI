@@ -1001,7 +1001,7 @@ export default function AwarenessView() {
       const module = modules.find(m => m.id === moduleId);
       if (!module) throw new Error("Module introuvable");
 
-      const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+      const emailRegex = /[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,10}/g;
       const extractedEmails = rawEmails.match(emailRegex) || [];
       const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
       const newlyCompletedEmails: string[] = [];
