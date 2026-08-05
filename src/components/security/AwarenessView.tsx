@@ -43,14 +43,16 @@ import {
   Monitor, Video, CheckSquare, Mic, UserMinus
 } from "lucide-react";
 
-// --- FONCTIONS DE SÉCURITÉ ---
+// ============================================================================
+// UTILITAIRES DE SÉCURITÉ ET CALCULS
+// ============================================================================
 const safeNum = (val: unknown): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
   return Number.isNaN(n) ? 0 : n;
 };
 
-// Sécurité contre la casse de recherche si un nom est vide et protection Object
+// Sécurité contre la casse de recherche et protection contre le [object Object]
 const safeString = (val: unknown): string => {
   if (!val || typeof val === 'object') return "";
   return String(val).toLowerCase();
@@ -65,19 +67,9 @@ const calculatePercentage = (part: number, total: number) => {
 };
 
 const calculateRiskScore = (
-  clicked: number,
-  attachment: number,
-  compromised: number,
-  reported: number,
-  training: number,
-  isConsecutive: boolean
+  clicked: number, attachment: number, compromised: number, reported: number, training: number, isConsecutive: boolean
 ) => {
-  let score = (safeNum(clicked) * 20) +
-              (safeNum(attachment) * 20) +
-              (safeNum(compromised) * 40) -
-              (safeNum(reported) * 10) -
-              (safeNum(training) * 5);
-
+  let score = (safeNum(clicked) * 20) + (safeNum(attachment) * 20) + (safeNum(compromised) * 40) - (safeNum(reported) * 10) - (safeNum(training) * 5);
   if (isConsecutive) score += 20;
   return Math.min(100, Math.max(0, score));
 };
@@ -98,6 +90,7 @@ const parseExcelDate = (excelDate: unknown) => {
   return undefined;
 };
 
+// Analyseur CSV sécurisé sans regex vulnérable (Correction du ReDoS Catastrophic Backtracking)
 const parseCSVLine = (text: string): string[] => {
   const result: string[] = [];
   let current = '';
@@ -130,6 +123,178 @@ const getRiskBadgeClassOutline = (score: number) => {
 
 const isAffirmative = (val: string | undefined) => val !== undefined && val.length > 0 && val.toLowerCase() !== 'false' && val.toLowerCase() !== 'no';
 
+// ============================================================================
+// MOTEURS D'EXTRACTION DE DONNÉES (Séparés pour réduire la complexité cognitive)
+// ============================================================================
+const processProofpointData = (text: string, profiles: PhishingProfile[]) => {
+  const lines = text.split('\n');
+  if (lines.length < 2) throw new Error("Fichier vide ou invalide.");
+
+  const headers = parseCSVLine(lines[0]);
+  const idxEmail = headers.indexOf('Email Address');
+  const idxFirstName = headers.indexOf('First Name');
+  const idxLastName = headers.indexOf('Last Name');
+  const idxOrg = headers.findIndex(h => ['DOMAINE', 'ORGANISATION', 'Group', 'EMPLOI'].includes(h));
+  const idxOpened = headers.findIndex(h => ['Date Email Opened', 'Primary Email Opened'].includes(h));
+  const idxAttachment = headers.findIndex(h => ['Primary Attachment Opened', 'Attachment Opened'].includes(h));
+  const idxClicked = headers.findIndex(h => ['Date Clicked', 'Primary Clicked'].includes(h));
+  const idxCompromised = headers.findIndex(h => ['Primary Compromised Login', 'Weak Egress'].includes(h));
+  const idxTraining = headers.indexOf('Acknowledgement Completed');
+  const idxReported = headers.findIndex(h => ['Date Reported', 'Reported'].includes(h));
+
+  if (idxEmail === -1) throw new Error("Colonne 'Email Address' introuvable dans le CSV.");
+
+  let target = 0, opened = 0, attachmentOpened = 0, clicked = 0, compromised = 0, trainingCompleted = 0, reported = 0, recidivists = 0;
+  const failedEmails: string[] = [];
+  const updatedProfiles: PhishingProfile[] = [];
+  const detailedResults: any[] = [];
+  const existingProfilesMap = new Map(profiles.map(p => [p.email, p]));
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const cols = parseCSVLine(line);
+    if (cols.length < headers.length - 2) continue;
+
+    const email = cols[idxEmail].toLowerCase();
+    let hasOpened = isAffirmative(cols[idxOpened]);
+    const hasAttachmentOpened = isAffirmative(cols[idxAttachment]);
+    let hasClicked = isAffirmative(cols[idxClicked]);
+    const hasCompromised = isAffirmative(cols[idxCompromised]);
+    const hasTraining = isAffirmative(cols[idxTraining]);
+    const hasReported = isAffirmative(cols[idxReported]);
+
+    if (hasTraining) hasClicked = true;
+    if (hasCompromised) hasClicked = true;
+    if (hasClicked || hasAttachmentOpened) hasOpened = true;
+
+    target++;
+    if (hasOpened) opened++;
+    if (hasAttachmentOpened) attachmentOpened++;
+    if (hasClicked) { clicked++; failedEmails.push(email); }
+    if (hasCompromised) compromised++;
+    if (hasTraining) trainingCompleted++;
+    if (hasReported) reported++;
+
+    const existing = existingProfilesMap.get(email) || {
+      email, firstName: '', lastName: '', department: '', totalCampaigns: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, riskScore: 0, lastCampaignClicked: false, isConsecutive: false
+    };
+
+    const newOpenedCount = safeNum(existing.openedCount) + (hasOpened ? 1 : 0);
+    const newAttachmentCount = safeNum(existing.attachmentOpenedCount) + (hasAttachmentOpened ? 1 : 0);
+    const newClickedCount = safeNum(existing.clickedCount) + (hasClicked ? 1 : 0);
+    const newCompromisedCount = safeNum(existing.compromisedCount) + (hasCompromised ? 1 : 0);
+    const newTrainingCount = safeNum(existing.trainingCompletedCount) + (hasTraining ? 1 : 0);
+    const newReportedCount = safeNum(existing.reportedCount) + (hasReported ? 1 : 0);
+    const newTotalCampaigns = safeNum(existing.totalCampaigns) + 1;
+
+    const fellThisTime = hasClicked || hasAttachmentOpened;
+    const fellInPast = safeNum(existing.clickedCount) > 0 || safeNum(existing.attachmentOpenedCount) > 0;
+    const isRecidivist = fellThisTime && fellInPast;
+    const newConsecutive = existing.isConsecutive || isRecidivist;
+    if (isRecidivist) recidivists++;
+
+    detailedResults.push({ email, opened: hasOpened, attachment: hasAttachmentOpened, clicked: hasClicked, compromised: hasCompromised, training: hasTraining, reported: hasReported, isRecidivist: isRecidivist });
+    const riskScore = calculateRiskScore(newClickedCount, newAttachmentCount, newCompromisedCount, newReportedCount, newTrainingCount, newConsecutive);
+
+    updatedProfiles.push({
+      email, firstName: existing.firstName || (idxFirstName !== -1 ? cols[idxFirstName] : ''), lastName: existing.lastName || (idxLastName !== -1 ? cols[idxLastName] : ''), department: existing.department || (idxOrg !== -1 ? cols[idxOrg] : ''),
+      totalCampaigns: newTotalCampaigns, openedCount: newOpenedCount, attachmentOpenedCount: newAttachmentCount, clickedCount: newClickedCount,
+      compromisedCount: newCompromisedCount, trainingCompletedCount: newTrainingCount, reportedCount: newReportedCount,
+      riskScore: riskScore, lastCampaignClicked: fellThisTime, isConsecutive: newConsecutive
+    });
+  }
+
+  return { target, opened, attachmentOpened, clicked, compromised, trainingCompleted, reported, recidivists, failedEmails, updatedProfiles, detailedResults };
+};
+
+const processLmsWorkbookData = (workbook: XLSX.WorkBook, modules: ElearningModule[], profiles: PhishingProfile[]) => {
+  let validRows: any[] = [];
+  let mailKey: string | undefined;
+  let parcoursKey: string | undefined;
+  let etatKey: string | undefined;
+  let startDateKey: string | undefined;
+  let endDateKey: string | undefined;
+
+  for (const sheetName of workbook.SheetNames) {
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet);
+    if (rows.length > 0) {
+      const keys = Object.keys(rows[0]);
+      const mKey = keys.find(k => k.trim().toLowerCase() === 'mail');
+      const pKey = keys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
+      const eKey = keys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
+      startDateKey = keys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début');
+      endDateKey = keys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin');
+
+      if (mKey && pKey && eKey) { validRows = rows; mailKey = mKey; parcoursKey = pKey; etatKey = eKey; break; }
+    }
+  }
+
+  if (validRows.length === 0 || !mailKey || !parcoursKey || !etatKey) throw new Error("Colonnes obligatoires introuvables.");
+
+  let moduleName = "";
+  let startDateFound: string | undefined = undefined;
+  let endDateFound: string | undefined = undefined;
+  let total = 0, completed = 0, inProgress = 0, notStarted = 0;
+  const profilesToUpdate: PhishingProfile[] = [];
+  const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
+
+  validRows.forEach((row) => {
+    if (!endDateFound && endDateKey && row[endDateKey]) endDateFound = parseExcelDate(row[endDateKey]);
+    if (!startDateFound && startDateKey && row[startDateKey]) startDateFound = parseExcelDate(row[startDateKey]);
+  });
+
+  const tempName = String(validRows[0][parcoursKey] || "").trim();
+  const matchingModules = modules.filter(m => m.name.toLowerCase() === tempName.toLowerCase() && (m.formatType === 'E-Learning' || (m as any).format_type === 'E-Learning'));
+  let matchedModule: ElearningModule | undefined = undefined;
+  let isRenewal = false;
+
+  if (matchingModules.length > 0) {
+    matchingModules.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+    const existingDeadlineIso = matchingModules[0].deadline ? new Date(matchingModules[0].deadline).toISOString().split('T')[0] : null;
+    const newDeadlineIso = endDateFound ? new Date(endDateFound).toISOString().split('T')[0] : null;
+    if (existingDeadlineIso && newDeadlineIso && existingDeadlineIso !== newDeadlineIso) { isRenewal = true; }
+    else { matchedModule = matchingModules[0]; }
+  }
+
+  const existingCompletedEmails = matchedModule?.completedBy || (matchedModule as any)?.completed_by || [];
+  const newlyCompletedEmails: string[] = [];
+
+  validRows.forEach((row) => {
+    const email = String(row[mailKey!] || "").trim().toLowerCase();
+    const etat = String(row[etatKey!] || "").trim().toLowerCase();
+    const parcours = String(row[parcoursKey!] || "").trim();
+    if (!email || email === "undefined" || email === "") return;
+    if (parcours && !moduleName) moduleName = parcours;
+
+    total++;
+    let isCompleted = false;
+    if (etat.includes('terminé') || etat.includes('validé') || etat.includes('complété') || etat === 'achevé') { completed++; isCompleted = true; }
+    else if (etat.includes('en cours') || etat.includes('progress') || etat.includes('initié')) { inProgress++; }
+    else { notStarted++; }
+
+    if (isCompleted && currentProfilesMap.has(email) && !existingCompletedEmails.includes(email)) {
+      newlyCompletedEmails.push(email);
+      const p = { ...currentProfilesMap.get(email)! };
+      p.trainingCompletedCount = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count) + 1;
+      p.riskScore = calculateRiskScore(safeNum(p.clickedCount), safeNum(p.attachmentOpenedCount), safeNum(p.compromisedCount), safeNum(p.reportedCount), p.trainingCompletedCount, p.isConsecutive || false);
+      profilesToUpdate.push(p);
+    }
+  });
+
+  return {
+    moduleName: matchedModule ? matchedModule.name : (moduleName || "Nouvelle formation"),
+    originalExcelName: moduleName || "Nouvelle formation",
+    totalAssigned: total, completedCount: completed, inProgressCount: inProgress, notStartedCount: notStarted,
+    completedBy: [...existingCompletedEmails, ...newlyCompletedEmails], startDateFound, endDateFound,
+    matchedModuleId: matchedModule ? matchedModule.id : "new", isRenewal, profilesToUpdate
+  };
+};
+
+// ============================================================================
+// COMPOSANT PRINCIPAL
+// ============================================================================
 export default function AwarenessView() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("phishing");
@@ -181,55 +346,28 @@ export default function AwarenessView() {
   const elearningModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") === "E-Learning");
   const sessionModules = modules.filter(m => (m.formatType || (m as any).format_type || "E-Learning") !== "E-Learning");
 
+  // --- MUTATIONS ---
   const resetProfilesMutation = useMutation({
     mutationFn: async () => {
       const currentProfiles = await fetchPhishingProfiles();
       const resetProfiles = currentProfiles.map(p => ({
-        ...p,
-        totalCampaigns: 0, total_campaigns: 0,
-        openedCount: 0, opened_count: 0,
-        attachmentOpenedCount: 0, attachment_opened_count: 0,
-        clickedCount: 0, clicked_count: 0,
-        compromisedCount: 0, compromised_count: 0,
-        trainingCompletedCount: 0, training_completed_count: 0,
-        reportedCount: 0, reported_count: 0,
-        riskScore: 0,
-        lastCampaignClicked: false,
-        isConsecutive: false, is_consecutive: false
+        ...p, totalCampaigns: 0, total_campaigns: 0, openedCount: 0, opened_count: 0, attachmentOpenedCount: 0, attachment_opened_count: 0,
+        clickedCount: 0, clicked_count: 0, compromisedCount: 0, compromised_count: 0, trainingCompletedCount: 0, training_completed_count: 0,
+        reportedCount: 0, reported_count: 0, riskScore: 0, lastCampaignClicked: false, isConsecutive: false, is_consecutive: false
       }));
-
-      const chunkSize = 500;
-      for (let i = 0; i < resetProfiles.length; i += chunkSize) {
-        const chunk = resetProfiles.slice(i, i + chunkSize);
-        await upsertPhishingProfiles(chunk as any);
-      }
+      for (let i = 0; i < resetProfiles.length; i += 500) await upsertPhishingProfiles(resetProfiles.slice(i, i + 500) as any);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Tous les compteurs ont été purgés avec succès !");
-      setIsResetProfilesOpen(false);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Tous les compteurs ont été purgés !"); setIsResetProfilesOpen(false); }
   });
 
-  // --- MUTATIONS PHISHING ---
   const addCampaignMutation = useMutation({
     mutationFn: async () => {
       await createPhishingCampaign({ ...newCampaign, detailed_results: newCampaign.detailedResults } as any);
-      if (updatedProfilesBatch.length > 0) {
-        const chunkSize = 500;
-        for (let i = 0; i < updatedProfilesBatch.length; i += chunkSize) {
-          const chunk = updatedProfilesBatch.slice(i, i + chunkSize);
-          await upsertPhishingProfiles(chunk);
-        }
-      }
+      for (let i = 0; i < updatedProfilesBatch.length; i += 500) await upsertPhishingProfiles(updatedProfilesBatch.slice(i, i + 500));
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['phishing'] });
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Campagne et profils enregistrés avec succès !");
-      setIsAddCampaignOpen(false);
-      setNewCampaign({ name: "", sendDate: new Date().toISOString().split('T')[0], difficulty: "moyen", targetCount: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, recidivistsCount: 0, failedEmails: [], detailedResults: [], fileLoaded: false });
-      setUpdatedProfilesBatch([]);
+      queryClient.invalidateQueries({ queryKey: ['phishing'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      toast.success("Campagne enregistrée !"); setIsAddCampaignOpen(false); setUpdatedProfilesBatch([]);
     }
   });
 
@@ -244,86 +382,38 @@ export default function AwarenessView() {
         detailed.forEach((res: any) => {
           const p = profilesMap.get(res.email);
           if (p) {
-            const currentTotal = safeNum(p.totalCampaigns ?? (p as any).total_campaigns);
-            const currentOpened = safeNum(p.openedCount ?? (p as any).opened_count);
-            const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
-            const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
-            const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
-            const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
-            const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
+            p.totalCampaigns = Math.max(0, safeNum(p.totalCampaigns ?? (p as any).total_campaigns) - 1);
+            p.openedCount = Math.max(0, safeNum(p.openedCount ?? (p as any).opened_count) - (res.opened ? 1 : 0));
+            p.attachmentOpenedCount = Math.max(0, safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count) - (res.attachment ? 1 : 0));
+            p.clickedCount = Math.max(0, safeNum(p.clickedCount ?? (p as any).clicked_count) - (res.clicked ? 1 : 0));
+            p.compromisedCount = Math.max(0, safeNum(p.compromisedCount ?? (p as any).compromised_count) - (res.compromised ? 1 : 0));
+            p.trainingCompletedCount = Math.max(0, safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count) - (res.training ? 1 : 0));
+            p.reportedCount = Math.max(0, safeNum(p.reportedCount ?? (p as any).reported_count) - (res.reported ? 1 : 0));
 
-            p.totalCampaigns = Math.max(0, currentTotal - 1); (p as any).total_campaigns = p.totalCampaigns;
-            p.openedCount = Math.max(0, currentOpened - (res.opened ? 1 : 0)); (p as any).opened_count = p.openedCount;
-            p.attachmentOpenedCount = Math.max(0, currentAttachment - (res.attachment ? 1 : 0)); (p as any).attachment_opened_count = p.attachmentOpenedCount;
-            p.clickedCount = Math.max(0, currentClicked - (res.clicked ? 1 : 0)); (p as any).clicked_count = p.clickedCount;
-            p.compromisedCount = Math.max(0, currentCompromised - (res.compromised ? 1 : 0)); (p as any).compromised_count = p.compromisedCount;
-            p.trainingCompletedCount = Math.max(0, currentTraining - (res.training ? 1 : 0)); (p as any).training_completed_count = p.trainingCompletedCount;
-            p.reportedCount = Math.max(0, currentReported - (res.reported ? 1 : 0)); (p as any).reported_count = p.reportedCount;
-
-            if (p.clickedCount + p.attachmentOpenedCount <= 1) {
-              p.isConsecutive = false; (p as any).is_consecutive = false; p.lastCampaignClicked = false;
-            }
+            if (p.clickedCount + p.attachmentOpenedCount <= 1) { p.isConsecutive = false; p.lastCampaignClicked = false; }
             p.riskScore = calculateRiskScore(p.clickedCount, p.attachmentOpenedCount, p.compromisedCount, p.reportedCount, p.trainingCompletedCount, p.isConsecutive || false);
             profilesToUpdate.push(p);
           }
         });
-        if (profilesToUpdate.length > 0) {
-          const chunkSize = 500;
-          for (let i = 0; i < profilesToUpdate.length; i += chunkSize) {
-            await upsertPhishingProfiles(profilesToUpdate.slice(i, i + chunkSize));
-          }
-        }
+        for (let i = 0; i < profilesToUpdate.length; i += 500) await upsertPhishingProfiles(profilesToUpdate.slice(i, i + 500));
       }
       await deletePhishingCampaign(campaign.id);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['phishing'] });
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Campagne supprimée et compteurs/scores restaurés !");
-      setSelectedCampaign(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['phishing'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Campagne supprimée !"); setSelectedCampaign(null); }
   });
 
-  // --- MUTATIONS E-LEARNING / SESSIONS ---
   const saveLmsMutation = useMutation({
     mutationFn: async () => {
-      const total = safeNum(parsedLmsData.totalAssigned);
-      const completed = safeNum(parsedLmsData.completedCount);
-      const safeStartDate = parsedLmsData.startDate || null;
-      const safeDeadline = parsedLmsData.deadline || null;
-
       const payload = {
-        name: parsedLmsData.name,
-        targetAudience: parsedLmsData.targetAudience,
-        target_audience: parsedLmsData.targetAudience,
-        formatType: "E-Learning",
-        format_type: "E-Learning",
-        totalAssigned: total, total_assigned: total,
-        completedCount: completed, completed_count: completed,
-        completedBy: parsedLmsData.completedBy, completed_by: parsedLmsData.completedBy,
-        startDate: safeStartDate, start_date: safeStartDate,
-        deadline: safeDeadline,
+        name: parsedLmsData.name, targetAudience: parsedLmsData.targetAudience, target_audience: parsedLmsData.targetAudience, formatType: "E-Learning", format_type: "E-Learning",
+        totalAssigned: safeNum(parsedLmsData.totalAssigned), total_assigned: safeNum(parsedLmsData.totalAssigned), completedCount: safeNum(parsedLmsData.completedCount), completed_count: safeNum(parsedLmsData.completedCount),
+        completedBy: parsedLmsData.completedBy, completed_by: parsedLmsData.completedBy, startDate: parsedLmsData.startDate || null, start_date: parsedLmsData.startDate || null, deadline: parsedLmsData.deadline || null,
       };
-
-      if (parsedLmsData.selectedModuleId !== "new") {
-        await updateElearningModule(parsedLmsData.selectedModuleId, payload as any);
-      } else {
-        await createElearningModule(payload as any);
-      }
-
-      if (updatedProfilesBatch.length > 0) {
-        const chunkSize = 500;
-        for (let i = 0; i < updatedProfilesBatch.length; i += chunkSize) {
-          await upsertPhishingProfiles(updatedProfilesBatch.slice(i, i + chunkSize));
-        }
-      }
+      if (parsedLmsData.selectedModuleId !== "new") await updateElearningModule(parsedLmsData.selectedModuleId, payload as any);
+      else await createElearningModule(payload as any);
+      for (let i = 0; i < updatedProfilesBatch.length; i += 500) await upsertPhishingProfiles(updatedProfilesBatch.slice(i, i + 500));
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['elearning'] });
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Statistiques synchronisées avec succès !");
-      setIsLmsImportOpen(false);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Statistiques synchronisées !"); setIsLmsImportOpen(false); }
   });
 
   const delModuleMutation = useMutation({
@@ -333,60 +423,27 @@ export default function AwarenessView() {
         const currentProfiles = await fetchPhishingProfiles();
         const profilesMap = new Map(currentProfiles.map(p => [p.email, p]));
         const profilesToUpdate: PhishingProfile[] = [];
-
         completedEmails.forEach((email: string) => {
           const p = profilesMap.get(email);
           if (p) {
-            const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
-            const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
-            const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
-            const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
-            const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
-
-            p.trainingCompletedCount = Math.max(0, currentTraining - 1);
-            (p as any).training_completed_count = p.trainingCompletedCount;
-            p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
+            p.trainingCompletedCount = Math.max(0, safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count) - 1);
+            p.riskScore = calculateRiskScore(safeNum(p.clickedCount), safeNum(p.attachmentOpenedCount), safeNum(p.compromisedCount), safeNum(p.reportedCount), p.trainingCompletedCount, p.isConsecutive || false);
             profilesToUpdate.push(p);
           }
         });
-        if (profilesToUpdate.length > 0) {
-          const chunkSize = 500;
-          for (let i = 0; i < profilesToUpdate.length; i += chunkSize) {
-            await upsertPhishingProfiles(profilesToUpdate.slice(i, i + chunkSize));
-          }
-        }
+        for (let i = 0; i < profilesToUpdate.length; i += 500) await upsertPhishingProfiles(profilesToUpdate.slice(i, i + 500));
       }
       await deleteElearningModule(module.id);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['elearning'] });
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Élément supprimé et Risk Scores restaurés (Rollback) !");
-      setModuleToDelete(null);
-      setSelectedModule(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Élément supprimé !"); setModuleToDelete(null); setSelectedModule(null); }
   });
 
   const addModuleMutation = useMutation({
     mutationFn: async (module: typeof newModule) => {
-      const cleanStartDate = module.startDate ? new Date(module.startDate).toISOString() : null;
-      const cleanDeadline = module.deadline ? new Date(module.deadline).toISOString() : null;
-
       await createElearningModule({
-        name: module.name,
-        targetAudience: module.targetAudience,
-        target_audience: module.targetAudience,
-        formatType: module.formatType,
-        format_type: module.formatType,
-        totalAssigned: module.totalAssigned,
-        total_assigned: module.totalAssigned,
-        completedCount: 0,
-        completed_count: 0,
-        completedBy: [],
-        completed_by: [],
-        startDate: cleanStartDate,
-        start_date: cleanStartDate,
-        deadline: cleanDeadline
+        name: module.name, targetAudience: module.targetAudience, target_audience: module.targetAudience, formatType: module.formatType, format_type: module.formatType,
+        totalAssigned: module.totalAssigned, total_assigned: module.totalAssigned, completedCount: 0, completed_count: 0, completedBy: [], completed_by: [],
+        startDate: module.startDate ? new Date(module.startDate).toISOString() : null, deadline: module.deadline ? new Date(module.deadline).toISOString() : null
       } as any);
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); toast.success("Créé avec succès !"); setIsAddModuleOpen(false); }
@@ -396,387 +453,104 @@ export default function AwarenessView() {
     mutationFn: async ({ moduleId, rawEmails }: { moduleId: string, rawEmails: string }) => {
       const module = modules.find(m => m.id === moduleId);
       if (!module) throw new Error("Module introuvable");
-
-      const emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+      const emailRegex = /([a-z0-9._-]+@[a-z0-9._-]+\.[a-z0-9._-]+)/gi;
       const extractedEmails = rawEmails.match(emailRegex) || [];
-
       const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
       const newlyCompletedEmails: string[] = [];
       const profilesToUpdate: PhishingProfile[] = [];
       const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
 
       let completedAdded = 0;
-
       extractedEmails.forEach(email => {
-        const cleanEmail = email.toLowerCase().trim();
-        if (!existingCompletedEmails.includes(cleanEmail) && !newlyCompletedEmails.includes(cleanEmail)) {
-          if (currentProfilesMap.has(cleanEmail)) {
-            newlyCompletedEmails.push(cleanEmail);
-            const p = { ...currentProfilesMap.get(cleanEmail)! };
-
-            const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
-            p.trainingCompletedCount = currentTraining + 1;
-            (p as any).training_completed_count = p.trainingCompletedCount;
-
-            const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
-            const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
-            const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
-            const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
-
-            p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
-
-            profilesToUpdate.push(p);
-            completedAdded++;
-          }
+        email = email.toLowerCase().trim();
+        if (!existingCompletedEmails.includes(email) && !newlyCompletedEmails.includes(email) && currentProfilesMap.has(email)) {
+          newlyCompletedEmails.push(email);
+          const p = { ...currentProfilesMap.get(email)! };
+          p.trainingCompletedCount = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count) + 1;
+          p.riskScore = calculateRiskScore(safeNum(p.clickedCount), safeNum(p.attachmentOpenedCount), safeNum(p.compromisedCount), safeNum(p.reportedCount), p.trainingCompletedCount, p.isConsecutive || false);
+          profilesToUpdate.push(p);
+          completedAdded++;
         }
       });
 
       const newCompletedCount = safeNum(module.completedCount) + completedAdded;
       const newCompletedBy = [...existingCompletedEmails, ...newlyCompletedEmails];
+      await updateElearningModule(moduleId, { completedCount: newCompletedCount, completed_count: newCompletedCount, completedBy: newCompletedBy, completed_by: newCompletedBy } as any);
 
-      await updateElearningModule(moduleId, {
-        completedCount: newCompletedCount, completed_count: newCompletedCount,
-        completedBy: newCompletedBy, completed_by: newCompletedBy
-      } as any);
-
-      if (profilesToUpdate.length > 0) {
-        const chunkSize = 500;
-        for (let i = 0; i < profilesToUpdate.length; i += chunkSize) {
-          await upsertPhishingProfiles(profilesToUpdate.slice(i, i + chunkSize));
-        }
-      }
+      for (let i = 0; i < profilesToUpdate.length; i += 500) await upsertPhishingProfiles(profilesToUpdate.slice(i, i + 500));
       return completedAdded;
     },
-    onSuccess: (added) => {
-      queryClient.invalidateQueries({ queryKey: ['elearning'] });
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success(`${added} présences validées et Risk Scores mis à jour !`);
-      setIsAttendanceModalOpen(false);
-      setAttendanceEmails("");
-      if (selectedModule) {
-         const updatedModule = modules.find(m => m.id === selectedModule.id);
-         if (updatedModule) setSelectedModule(updatedModule);
-      }
-    }
+    onSuccess: (added) => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success(`${added} présences validées !`); setIsAttendanceModalOpen(false); setAttendanceEmails(""); }
   });
 
   const removeParticipantMutation = useMutation({
     mutationFn: async ({ moduleId, emailToRemove }: { moduleId: string, emailToRemove: string }) => {
       const module = modules.find(m => m.id === moduleId);
       if (!module) throw new Error("Module introuvable");
-
       const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
       const newCompletedBy = existingCompletedEmails.filter((email: string) => email !== emailToRemove);
       const newCompletedCount = Math.max(0, safeNum(module.completedCount) - 1);
-
-      await updateElearningModule(moduleId, {
-        completedCount: newCompletedCount, completed_count: newCompletedCount,
-        completedBy: newCompletedBy, completed_by: newCompletedBy
-      } as any);
+      await updateElearningModule(moduleId, { completedCount: newCompletedCount, completed_count: newCompletedCount, completedBy: newCompletedBy, completed_by: newCompletedBy } as any);
 
       const currentProfiles = await fetchPhishingProfiles();
       const profile = currentProfiles.find(p => p.email.toLowerCase() === emailToRemove.toLowerCase());
-
       if (profile) {
-        const currentTraining = safeNum(profile.trainingCompletedCount ?? (profile as any).training_completed_count);
-        const currentClicked = safeNum(profile.clickedCount ?? (profile as any).clicked_count);
-        const currentAttachment = safeNum(profile.attachmentOpenedCount ?? (profile as any).attachment_opened_count);
-        const currentCompromised = safeNum(profile.compromisedCount ?? (profile as any).compromised_count);
-        const currentReported = safeNum(profile.reportedCount ?? (profile as any).reported_count);
-
-        profile.trainingCompletedCount = Math.max(0, currentTraining - 1);
-        (profile as any).training_completed_count = profile.trainingCompletedCount;
-
-        profile.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, profile.trainingCompletedCount, profile.isConsecutive || false);
-
+        profile.trainingCompletedCount = Math.max(0, safeNum(profile.trainingCompletedCount ?? (profile as any).training_completed_count) - 1);
+        profile.riskScore = calculateRiskScore(safeNum(profile.clickedCount), safeNum(profile.attachmentOpenedCount), safeNum(profile.compromisedCount), safeNum(profile.reportedCount), profile.trainingCompletedCount, profile.isConsecutive || false);
         await upsertPhishingProfiles([profile]);
       }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['elearning'] });
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
-      toast.success("Participant retiré et Risk Score recalculé !");
-      setSelectedModule(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Participant retiré !"); setSelectedModule(null); }
   });
 
-  // --- PARSEUR PROOFPOINT ---
-  const processProofpointData = (text: string) => {
-    const lines = text.split('\n');
-    if (lines.length < 2) return toast.error("Fichier vide ou invalide.");
-
-    const headers = parseCSVLine(lines[0]);
-
-    const idxEmail = headers.indexOf('Email Address');
-    const idxFirstName = headers.indexOf('First Name');
-    const idxLastName = headers.indexOf('Last Name');
-    const idxOrg = headers.findIndex(h => h === 'DOMAINE' || h === 'ORGANISATION' || h === 'Group' || h === 'EMPLOI');
-
-    const idxOpened = headers.findIndex(h => h === 'Date Email Opened' || h === 'Primary Email Opened');
-    const idxAttachment = headers.findIndex(h => h === 'Primary Attachment Opened' || h === 'Attachment Opened');
-    const idxClicked = headers.findIndex(h => h === 'Date Clicked' || h === 'Primary Clicked');
-    const idxCompromised = headers.findIndex(h => h === 'Primary Compromised Login' || h === 'Weak Egress');
-    const idxTraining = headers.indexOf('Acknowledgement Completed');
-    const idxReported = headers.findIndex(h => h === 'Date Reported' || h === 'Reported');
-
-    if (idxEmail === -1) return toast.error("Colonne 'Email Address' introuvable dans le CSV.");
-
-    let target = 0, opened = 0, attachmentOpened = 0, clicked = 0, compromised = 0, trainingCompleted = 0, reported = 0, recidivists = 0;
-    const failedEmails: string[] = [];
-    const updatedProfiles: PhishingProfile[] = [];
-    const detailedResults: any[] = [];
-
-    const existingProfilesMap = new Map(profiles.map(p => [p.email, p]));
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i];
-      if (!line.trim()) continue;
-      const cols = parseCSVLine(line);
-      if (cols.length < headers.length - 2) continue;
-
-      const email = cols[idxEmail].toLowerCase();
-      const firstName = idxFirstName !== -1 ? cols[idxFirstName] : '';
-      const lastName = idxLastName !== -1 ? cols[idxLastName] : '';
-      const department = idxOrg !== -1 ? cols[idxOrg] : '';
-
-      let hasOpened = isAffirmative(cols[idxOpened]);
-      const hasAttachmentOpened = isAffirmative(cols[idxAttachment]);
-      let hasClicked = isAffirmative(cols[idxClicked]);
-      const hasCompromised = isAffirmative(cols[idxCompromised]);
-      const hasTraining = isAffirmative(cols[idxTraining]);
-      const hasReported = isAffirmative(cols[idxReported]);
-
-      if (hasTraining) hasClicked = true;
-      if (hasCompromised) hasClicked = true;
-      if (hasClicked || hasAttachmentOpened) hasOpened = true;
-
-      target++;
-      if (hasOpened) opened++;
-      if (hasAttachmentOpened) attachmentOpened++;
-      if (hasClicked) { clicked++; failedEmails.push(email); }
-      if (hasCompromised) compromised++;
-      if (hasTraining) trainingCompleted++;
-      if (hasReported) reported++;
-
-      const existing = existingProfilesMap.get(email) || {
-        email, firstName: '', lastName: '', department: '',
-        totalCampaigns: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0,
-        riskScore: 0, lastCampaignClicked: false, isConsecutive: false
-      };
-
-      const finalFirstName = existing.firstName || firstName;
-      const finalLastName = existing.lastName || lastName;
-      const finalDepartment = existing.department || department;
-
-      const currentOpened = safeNum(existing.openedCount ?? (existing as any).opened_count);
-      const currentAttachment = safeNum(existing.attachmentOpenedCount ?? (existing as any).attachment_opened_count);
-      const currentClicked = safeNum(existing.clickedCount ?? (existing as any).clicked_count);
-      const currentCompromised = safeNum(existing.compromisedCount ?? (existing as any).compromised_count);
-      const currentTraining = safeNum(existing.trainingCompletedCount ?? (existing as any).training_completed_count);
-      const currentReported = safeNum(existing.reportedCount ?? (existing as any).reported_count);
-      const currentTotalCamp = safeNum(existing.totalCampaigns ?? (existing as any).total_campaigns);
-
-      const newOpenedCount = currentOpened + (hasOpened ? 1 : 0);
-      const newAttachmentCount = currentAttachment + (hasAttachmentOpened ? 1 : 0);
-      const newClickedCount = currentClicked + (hasClicked ? 1 : 0);
-      const newCompromisedCount = currentCompromised + (hasCompromised ? 1 : 0);
-      const newTrainingCount = currentTraining + (hasTraining ? 1 : 0);
-      const newReportedCount = currentReported + (hasReported ? 1 : 0);
-      const newTotalCampaigns = currentTotalCamp + 1;
-
-      const fellThisTime = hasClicked || hasAttachmentOpened;
-      const fellInPast = currentClicked > 0 || currentAttachment > 0;
-
-      const isRecidivist = fellThisTime && fellInPast;
-      const newConsecutive = existing.isConsecutive || isRecidivist;
-      if (isRecidivist) recidivists++;
-
-      detailedResults.push({
-        email, opened: hasOpened, attachment: hasAttachmentOpened, clicked: hasClicked, compromised: hasCompromised,
-        training: hasTraining, reported: hasReported, isRecidivist: isRecidivist
-      });
-
-      const riskScore = calculateRiskScore(newClickedCount, newAttachmentCount, newCompromisedCount, newReportedCount, newTrainingCount, newConsecutive);
-
-      updatedProfiles.push({
-        email,
-        firstName: finalFirstName,
-        lastName: finalLastName,
-        department: finalDepartment,
-        totalCampaigns: newTotalCampaigns,
-        openedCount: newOpenedCount, attachmentOpenedCount: newAttachmentCount, clickedCount: newClickedCount,
-        compromisedCount: newCompromisedCount, trainingCompletedCount: newTrainingCount, reportedCount: newReportedCount,
-        riskScore: riskScore, lastCampaignClicked: fellThisTime, isConsecutive: newConsecutive
-      });
-    }
-
-    setUpdatedProfilesBatch(updatedProfiles);
-    setNewCampaign(prev => ({
-      ...prev, targetCount: target, openedCount: opened, attachmentOpenedCount: attachmentOpened,
-      clickedCount: clicked, compromisedCount: compromised, trainingCompletedCount: trainingCompleted,
-      reportedCount: reported, recidivistsCount: recidivists, failedEmails: failedEmails,
-      detailedResults: detailedResults, fileLoaded: true
-    }));
-
-    toast.success(`Analyse terminée : ${target} collaborateurs traités.`);
-  };
-
+  // --- PARSEURS ET UPLOADERS ---
   const handleProofpointUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
       const text = await file.text();
-      processProofpointData(text);
+      const results = processProofpointData(text, profiles);
+      setUpdatedProfilesBatch(results.updatedProfiles);
+      setNewCampaign(prev => ({
+        ...prev, targetCount: results.target, openedCount: results.opened, attachmentOpenedCount: results.attachmentOpened,
+        clickedCount: results.clicked, compromisedCount: results.compromised, trainingCompletedCount: results.trainingCompleted,
+        reportedCount: results.reported, recidivistsCount: results.recidivists, failedEmails: results.failedEmails,
+        detailedResults: results.detailedResults, fileLoaded: true
+      }));
+      toast.success(`Analyse terminée : ${results.target} collaborateurs traités.`);
     } catch (err) {
       console.error(err);
-      toast.error("Erreur de lecture du fichier.");
+      toast.error(err instanceof Error ? err.message : "Erreur de lecture du fichier.");
     }
     e.target.value = '';
-  };
-
-  const processLmsWorkbook = (workbook: XLSX.WorkBook) => {
-    let validRows: any[] = [];
-    let mailKey: string | undefined;
-    let parcoursKey: string | undefined;
-    let etatKey: string | undefined;
-    let startDateKey: string | undefined;
-    let endDateKey: string | undefined;
-
-    for (const sheetName of workbook.SheetNames) {
-      const worksheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet);
-
-      if (rows.length > 0) {
-        const keys = Object.keys(rows[0]);
-        const mKey = keys.find(k => k.trim().toLowerCase() === 'mail');
-        const pKey = keys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
-        const eKey = keys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
-
-        startDateKey = keys.find(k => {
-            const lower = k.trim().toLowerCase();
-            return lower === 'date de début de session 1' || lower === 'date de début';
-        });
-        endDateKey = keys.find(k => {
-            const lower = k.trim().toLowerCase();
-            return lower === 'date de fin de session 1' || lower === 'date de fin';
-        });
-
-        if (mKey && pKey && eKey) {
-          validRows = rows; mailKey = mKey; parcoursKey = pKey; etatKey = eKey; break;
-        }
-      }
-    }
-
-    if (validRows.length === 0 || !mailKey || !parcoursKey || !etatKey) {
-      return toast.error("Colonnes obligatoires introuvables dans l'Excel.");
-    }
-
-    let moduleName = "";
-    let startDateFound: string | undefined = undefined;
-    let endDateFound: string | undefined = undefined;
-    let total = 0, completed = 0, inProgress = 0, notStarted = 0;
-    const profilesToUpdate: PhishingProfile[] = [];
-    const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
-
-    const firstRow = validRows[0];
-    const tempName = String(firstRow[parcoursKey] || "").trim();
-
-    const matchingModules = modules.filter(m => m.name.toLowerCase() === tempName.toLowerCase() && (m.formatType === 'E-Learning' || (m as any).format_type === 'E-Learning'));
-    let matchedModule: ElearningModule | undefined = undefined;
-    let isRenewal = false;
-
-    validRows.forEach((row) => {
-      if (!endDateFound && endDateKey && row[endDateKey]) endDateFound = parseExcelDate(row[endDateKey]);
-      if (!startDateFound && startDateKey && row[startDateKey]) startDateFound = parseExcelDate(row[startDateKey]);
-    });
-
-    if (matchingModules.length > 0) {
-      matchingModules.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      const latestModule = matchingModules[0];
-      const existingDeadlineIso = latestModule.deadline ? new Date(latestModule.deadline).toISOString().split('T')[0] : null;
-      const newDeadlineIso = endDateFound ? new Date(endDateFound).toISOString().split('T')[0] : null;
-
-      if (existingDeadlineIso && newDeadlineIso && existingDeadlineIso !== newDeadlineIso) {
-        isRenewal = true;
-        matchedModule = undefined;
-      } else {
-        matchedModule = latestModule;
-      }
-    }
-
-    const existingCompletedEmails = matchedModule?.completedBy || (matchedModule as any)?.completed_by || [];
-    const newlyCompletedEmails: string[] = [];
-
-    validRows.forEach((row) => {
-      const email = String(row[mailKey!] || "").trim().toLowerCase();
-      const etat = String(row[etatKey!] || "").trim().toLowerCase();
-      const parcours = String(row[parcoursKey!] || "").trim();
-
-      if (!email || email === "undefined" || email === "") return;
-      if (parcours && !moduleName) moduleName = parcours;
-
-      total++;
-      let isCompleted = false;
-
-      if (etat.includes('terminé') || etat.includes('validé') || etat.includes('complété') || etat === 'achevé') {
-        completed++; isCompleted = true;
-      } else if (etat.includes('en cours') || etat.includes('progress') || etat.includes('initié')) {
-        inProgress++;
-      } else {
-        notStarted++;
-      }
-
-      if (isCompleted && currentProfilesMap.has(email)) {
-        if (!existingCompletedEmails.includes(email)) {
-          newlyCompletedEmails.push(email);
-          const p = { ...currentProfilesMap.get(email)! };
-
-          const currentTraining = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
-          p.trainingCompletedCount = currentTraining + 1;
-          (p as any).training_completed_count = p.trainingCompletedCount;
-
-          const currentClicked = safeNum(p.clickedCount ?? (p as any).clicked_count);
-          const currentAttachment = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
-          const currentCompromised = safeNum(p.compromisedCount ?? (p as any).compromised_count);
-          const currentReported = safeNum(p.reportedCount ?? (p as any).reported_count);
-
-          p.riskScore = calculateRiskScore(currentClicked, currentAttachment, currentCompromised, currentReported, p.trainingCompletedCount, p.isConsecutive || false);
-          profilesToUpdate.push(p);
-        }
-      }
-    });
-
-    const excelName = moduleName || "Nouvelle formation";
-
-    setUpdatedProfilesBatch(profilesToUpdate);
-    setParsedLmsData({
-      name: matchedModule ? matchedModule.name : excelName, originalExcelName: excelName, targetAudience: "Tous",
-      totalAssigned: total, completedCount: completed, inProgressCount: inProgress, notStartedCount: notStarted,
-      completedBy: [...existingCompletedEmails, ...newlyCompletedEmails],
-      startDate: startDateFound, deadline: endDateFound, fileLoaded: true,
-      selectedModuleId: matchedModule ? matchedModule.id : "new", isRenewal: isRenewal
-    });
-
-    setIsLmsImportOpen(true);
   };
 
   const handleLmsExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-        const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: 'array' });
-        processLmsWorkbook(workbook);
-    } catch (error) {
-        console.error(error);
-        toast.error("Erreur lors de la lecture du fichier Excel.");
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const results = processLmsWorkbookData(workbook, modules, profiles);
+
+      setUpdatedProfilesBatch(results.profilesToUpdate);
+      setParsedLmsData({
+        name: results.moduleName, originalExcelName: results.originalExcelName, targetAudience: "Tous",
+        totalAssigned: results.totalAssigned, completedCount: results.completedCount, inProgressCount: results.inProgressCount, notStartedCount: results.notStartedCount,
+        completedBy: results.completedBy, startDate: results.startDateFound, deadline: results.endDateFound, fileLoaded: true,
+        selectedModuleId: results.matchedModuleId, isRenewal: results.isRenewal
+      });
+      setIsLmsImportOpen(true);
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : String(err));
     }
     e.target.value = '';
   };
 
   const handleSort = (key: string) => {
     let direction: 'asc' | 'desc' = 'asc';
-    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
+    if (sortConfig?.key === key && sortConfig?.direction === 'asc') direction = 'desc';
     setSortConfig({ key, direction });
   };
 
@@ -794,40 +568,26 @@ export default function AwarenessView() {
           </Button>
           <TooltipProvider>
             <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="cursor-not-allowed">
-                  <Button size="sm" variant="secondary" disabled className="pointer-events-none">
-                    Générer un rapport
-                  </Button>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>À venir</p>
-              </TooltipContent>
+              <TooltipTrigger asChild><div className="cursor-not-allowed"><Button size="sm" variant="secondary" disabled className="pointer-events-none">Générer un rapport</Button></div></TooltipTrigger>
+              <TooltipContent><p>À venir</p></TooltipContent>
             </Tooltip>
           </TooltipProvider>
         </div>
       );
     }
-
     if (activeTab === "elearning") {
       return (
         <div className="flex gap-2 mb-2">
           <div className="relative">
             <Input type="file" id="lms-upload-top" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleLmsExcelUpload} />
             <Button variant="outline" size="sm" asChild>
-              <label htmlFor="lms-upload-top" className="cursor-pointer">
-                <Upload className="w-4 h-4 mr-2" /> Import (Excel)
-              </label>
+              <label htmlFor="lms-upload-top" className="cursor-pointer"><Upload className="w-4 h-4 mr-2" /> Import (Excel)</label>
             </Button>
           </div>
-          <Button size="sm" onClick={() => setIsAddModuleOpen(true)}>
-            <Plus className="w-4 h-4 mr-2" /> Nouvelle Session
-          </Button>
+          <Button size="sm" onClick={() => setIsAddModuleOpen(true)}><Plus className="w-4 h-4 mr-2" /> Nouvelle Session</Button>
         </div>
       );
     }
-
     return (
       <Button size="sm" onClick={() => setIsAddCampaignOpen(true)} className="mb-2">
         <Upload className="w-4 h-4 mr-2" /> Import Proofpoint
@@ -835,19 +595,24 @@ export default function AwarenessView() {
     );
   };
 
+  const renderLmsSubmitLabel = () => {
+    if (saveLmsMutation.isPending) return <Loader2 className="w-4 h-4 animate-spin" />;
+    if (parsedLmsData.selectedModuleId !== "new") return "Mettre à jour la carte";
+    return "Créer le module et mettre à jour";
+  };
+
+  // --- FILTRES ET VARIABLES DERIVÉES ---
   const uniqueDepartments = Array.from(new Set(profiles.map(p => p.department).filter(d => d && d.trim() !== ""))).sort((a, b) => a.localeCompare(b));
 
   const filteredProfiles = profiles.filter(p => {
     const searchLower = profileSearch.toLowerCase();
     const matchesSearch = safeString(p.firstName).includes(searchLower) || safeString(p.lastName).includes(searchLower) || safeString(p.email).includes(searchLower);
     const matchesDept = departmentFilter === "all" || p.department === departmentFilter;
-
     let matchesRisk = true;
     const currentScore = safeNum(p.riskScore);
     if (riskFilter === "high") matchesRisk = currentScore >= 60;
     else if (riskFilter === "moderate") matchesRisk = currentScore >= 30 && currentScore < 60;
     else if (riskFilter === "low") matchesRisk = currentScore < 30;
-
     return matchesSearch && matchesDept && matchesRisk;
   });
 
@@ -855,20 +620,48 @@ export default function AwarenessView() {
     if (!sortConfig) return 0;
     const { key, direction } = sortConfig;
     let valA: any, valB: any;
-
     switch (key) {
       case 'name': valA = `${safeString(a.lastName)} ${safeString(a.firstName)}`; valB = `${safeString(b.lastName)} ${safeString(b.firstName)}`; break;
       case 'department': valA = a.department || ""; valB = b.department || ""; break;
-      case 'behavior': valA = safeNum(a.clickedCount ?? (a as any).clicked_count) + safeNum(a.attachmentOpenedCount ?? (a as any).attachment_opened_count) + safeNum(a.compromisedCount ?? (a as any).compromised_count); valB = safeNum(b.clickedCount ?? (b as any).clicked_count) + safeNum(b.attachmentOpenedCount ?? (b as any).attachment_opened_count) + safeNum(b.compromisedCount ?? (b as any).compromised_count); break;
+      case 'behavior': valA = safeNum(a.clickedCount) + safeNum(a.attachmentOpenedCount) + safeNum(a.compromisedCount); valB = safeNum(b.clickedCount) + safeNum(b.attachmentOpenedCount) + safeNum(b.compromisedCount); break;
       case 'recidive': valA = a.isConsecutive ? 1 : 0; valB = b.isConsecutive ? 1 : 0; break;
       case 'score': valA = safeNum(a.riskScore); valB = safeNum(b.riskScore); break;
       default: return 0;
     }
-
     if (valA < valB) return direction === 'asc' ? -1 : 1;
     if (valA > valB) return direction === 'asc' ? 1 : -1;
     return 0;
   });
+
+  if (isLoadingCampaigns || isLoadingProfiles || isLoadingModules) return <div className="flex justify-center p-12"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
+
+  const highRiskProfiles = profiles.filter(p => safeNum(p.riskScore) >= 60);
+  const currentYear = new Date().getFullYear();
+  const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === currentYear);
+  const targetCampaignsPerYear = 4;
+  const campaignProgress = Math.min(100, Math.round((campaignsThisYear.length / targetCampaignsPerYear) * 100));
+  const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
+
+  const totalMailsSent = campaigns.reduce((acc, c) => acc + safeNum(c.targetCount), 0);
+  const avgClickRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.clickedCount), 0) / totalMailsSent) * 100) : 0;
+  const avgCompromiseRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.compromisedCount), 0) / totalMailsSent) * 100) : 0;
+  const avgReportRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.reportedCount), 0) / totalMailsSent) * 100) : 0;
+
+  const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + safeNum(m.totalAssigned), 0);
+  const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + safeNum(m.completedCount), 0);
+  const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
+  const elearningGoalReached = elearningRate >= 95;
+  const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100));
+
+  const sessionsThisYear = sessionModules.filter(m => {
+    const dStr = m.startDate || m.createdAt || "";
+    if (!dStr) return false;
+    return new Date(dStr).getFullYear() === currentYear;
+  });
+  const targetSessionsPerYear = 4;
+  const sessionProgress = Math.min(100, Math.round((sessionsThisYear.length / targetSessionsPerYear) * 100));
+  const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
+  const sortedCampaigns = [...campaigns].sort((a, b) => new Date(a.sendDate).getTime() - new Date(b.sendDate).getTime());
 
   const renderPhishingTab = () => {
     if (campaigns.length === 0) {
@@ -895,15 +688,16 @@ export default function AwarenessView() {
               <TableRow key={c.id} className="relative hover:bg-muted/50 group">
                 <TableCell className="font-medium">
                   {c.name}
-                  <button type="button" aria-label={`Détails ${c.name}`} onClick={() => setSelectedCampaign(c)} className="absolute inset-0 w-full h-full opacity-0 z-0" />
+                  {/* Stretched Link Strategy: makes the whole row clickable without breaking DOM */}
+                  <button type="button" aria-label={`Détails ${c.name}`} onClick={() => setSelectedCampaign(c)} className="absolute inset-0 w-full h-full bg-transparent border-none outline-none cursor-pointer z-0" />
                 </TableCell>
-                <TableCell className="text-muted-foreground">{new Date(c.sendDate).toLocaleDateString()}</TableCell>
-                <TableCell>{c.targetCount}</TableCell>
-                <TableCell className="text-blue-600 dark:text-blue-400 font-medium">{calculatePercentage(c.openedCount, c.targetCount)}%</TableCell>
-                <TableCell className="font-medium text-amber-600 dark:text-amber-500">{calculatePercentage(c.clickedCount, c.targetCount)}%</TableCell>
-                <TableCell className="font-bold text-rose-600 dark:text-rose-500">{calculatePercentage(c.compromisedCount, c.targetCount)}%</TableCell>
-                <TableCell className="text-indigo-600 dark:text-indigo-400 font-medium">{calculatePercentage(c.trainingCompletedCount || 0, c.targetCount)}%</TableCell>
-                <TableCell className="text-right text-emerald-600 dark:text-emerald-500 font-medium">{calculatePercentage(c.reportedCount, c.targetCount)}%</TableCell>
+                <TableCell className="text-muted-foreground relative z-10 pointer-events-none">{new Date(c.sendDate).toLocaleDateString()}</TableCell>
+                <TableCell className="relative z-10 pointer-events-none">{c.targetCount}</TableCell>
+                <TableCell className="text-blue-600 dark:text-blue-400 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.openedCount, c.targetCount)}%</TableCell>
+                <TableCell className="font-medium text-amber-600 dark:text-amber-500 relative z-10 pointer-events-none">{calculatePercentage(c.clickedCount, c.targetCount)}%</TableCell>
+                <TableCell className="font-bold text-rose-600 dark:text-rose-500 relative z-10 pointer-events-none">{calculatePercentage(c.compromisedCount, c.targetCount)}%</TableCell>
+                <TableCell className="text-indigo-600 dark:text-indigo-400 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.trainingCompletedCount || 0, c.targetCount)}%</TableCell>
+                <TableCell className="text-right text-emerald-600 dark:text-emerald-500 font-medium relative z-10 pointer-events-none">{calculatePercentage(c.reportedCount, c.targetCount)}%</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -1021,40 +815,6 @@ export default function AwarenessView() {
     );
   };
 
-  if (isLoadingCampaigns || isLoadingProfiles || isLoadingModules) return <div className="flex justify-center p-12"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
-
-  const highRiskProfiles = profiles.filter(p => safeNum(p.riskScore) >= 60);
-
-  const currentYear = new Date().getFullYear();
-  const campaignsThisYear = campaigns.filter(c => new Date(c.sendDate).getFullYear() === currentYear);
-  const targetCampaignsPerYear = 4;
-  const campaignProgress = Math.min(100, Math.round((campaignsThisYear.length / targetCampaignsPerYear) * 100));
-  const isGoalReached = campaignsThisYear.length >= targetCampaignsPerYear;
-
-  const totalMailsSent = campaigns.reduce((acc, c) => acc + safeNum(c.targetCount), 0);
-  const avgClickRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.clickedCount), 0) / totalMailsSent) * 100) : 0;
-  const avgCompromiseRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.compromisedCount), 0) / totalMailsSent) * 100) : 0;
-  const avgReportRate = totalMailsSent > 0 ? Math.round((campaigns.reduce((acc, c) => acc + safeNum(c.reportedCount), 0) / totalMailsSent) * 100) : 0;
-
-  const totalElearningAssigned = elearningModules.reduce((acc, m) => acc + (safeNum(m.totalAssigned) || safeNum((m as any).total_assigned)), 0);
-  const totalElearningCompleted = elearningModules.reduce((acc, m) => acc + (safeNum(m.completedCount) || safeNum((m as any).completed_count)), 0);
-  const elearningRate = totalElearningAssigned > 0 ? calculatePercentage(totalElearningCompleted, totalElearningAssigned) : 0;
-  const elearningGoalReached = elearningRate >= 95;
-  const elearningProgress = Math.min(100, Math.round((elearningRate / 95) * 100));
-
-  const sessionsThisYear = sessionModules.filter(m => {
-    const dStr = m.startDate || m.createdAt || "";
-    if (!dStr) return false;
-    return new Date(dStr).getFullYear() === currentYear;
-  });
-  const targetSessionsPerYear = 4;
-  const sessionProgress = Math.min(100, Math.round((sessionsThisYear.length / targetSessionsPerYear) * 100));
-  const isSessionGoalReached = sessionsThisYear.length >= targetSessionsPerYear;
-
-  const sortedCampaigns = [...campaigns].sort((a, b) => new Date(a.sendDate).getTime() - new Date(b.sendDate).getTime());
-
-  const submitLmsBtnText = parsedLmsData.selectedModuleId !== "new" ? "Mettre à jour la carte" : "Créer le module et mettre à jour";
-
   return (
     <div className="space-y-6">
 
@@ -1151,16 +911,6 @@ export default function AwarenessView() {
           </div>
 
           <TabsContent value="phishing" className="m-0">
-            {campaigns.length > 0 && (
-              <div className="px-6 py-4 flex gap-2 border-b border-border bg-muted/10">
-                <Button variant={phishingView === "historique" ? "default" : "outline"} size="sm" onClick={() => setPhishingView("historique")}>
-                  <Activity className="w-4 h-4 mr-2" /> Historique et Tableau
-                </Button>
-                <Button variant={phishingView === "bilan" ? "default" : "outline"} size="sm" onClick={() => setPhishingView("bilan")}>
-                  <BarChart3 className="w-4 h-4 mr-2" /> Bilan et Évolution
-                </Button>
-              </div>
-            )}
             {renderPhishingTab()}
           </TabsContent>
 
@@ -1216,27 +966,27 @@ export default function AwarenessView() {
                     <TableHeader>
                       <TableRow className="bg-muted/30">
                         <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit hover:text-primary transition-colors" onClick={() => handleSort('name')}>
+                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('name')}>
                               Collaborateur {getSortIcon('name')}
                            </button>
                         </TableHead>
                         <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit hover:text-primary transition-colors" onClick={() => handleSort('department')}>
+                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('department')}>
                               Département {getSortIcon('department')}
                            </button>
                         </TableHead>
                         <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit hover:text-primary transition-colors" onClick={() => handleSort('behavior')}>
+                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('behavior')}>
                               Comportement {getSortIcon('behavior')}
                            </button>
                         </TableHead>
                         <TableHead>
-                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit hover:text-primary transition-colors" onClick={() => handleSort('recidive')}>
+                           <button type="button" className="flex items-center w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-left hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('recidive')}>
                               Récidive {getSortIcon('recidive')}
                            </button>
                         </TableHead>
                         <TableHead className="text-right">
-                           <button type="button" className="flex items-center justify-end w-full bg-transparent border-none p-0 cursor-pointer font-inherit hover:text-primary transition-colors" onClick={() => handleSort('score')}>
+                           <button type="button" className="flex items-center justify-end w-full bg-transparent border-none p-0 cursor-pointer font-inherit text-right hover:text-primary transition-colors text-xs font-bold" onClick={() => handleSort('score')}>
                               Risk Score {getSortIcon('score')}
                            </button>
                         </TableHead>
@@ -1244,12 +994,12 @@ export default function AwarenessView() {
                     </TableHeader>
                     <TableBody>
                       {sortedAndFilteredProfiles.map((p) => {
-                        const tCamp = safeNum(p.totalCampaigns ?? (p as any).total_campaigns);
-                        const oCount = safeNum(p.openedCount ?? (p as any).opened_count);
-                        const aCount = safeNum(p.attachmentOpenedCount ?? (p as any).attachment_opened_count);
-                        const cCount = safeNum(p.clickedCount ?? (p as any).clicked_count);
-                        const sCount = safeNum(p.compromisedCount ?? (p as any).compromised_count);
-                        const tRead = safeNum(p.trainingCompletedCount ?? (p as any).training_completed_count);
+                        const tCamp = safeNum(p.totalCampaigns);
+                        const oCount = safeNum(p.openedCount);
+                        const aCount = safeNum(p.attachmentOpenedCount);
+                        const cCount = safeNum(p.clickedCount);
+                        const sCount = safeNum(p.compromisedCount);
+                        const tRead = safeNum(p.trainingCompletedCount);
 
                         const hasHistory = tCamp > 0 || oCount > 0 || aCount > 0 || cCount > 0 || sCount > 0 || tRead > 0;
 
@@ -1302,23 +1052,24 @@ export default function AwarenessView() {
               <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Monitor className="w-5 h-5 text-primary" /> Parcours E-Learning </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
-                <Card className="border-dashed border-2 hover:bg-muted/50 transition-colors min-h-[200px] relative overflow-hidden">
-                  <label htmlFor="lms-upload" className="flex flex-col items-center justify-center absolute inset-0 w-full h-full cursor-pointer p-6">
-                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4"><Upload className="w-6 h-6 text-primary" /></div>
-                    <p className="font-semibold text-primary">Nouveau parcours</p>
-                    <p className="text-xs text-muted-foreground text-center mt-1">Cliquer pour importer un fichier Excel</p>
-                  </label>
-                </Card>
+                <div className="relative">
+                  <Card className="border-dashed border-2 hover:bg-muted/50 transition-colors min-h-[200px] flex flex-col items-center justify-center p-6 h-full cursor-pointer">
+                    <label htmlFor="lms-upload" className="absolute inset-0 w-full h-full cursor-pointer z-10" aria-label="Importer un fichier Excel pour un nouveau parcours" />
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4 relative z-0 pointer-events-none"><Upload className="w-6 h-6 text-primary" /></div>
+                    <p className="font-semibold text-primary relative z-0 pointer-events-none">Nouveau parcours</p>
+                    <p className="text-xs text-muted-foreground text-center mt-1 relative z-0 pointer-events-none">Cliquer pour importer un fichier Excel</p>
+                  </Card>
+                </div>
 
                 {elearningModules.map((m) => {
-                  const completed = safeNum(m.completedCount) || safeNum((m as any).completed_count);
-                  const total = safeNum(m.totalAssigned) || safeNum((m as any).total_assigned);
+                  const completed = safeNum(m.completedCount);
+                  const total = safeNum(m.totalAssigned);
                   const completionRate = calculatePercentage(completed, total);
 
                   return (
                     <div key={m.id} className="relative group">
                       <Card className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
-                        <button type="button" aria-label={`Voir détails ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer" />
+                        <button type="button" aria-label={`Voir détails ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-primary focus:ring-inset" />
 
                         <CardHeader className="pb-2 relative z-10 pointer-events-none">
                           <div className="flex justify-between items-start pointer-events-auto">
@@ -1376,7 +1127,7 @@ export default function AwarenessView() {
 
                 <div className="relative">
                   <Card className="border-dashed border-2 border-amber-500/30 bg-amber-500/5 flex flex-col items-center justify-center p-6 hover:bg-amber-500/10 transition-colors min-h-[200px]">
-                    <button type="button" aria-label="Nouvelle session" onClick={() => { setIsAddModuleOpen(true); setNewModule({...newModule, formatType: "Webinaire"}); }} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer" />
+                    <button type="button" aria-label="Nouvelle session" onClick={() => { setIsAddModuleOpen(true); setNewModule({...newModule, formatType: "Webinaire"}); }} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-amber-500 focus:ring-inset" />
                     <div className="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center mb-4 relative z-10 pointer-events-none"><Plus className="w-6 h-6 text-amber-600" /></div>
                     <p className="font-semibold text-amber-700 relative z-10 pointer-events-none">Nouvelle session</p>
                     <p className="text-xs text-amber-700/70 text-center mt-1 relative z-10 pointer-events-none">Déclarer un Webinaire ou du Présentiel</p>
@@ -1384,18 +1135,17 @@ export default function AwarenessView() {
                 </div>
 
                 {sessionModules.map((m) => {
-                  const completed = safeNum(m.completedCount) || safeNum((m as any).completed_count);
-                  const total = safeNum(m.totalAssigned) || safeNum((m as any).total_assigned);
+                  const completed = safeNum(m.completedCount);
+                  const total = safeNum(m.totalAssigned);
                   const completionRate = calculatePercentage(completed, total);
-
-                  const formatType = m.formatType || (m as any).format_type || "Webinaire";
+                  const formatType = m.formatType || "Webinaire";
                   let icon = <Video className="w-3 h-3 mr-1" />;
                   if (formatType === "Présentiel") icon = <Users className="w-3 h-3 mr-1" />;
 
                   return (
                     <div key={m.id} className="relative group">
                       <Card className="overflow-hidden flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
-                        <button type="button" aria-label={`Ouvrir session ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer" />
+                        <button type="button" aria-label={`Ouvrir session ${m.name}`} onClick={() => setSelectedModule(m)} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-amber-500 focus:ring-inset" />
 
                         <CardHeader className="pb-2 relative z-10 pointer-events-none">
                           <div className="flex justify-between items-start pointer-events-auto">
@@ -1472,7 +1222,7 @@ export default function AwarenessView() {
                 <div className="relative">
                   <div className={`p-4 border rounded-lg text-center space-y-1 shadow-sm transition-all h-full flex flex-col justify-center ${selectedCampaign.recidivistsCount > 0 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-500/5 border-amber-500/10 opacity-50'}`}>
                     {selectedCampaign.recidivistsCount > 0 && (
-                       <button type="button" aria-label="Voir la liste des récidivistes" onClick={() => setIsRecidivistsDialogOpen(true)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer z-0 hover:bg-amber-500/5" />
+                       <button type="button" aria-label="Voir la liste des récidivistes" onClick={() => setIsRecidivistsDialogOpen(true)} className="absolute inset-0 w-full h-full bg-transparent border-none cursor-pointer outline-none appearance-none z-0 hover:bg-amber-500/5 focus:ring-2 focus:ring-amber-500" />
                     )}
                     <p className="text-xs font-semibold text-amber-700 dark:text-amber-500 uppercase tracking-wider relative z-10 pointer-events-none">Récidivistes</p>
                     <p className="text-2xl font-bold text-amber-700 dark:text-amber-500 relative z-10 pointer-events-none">{selectedCampaign.recidivistsCount}</p>
@@ -1542,12 +1292,12 @@ export default function AwarenessView() {
           </SheetHeader>
 
           {selectedModule && (() => {
-            const completed = safeNum(selectedModule.completedCount) || safeNum((selectedModule as any).completed_count);
-            const total = safeNum(selectedModule.totalAssigned) || safeNum((selectedModule as any).total_assigned);
+            const completed = safeNum(selectedModule.completedCount);
+            const total = safeNum(selectedModule.totalAssigned);
             const inProgress = Math.max(0, total - completed);
             const completionRate = calculatePercentage(completed, total);
-            const formatType = selectedModule.formatType || (selectedModule as any).format_type || "E-Learning";
-            const completedEmails = selectedModule.completedBy || (selectedModule as any).completed_by || [];
+            const formatType = selectedModule.formatType || "E-Learning";
+            const completedEmails = selectedModule.completedBy || [];
 
             return (
               <div className="space-y-6">
@@ -1644,7 +1394,6 @@ export default function AwarenessView() {
 
       {/* --- MODALES DE CRÉATION ET D'IMPORT --- */}
 
-      {/* MODALE DE SAISIE MANUELLE DES PRÉSENCES */}
       <Dialog open={isAttendanceModalOpen} onOpenChange={(open) => {
         setIsAttendanceModalOpen(open);
         if (!open) { setAttendanceEmails(""); setSelectedModule(null); }
@@ -1868,7 +1617,7 @@ export default function AwarenessView() {
               disabled={!parsedLmsData.fileLoaded || saveLmsMutation.isPending || (parsedLmsData.selectedModuleId === "new" && !parsedLmsData.name)}
               onClick={() => saveLmsMutation.mutate()}
             >
-              {saveLmsMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : submitLmsBtnText}
+              {renderLmsSubmitLabel()}
             </Button>
           </div>
         </DialogContent>
