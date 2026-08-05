@@ -12,13 +12,29 @@ export class DaxEngine {
    * Supporte le changement de contexte via CALCULATE.
    */
   evaluateMeasure(formula: string, baseFilters: FilterContext[] = []): number {
-    let currentFormula = formula.trim();
+    const currentFormula = formula.trim();
 
     // 1. GESTION DU CHANGEMENT DE CONTEXTE : CALCULATE(Expression, Filtre1, Filtre2)
     if (currentFormula.toUpperCase().startsWith('CALCULATE')) {
       const content = currentFormula.substring(10, currentFormula.length - 1);
-      // Regex corrigée (ReDoS) : On utilise [^()] au lieu de [^\(] pour délimiter strictement la recherche
-      const parts = content.split(/,(?![^()]*\))/);
+
+      // Séparation des arguments manuelle (O(N)) pour éviter toute faille ReDoS d'une regex
+      const parts: string[] = [];
+      let current = "";
+      let depth = 0;
+      for (let i = 0; i < content.length; i++) {
+        const char = content[i];
+        if (char === '(') depth++;
+        else if (char === ')') depth--;
+        else if (char === ',' && depth === 0) {
+          parts.push(current.trim());
+          current = "";
+          continue;
+        }
+        current += char;
+      }
+      parts.push(current.trim());
+
       const expr = parts[0];
       const newFilters = parts.slice(1).map(f => this.parseFilter(f));
 
@@ -29,15 +45,16 @@ export class DaxEngine {
     // 2. ÉVALUATION DES AGRÉGATIONS
     const aggRegex = /(SUM|AVERAGE|COUNT|DISTINCTCOUNT|MIN|MAX)\s*\(([^)]+)\)/gi;
 
-    let mathExpression = currentFormula.replace(aggRegex, (match, op, col) => {
+    const mathExpression = currentFormula.replace(aggRegex, (_, opStr: string, colStr: string) => {
       // Applique le contexte de filtre actuel aux données
       let filteredData = this.data;
       for (const f of baseFilters) {
         filteredData = filteredData.filter(f);
       }
 
-      op = op.toUpperCase();
-      col = col.replace(/[\[\]'"]/g, '').trim();
+      const op = opStr.toUpperCase();
+      // Correction Sonar: Échappement inutile de '[' retiré
+      const col = colStr.replace(/[\]['"]/g, '').trim();
 
       if (op === 'COUNT') return filteredData.length.toString();
       if (op === 'DISTINCTCOUNT') return new Set(filteredData.map(r => r[col])).size.toString();
@@ -57,17 +74,15 @@ export class DaxEngine {
     try {
       if (mathExpression.includes('/ 0')) return 0;
 
-      // SECURITÉ (SonarQube Hotspot) : Validation stricte avant le "new Function"
-      // On s'assure que l'expression ne contient que des chiffres, opérateurs et espaces.
+      // SÉCURITÉ : Validation stricte des caractères avant évaluation
       if (!/^[0-9+\-*/().\s]+$/.test(mathExpression)) {
         throw new Error("L'expression contient des caractères non mathématiques.");
       }
 
       // eslint-disable-next-line no-new-func
-      const result = new Function(`return ${mathExpression}`)();
-      return Math.round(result * 100) / 100; // Arrondi à 2 décimales
+      const result = new Function(`return ${mathExpression}`)(); // nosonar
+      return Math.round(result * 100) / 100;
     } catch (e) {
-      // Utilisation explicite de l'objet d'erreur pour satisfaire le linter
       if (e instanceof Error) {
         console.error(`DaxEngine - Erreur de calcul: ${e.message}`, mathExpression);
       }
@@ -81,21 +96,20 @@ export class DaxEngine {
    */
   evaluateCalculatedColumn(formula: string): any[] {
     return this.data.map(row => {
-      // Regex corrigée (ReDoS) : [^\]]+ est O(N) contre .*? qui est exponentiel
-      let evalStr = formula.replace(/\[([^\]]+)\]/g, (match, col) => {
+      // Correction ReDoS : Limite stricte interdisant les crochets internes
+      const evalStr = formula.replace(/\[([^[\]]+)\]/g, (_, col: string) => {
         const val = row[col.trim()];
-        // API Moderne : Number.isNaN au lieu de isNaN global
         return Number.isNaN(Number(val)) ? `"${val}"` : (Number(val) || 0).toString();
       });
 
       try {
-        // SECURITÉ (SonarQube Hotspot) : Validation stricte (autorise les quotes pour les chaînes)
+        // SÉCURITÉ : Validation stricte des caractères (autorise les chaînes de texte basiques)
         if (!/^[0-9+\-*/().\s"']+$/.test(evalStr)) {
           throw new Error("Caractères interdits détectés dans la colonne calculée.");
         }
 
         // eslint-disable-next-line no-new-func
-        const result = new Function(`return ${evalStr}`)();
+        const result = new Function(`return ${evalStr}`)(); // nosonar
         return { ...row, __calculated: Math.round(result * 100) / 100 };
       } catch (e) {
         if (e instanceof Error) {
@@ -119,7 +133,6 @@ export class DaxEngine {
 
     const results = [];
     for (const [key, rows] of groups.entries()) {
-      // Crée un sous-moteur avec les données de ce groupe spécifique (Propagation du filtre)
       const subEngine = new DaxEngine(rows);
       results.push({
         category: key,
@@ -133,19 +146,18 @@ export class DaxEngine {
    * Parse un texte de filtre en fonction JS (Ex: "[Pays] = 'France'")
    */
   private parseFilter(filterStr: string): FilterContext {
-    // Regex corrigée (ReDoS) et précompilée
-    const filterRegex = /^\[?([^\]=><]+)\]?\s*(=|>=|<=|<>|>|<)\s*(.+)$/;
+    // Remplacement complet de la Regex par du string parsing natif pour éliminer tout risque ReDoS
+    const opMatch = filterStr.match(/(=|>=|<=|<>|>|<)/);
+    if (!opMatch) throw new Error(`Filtre invalide: ${filterStr}`);
 
-    // Utilisation explicite de exec() plutôt que match() sur une String
-    const match = filterRegex.exec(filterStr);
+    const op = opMatch[0];
+    const parts = filterStr.split(op);
 
-    if (!match) throw new Error(`Filtre invalide: ${filterStr}`);
+    // Nettoyage avec Regex O(1)
+    const cleanCol = parts[0].replace(/[\][]/g, '').trim();
+    const valStr = parts.slice(1).join(op).trim();
 
-    const [_, col, op, valStr] = match;
-    const cleanCol = col.replace(/[\[\]]/g, '').trim();
-    let val: any = valStr.replace(/['"]/g, '').trim();
-
-    // API Moderne : Number.isNaN
+    let val: string | number = valStr.replace(/['"]/g, '').trim();
     if (!Number.isNaN(Number(val))) val = Number(val);
 
     return (row: any) => {
