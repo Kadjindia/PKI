@@ -62,8 +62,12 @@ Deno.serve(async (req) => {
     const targetPath = reqBody.path || "";
     const payload = reqBody.payload || {};
 
-    // 5. Hash Cryptographique (AVEC LE GÉNÉRATEUR EXACT DE VOTRE FRONTEND)
-    const nonce = Array.from({length: 64}, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(Math.random() * 62))).join('');
+    // 5. Hash Cryptographique avec génération aléatoire sécurisée (crypto.getRandomValues)
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const randomValues = new Uint8Array(64);
+    crypto.getRandomValues(randomValues);
+    const nonce = Array.from(randomValues, (v) => chars[v % chars.length]).join('');
+
     const timestamp = Date.now().toString();
 
     const authString = `${cleanApiKey}${nonce}${timestamp}`;

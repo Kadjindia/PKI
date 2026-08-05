@@ -1,25 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 
 export const fetchCortexExecutiveData = async () => {
-  // Structure exécutive orientée gestion des risques et automatisation
-  const executiveData = {
-    kpis: {
-      totalIncidents: 0,
-      criticalIncidents: 0,
-      mttd: "N/A", // Mean Time To Detect
-      mttr: "N/A", // Mean Time To Respond
-      automationRate: 0, // Pourcentage d'incidents gérés par le SOAR
-      endpointsMonitored: 0
-    },
-    incidentsList: [] as any[],
-    playbooksStats: [] as any[],
-    endpointHealth: {
-      connected: 0,
-      disconnected: 0,
-      vulnerable: 0
-    }
-  };
-
   const { data: { session } } = await supabase.auth.getSession();
 
   // Si l'utilisateur n'est pas connecté, on renvoie les données de démonstration
@@ -29,8 +10,8 @@ export const fetchCortexExecutiveData = async () => {
   }
 
   try {
-    // 1. Récupération des Incidents via l'Edge Function Supabase (endpoint et payload dans le body)
-    const { data, error } = await supabase.functions.invoke('cortex-proxy', {
+    // 1. Récupération des Incidents via l'Edge Function Supabase
+    const { error } = await supabase.functions.invoke('cortex-proxy', {
       method: 'POST',
       body: {
         path: '/public_api/v1/incidents/get_incidents/',
@@ -48,17 +29,13 @@ export const fetchCortexExecutiveData = async () => {
       throw new Error(error.message);
     }
 
-    // Ici interviendra le parsing réel pour alimenter executiveData.incidentsList
-    // if (data?.reply?.incidents) { ... }
-
-    // 2. (Futur) Récupération via XQL pour des métriques avancées
-    // const { data: xqlData } = await supabase.functions.invoke('cortex-proxy', { body: { path: '/public_api/v1/xql/start_xql_query/', payload: {...} } });
+    // Le parsing réel des données interviendra ici lorsque l'API sera pleinement branchée
 
   } catch (error) {
     console.error("Erreur de connexion à l'API Cortex XSIAM via proxy :", error);
   }
 
-  // Retour temporaire du mock si le parsing réel n'est pas encore finalisé
+  // Retour temporaire du mock en attendant la finalisation du parsing réel
   return getMockCortexData();
 };
 
