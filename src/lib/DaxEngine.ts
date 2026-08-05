@@ -1,7 +1,7 @@
 type FilterContext = (row: any) => boolean;
 
 export class DaxEngine {
-  private readonly data: any[];
+  private data: any[];
 
   constructor(data: any[]) {
     this.data = data;
@@ -22,8 +22,9 @@ export class DaxEngine {
       const parts: string[] = [];
       let current = "";
       let depth = 0;
-      for (let i = 0; i < content.length; i++) {
-        const char = content[i];
+
+      // Utilisation d'une boucle for-of pour satisfaire le linter
+      for (const char of content) {
         if (char === '(') depth++;
         else if (char === ')') depth--;
         else if (char === ',' && depth === 0) {
@@ -146,8 +147,10 @@ export class DaxEngine {
    * Parse un texte de filtre en fonction JS (Ex: "[Pays] = 'France'")
    */
   private parseFilter(filterStr: string): FilterContext {
-    // Remplacement complet de la Regex par du string parsing natif pour éliminer tout risque ReDoS
-    const opMatch = filterStr.match(/(=|>=|<=|<>|>|<)/);
+    // Utilisation explicite de RegExp.exec() au lieu de String.match()
+    const opRegex = /(=|>=|<=|<>|>|<)/;
+    const opMatch = opRegex.exec(filterStr);
+
     if (!opMatch) throw new Error(`Filtre invalide: ${filterStr}`);
 
     const op = opMatch[0];
