@@ -39,7 +39,11 @@ Deno.serve(async (req) => {
       if (file_base64 && file_name) {
         const binaryStr = atob(file_base64);
         const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+        // Utilisation de codePointAt comme exigé par le linter
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.codePointAt(i) || 0;
+        }
 
         const filePath = `${kpi_id}/${period}/${Date.now()}-${file_name}`;
         const { error: uploadError } = await supabase.storage
