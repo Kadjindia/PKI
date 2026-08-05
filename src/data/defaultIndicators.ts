@@ -22,6 +22,25 @@ export const DEFAULT_KPIS: KpiDefinition[] = [
 
 const SOURCE_TYPES: DataSourceType[] = ["manual", "excel", "powerbi", "csv", "api"];
 
+// Générateur aléatoire cryptographiquement sûr pour pallier la faille signalée par SonarQube
+function getSafeRandom(): number {
+  if (typeof window !== "undefined" && window.crypto) {
+    const array = new Uint32Array(1);
+    window.crypto.getRandomValues(array);
+    return array[0] / (0xffffffff + 1);
+  }
+  return 0.5; // SSR fallback
+}
+
+// Remplacement du OU logique ( | 0 ) par Math.trunc et charCodeAt par codePointAt
+function hashCode(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = Math.trunc((h << 5) - h + (s.codePointAt(i) || 0));
+  }
+  return h;
+}
+
 function randomSource(kpiId: string, period: string): { source: KpiEntry["source"]; details: KpiDetailRow[] } {
   const typeIndex = Math.abs(hashCode(kpiId + period)) % SOURCE_TYPES.length;
   const type = SOURCE_TYPES[typeIndex];
@@ -34,17 +53,22 @@ function randomSource(kpiId: string, period: string): { source: KpiEntry["source
     for (let i = 0; i < detailsCount; i++) {
       details.push({
         label: senders[i % senders.length],
-        value: Math.round(2 + Math.random() * 20),
+        value: Math.round(2 + getSafeRandom() * 20),
         metadata: { date: `${period}-${String(5 + i * 3).padStart(2, "0")}`, type: i % 2 === 0 ? "Incident" : "Information" },
       });
     }
   } else if (kpiId.startsWith("gov-")) {
     const items = ["Application CRM", "Portail Web", "SI Comptable", "App Mobile", "Infra Cloud", "VPN Corp"];
     for (let i = 0; i < detailsCount; i++) {
+      // Extraction des ternaires imbriqués (Nested ternaries extraction)
+      let statut = "Planifié";
+      if (i % 3 === 0) statut = "Terminé";
+      else if (i % 3 === 1) statut = "En cours";
+
       details.push({
         label: items[i % items.length],
         value: 1,
-        metadata: { statut: i % 3 === 0 ? "Terminé" : i % 3 === 1 ? "En cours" : "Planifié" },
+        metadata: { statut },
       });
     }
   } else if (kpiId.startsWith("sens-")) {
@@ -52,26 +76,29 @@ function randomSource(kpiId: string, period: string): { source: KpiEntry["source
     for (let i = 0; i < detailsCount; i++) {
       details.push({
         label: depts[i % depts.length],
-        value: Math.round(40 + Math.random() * 55),
-        metadata: { participants: String(Math.round(10 + Math.random() * 50)) },
+        value: Math.round(40 + getSafeRandom() * 55),
+        metadata: { participants: String(Math.round(10 + getSafeRandom() * 50)) },
       });
     }
   } else {
     for (let i = 0; i < detailsCount; i++) {
       details.push({
         label: `Élément ${i + 1}`,
-        value: Math.round(1 + Math.random() * 15),
+        value: Math.round(1 + getSafeRandom() * 15),
       });
     }
   }
 
+  // Extraction des ternaires imbriqués
+  let sourceLabel = "API SIEM";
+  if (type === "manual") sourceLabel = "Saisie manuelle";
+  else if (type === "excel") sourceLabel = "Rapport_SSI.xlsx";
+  else if (type === "csv") sourceLabel = "export_kpi.csv";
+  else if (type === "powerbi") sourceLabel = "Dashboard Sécurité";
+
   const sourceBase = {
     type,
-    label: type === "manual" ? "Saisie manuelle"
-      : type === "excel" ? "Rapport_SSI.xlsx"
-      : type === "csv" ? "export_kpi.csv"
-      : type === "powerbi" ? "Dashboard Sécurité"
-      : "API SIEM",
+    label: sourceLabel,
     lastSync: new Date().toISOString(),
   };
 
@@ -82,9 +109,13 @@ function randomSource(kpiId: string, period: string): { source: KpiEntry["source
       id: i + 1,
       libellé: d.label,
       valeur: d.value,
-      ...(d.metadata || {}),
+      // Suppression de l'objet vide inutile || {}
+      ...(d.metadata)
     }));
-    extra.columns = ["id", "libellé", "valeur", ...Object.keys(details[0]?.metadata || {})];
+
+    // Suppression de l'objet vide inutile || {}
+    const firstMetadata = details[0]?.metadata;
+    extra.columns = ["id", "libellé", "valeur", ...(firstMetadata ? Object.keys(firstMetadata) : [])];
   }
   if (type === "powerbi") {
     extra.embedUrl = "https://app.powerbi.com/view?r=eyJrIjoiZXhhbXBsZSJ9";
@@ -98,14 +129,6 @@ function randomSource(kpiId: string, period: string): { source: KpiEntry["source
     source: { ...sourceBase, ...extra } as KpiEntry["source"],
     details,
   };
-}
-
-function hashCode(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  }
-  return h;
 }
 
 function generateSampleData(): KpiEntry[] {
@@ -128,7 +151,7 @@ function generateSampleData(): KpiEntry[] {
       entries.push({
         id: `${kpi.id}-${period}`,
         kpiId: kpi.id,
-        value: Math.round(min + Math.random() * (max - min)),
+        value: Math.round(min + getSafeRandom() * (max - min)),
         period,
         createdAt: new Date().toISOString(),
         source,
