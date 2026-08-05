@@ -62,10 +62,14 @@ Deno.serve(async (req) => {
     const payload = reqBody.payload || null;
     const queryParams = reqBody.queryParams || {};
 
-    // Construction de l'URL cible avec les query params éventuels
+    // Construction de l'URL cible avec sécurisation du typage des query params
     const urlObj = new URL(`${cleanBaseUrl}${targetPath}`);
     Object.entries(queryParams).forEach(([key, val]) => {
-      urlObj.searchParams.append(key, String(val));
+      if (val !== null && val !== undefined) {
+        // Sérialisation propre pour éviter le comportement par défaut "[object Object]"
+        const stringValue = typeof val === "object" ? JSON.stringify(val) : String(val);
+        urlObj.searchParams.append(key, stringValue);
+      }
     });
 
     console.log(`Relais QRadar [${method}] : ${urlObj.toString()}`);
