@@ -102,29 +102,33 @@ const Carousel = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivEl
       };
     }, [api, onSelect]);
 
+    // Mémoïsation du contexte pour éviter les re-renders inutiles signalés par Sonar/ESLint
+    const contextValue = React.useMemo(
+      () => ({
+        carouselRef,
+        api: api,
+        opts,
+        orientation: orientation || (opts?.axis === "y" ? "vertical" : "horizontal"),
+        scrollPrev,
+        scrollNext,
+        canScrollPrev,
+        canScrollNext,
+      }),
+      [carouselRef, api, opts, orientation, scrollPrev, scrollNext, canScrollPrev, canScrollNext]
+    );
+
     return (
-      <CarouselContext.Provider
-        value={{
-          carouselRef,
-          api: api,
-          opts,
-          orientation: orientation || (opts?.axis === "y" ? "vertical" : "horizontal"),
-          scrollPrev,
-          scrollNext,
-          canScrollPrev,
-          canScrollNext,
-        }}
-      >
-        <div
-          ref={ref}
-          onKeyDownCapture={handleKeyDown}
+      <CarouselContext.Provider value={contextValue}>
+        <section
+          ref={ref as React.Ref<HTMLElement>}
+          onKeyDownCapture={handleKeyDown as React.KeyboardEventHandler<HTMLElement>}
           className={cn("relative", className)}
-          role="region"
+          aria-label="Carousel"
           aria-roledescription="carousel"
-          {...props}
+          {...(props as React.HTMLAttributes<HTMLElement>)}
         >
           {children}
-        </div>
+        </section>
       </CarouselContext.Provider>
     );
   },
@@ -155,7 +159,7 @@ const CarouselItem = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLD
     return (
       <div
         ref={ref}
-        role="group"
+        role="tabpanel"
         aria-roledescription="slide"
         className={cn("min-w-0 shrink-0 grow-0 basis-full", orientation === "horizontal" ? "pl-4" : "pt-4", className)}
         {...props}

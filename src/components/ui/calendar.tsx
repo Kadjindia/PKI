@@ -7,6 +7,10 @@ import { buttonVariants } from "@/components/ui/button";
 
 export type CalendarProps = React.ComponentProps<typeof DayPicker>;
 
+// On extrait la définition de ces composants à l'extérieur pour éviter les re-rendus inutiles (avertissement SonarQube)
+const CustomIconLeft = () => <ChevronLeft className="h-4 w-4" />;
+const CustomIconRight = () => <ChevronRight className="h-4 w-4" />;
+
 function Calendar({ className, classNames, showOutsideDays = true, ...props }: CalendarProps) {
   return (
     <DayPicker
@@ -42,8 +46,8 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }: C
         ...classNames,
       }}
       components={{
-        IconLeft: ({ ..._props }) => <ChevronLeft className="h-4 w-4" />,
-        IconRight: ({ ..._props }) => <ChevronRight className="h-4 w-4" />,
+        IconLeft: CustomIconLeft,
+        IconRight: CustomIconRight,
       }}
       {...props}
     />
