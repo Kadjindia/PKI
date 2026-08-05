@@ -248,6 +248,7 @@ const SidebarRail = React.forwardRef<HTMLButtonElement, React.ComponentProps<"bu
     return (
       <button
         ref={ref}
+        type="button" // Ajout de l'attribut manquant
         data-sidebar="rail"
         aria-label="Toggle Sidebar"
         tabIndex={-1}
@@ -533,7 +534,14 @@ const SidebarMenuSkeleton = React.forwardRef<
 >(({ className, showIcon = false, ...props }, ref) => {
   // Random width between 50 to 90%.
   const width = React.useMemo(() => {
-    return `${Math.floor(Math.random() * 40) + 50}%`;
+    // Utilisation de crypto.getRandomValues pour satisfaire la règle de sécurité (Security Hotspot) de SonarQube
+    let randomVal = 0.5; // Fallback sécurisé pour le rendu côté serveur
+    if (typeof window !== "undefined" && window.crypto) {
+      const array = new Uint32Array(1);
+      window.crypto.getRandomValues(array);
+      randomVal = array[0] / (0xffffffff + 1);
+    }
+    return `${Math.floor(randomVal * 40) + 50}%`;
   }, []);
 
   return (
