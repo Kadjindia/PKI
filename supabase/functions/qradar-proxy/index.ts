@@ -66,8 +66,9 @@ Deno.serve(async (req) => {
     const urlObj = new URL(`${cleanBaseUrl}${targetPath}`);
     Object.entries(queryParams).forEach(([key, val]) => {
       if (val !== null && val !== undefined) {
-        // Sérialisation propre pour éviter le comportement par défaut "[object Object]"
-        const stringValue = typeof val === "object" ? JSON.stringify(val) : String(val);
+        // Forçage explicite du typage pour satisfaire l'analyseur
+        const rawVal = val as string | number | boolean | Record<string, unknown>;
+        const stringValue = typeof rawVal === "object" ? JSON.stringify(rawVal) : String(rawVal);
         urlObj.searchParams.append(key, stringValue);
       }
     });
