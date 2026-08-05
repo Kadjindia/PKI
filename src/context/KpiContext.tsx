@@ -28,14 +28,15 @@ interface KpiContextType {
   getLatestValue: (kpiId: string) => number | undefined;
   getEntriesForKpi: (kpiId: string) => KpiEntry[];
   getPreviousValue: (kpiId: string) => number | undefined;
-  getFilteredValue: (kpiId: string) => number | undefined; // NOUVEAU
+  getFilteredValue: (kpiId: string) => number | undefined;
   loading: boolean;
   refreshData: () => Promise<void>;
 }
 
 const KpiContext = createContext<KpiContextType | null>(null);
 
-export function KpiProvider({ children }: { children: ReactNode }) {
+// Correction 1 : Sécuriser les props en lecture seule (Readonly)
+export function KpiProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [kpis, setKpis] = useState<KpiDefinition[]>([]);
   const [entries, setEntries] = useState<KpiEntry[]>([]);
   const [periodFilter, setPeriodFilter] = useState<PeriodFilter>("monthly");
@@ -63,7 +64,8 @@ export function KpiProvider({ children }: { children: ReactNode }) {
 
   // Calcul des périodes disponibles
   const availablePeriods = useMemo(() => {
-    return [...new Set(entries.map((e) => e.period))].sort();
+    // Correction 2 : Ajout explicite d'une fonction de comparaison localeCompare
+    return [...new Set(entries.map((e) => e.period))].sort((a, b) => a.localeCompare(b));
   }, [entries]);
 
   // Auto-sélection de la dernière période au chargement
@@ -73,7 +75,7 @@ export function KpiProvider({ children }: { children: ReactNode }) {
     }
   }, [availablePeriods, selectedPeriod]);
 
-  // --- TOUTES TES FONCTIONS API RESTENT INTACTES ICI ---
+  // --- FONCTIONS API ---
   const addEntry = useCallback(async (entry: Omit<KpiEntry, "id" | "createdAt">) => {
     try {
       const newEntry = await addKpiEntry({ kpiId: entry.kpiId, value: entry.value, period: entry.period });
@@ -130,11 +132,10 @@ export function KpiProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const sortedEntries = [...entries].sort((a, b) => a.period.localeCompare(b.period));
-
+  // Pas besoin de mémoriser sortedEntries au niveau global, il est seulement utilisé par getEntriesForKpi
   const getEntriesForKpi = useCallback(
-    (kpiId: string) => sortedEntries.filter((e) => e.kpiId === kpiId),
-    [sortedEntries]
+    (kpiId: string) => [...entries].sort((a, b) => a.period.localeCompare(b.period)).filter((e) => e.kpiId === kpiId),
+    [entries]
   );
 
   const getLatestValue = useCallback((kpiId: string) => {
@@ -160,11 +161,14 @@ export function KpiProvider({ children }: { children: ReactNode }) {
 
     // 2. Trimestriel (Moyenne des 3 derniers mois)
     if (periodFilter === "quarterly") {
-      const targetPeriods = [0, 1, 2].map(i => {
+      const targetPeriodsArray = [0, 1, 2].map(i => {
         const d = new Date(year, month - 1 - i, 1);
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       });
-      const match = kpiEntries.filter(e => targetPeriods.includes(e.period));
+      // Correction 3 : Utilisation d'un "Set" avec .has() pour la complexité O(1)
+      const targetPeriods = new Set(targetPeriodsArray);
+
+      const match = kpiEntries.filter(e => targetPeriods.has(e.period));
       if (!match.length) return undefined;
       return Math.round(match.reduce((acc, curr) => acc + curr.value, 0) / match.length);
     }
@@ -179,15 +183,35 @@ export function KpiProvider({ children }: { children: ReactNode }) {
     return undefined;
   }, [getEntriesForKpi, selectedPeriod, periodFilter]);
 
+  // Correction 4 : Mémorisation de l'objet Contexte (useMemo)
+  const contextValue = useMemo(() => ({
+    kpis,
+    entries,
+    periodFilter,
+    setPeriodFilter,
+    selectedPeriod,
+    setSelectedPeriod,
+    availablePeriods,
+    addEntry,
+    addEntryFromFile,
+    updateEntry,
+    removeEntry,
+    addKpi,
+    getLatestValue,
+    getEntriesForKpi,
+    getPreviousValue,
+    getFilteredValue,
+    loading,
+    refreshData: loadData,
+  }), [
+    kpis, entries, periodFilter, selectedPeriod, availablePeriods,
+    addEntry, addEntryFromFile, updateEntry, removeEntry, addKpi,
+    getLatestValue, getEntriesForKpi, getPreviousValue, getFilteredValue,
+    loading, loadData
+  ]);
+
   return (
-    <KpiContext.Provider
-      value={{
-        kpis, entries, periodFilter, setPeriodFilter, selectedPeriod, setSelectedPeriod, availablePeriods,
-        addEntry, addEntryFromFile, updateEntry, removeEntry, addKpi,
-        getLatestValue, getEntriesForKpi, getPreviousValue, getFilteredValue,
-        loading, refreshData: loadData,
-      }}
-    >
+    <KpiContext.Provider value={contextValue}>
       {children}
     </KpiContext.Provider>
   );
