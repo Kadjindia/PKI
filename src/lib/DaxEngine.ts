@@ -1,7 +1,7 @@
 type FilterContext = (row: any) => boolean;
 
 export class DaxEngine {
-  private data: any[];
+  private readonly data: any[];
 
   constructor(data: any[]) {
     this.data = data;
