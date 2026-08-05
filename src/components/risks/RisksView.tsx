@@ -133,7 +133,10 @@ const safeStringify = (val: unknown): string => {
   if (val === null || val === undefined) return "";
   if (val instanceof Date) return val.toISOString();
   if (typeof val === 'object') return ""; // Évite explicitement de stringifier des objets non gérés
-  return String(val).trim();
+
+  // Cast explicite d'un type primitif sécurisé pour satisfaire le linter
+  const primitiveVal = val as string | number | boolean;
+  return String(primitiveVal).trim();
 };
 
 const safeNumber = (val: unknown): number => {
