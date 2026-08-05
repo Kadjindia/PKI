@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchPhishingCampaigns, createPhishingCampaign, deletePhishingCampaign,
@@ -40,7 +40,6 @@ import {
 // ============================================================================
 // UTILITAIRES DE SÉCURITÉ ET CALCULS
 // ============================================================================
-
 const safeNum = (val: unknown): number => {
   if (val === null || val === undefined) return 0;
   const n = Number(val);
@@ -86,7 +85,7 @@ const parseExcelDate = (excelDate: unknown) => {
   return undefined;
 };
 
-// Analyseur CSV sécurisé avec boucle for-of
+// Analyseur CSV sécurisé sans regex vulnérable (Correction du ReDoS Catastrophic Backtracking)
 const parseCSVLine = (text: string): string[] => {
   const result: string[] = [];
   let current = '';
@@ -120,14 +119,22 @@ const getRiskBadgeClassOutline = (score: number) => {
 const isAffirmative = (val: string | undefined) => val !== undefined && val.length > 0 && val.toLowerCase() !== 'false' && val.toLowerCase() !== 'no';
 
 // ============================================================================
-// MOTEURS D'EXTRACTION DE DONNÉES (Séparés pour réduire la complexité cognitive)
+// MOTEURS D'EXTRACTION DE DONNÉES PROOFPOINT (Refactorisés)
 // ============================================================================
+const getProofpointIndices = (headers: string[]) => ({
+  idxEmail: headers.indexOf('Email Address'),
+  idxFirstName: headers.indexOf('First Name'),
+  idxLastName: headers.indexOf('Last Name'),
+  idxOrg: headers.findIndex(h => ['DOMAINE', 'ORGANISATION', 'Group', 'EMPLOI'].includes(h)),
+  idxOpened: headers.findIndex(h => ['Date Email Opened', 'Primary Email Opened'].includes(h)),
+  idxAttachment: headers.findIndex(h => ['Primary Attachment Opened', 'Attachment Opened'].includes(h)),
+  idxClicked: headers.findIndex(h => ['Date Clicked', 'Primary Clicked'].includes(h)),
+  idxCompromised: headers.findIndex(h => ['Primary Compromised Login', 'Weak Egress'].includes(h)),
+  idxTraining: headers.indexOf('Acknowledgement Completed'),
+  idxReported: headers.findIndex(h => ['Date Reported', 'Reported'].includes(h))
+});
 
-const processSingleProofpointLine = (
-  cols: string[], headers: string[], indices: Record<string, number>, existingProfilesMap: Map<string, PhishingProfile>
-) => {
-  if (cols.length < headers.length - 2) return null;
-
+const analyzeProofpointRow = (cols: string[], indices: Record<string, number>, map: Map<string, PhishingProfile>) => {
   const email = cols[indices.idxEmail].toLowerCase();
   let hasOpened = isAffirmative(cols[indices.idxOpened]);
   const hasAttachmentOpened = isAffirmative(cols[indices.idxAttachment]);
@@ -139,93 +146,86 @@ const processSingleProofpointLine = (
   if (hasTraining || hasCompromised) hasClicked = true;
   if (hasClicked || hasAttachmentOpened) hasOpened = true;
 
-  const existing = existingProfilesMap.get(email) || {
-    email, firstName: '', lastName: '', department: '', totalCampaigns: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, riskScore: 0, lastCampaignClicked: false, isConsecutive: false
-  };
-
+  const existing = map.get(email) || { email, firstName: '', lastName: '', department: '', totalCampaigns: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0, compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, riskScore: 0, lastCampaignClicked: false, isConsecutive: false };
   const finalFirstName = existing.firstName || (indices.idxFirstName !== -1 ? cols[indices.idxFirstName] : '');
   const finalLastName = existing.lastName || (indices.idxLastName !== -1 ? cols[indices.idxLastName] : '');
   const finalDepartment = existing.department || (indices.idxOrg !== -1 ? cols[indices.idxOrg] : '');
 
-  const newOpenedCount = safeNum(existing.openedCount) + (hasOpened ? 1 : 0);
-  const newAttachmentCount = safeNum(existing.attachmentOpenedCount) + (hasAttachmentOpened ? 1 : 0);
-  const newClickedCount = safeNum(existing.clickedCount) + (hasClicked ? 1 : 0);
-  const newCompromisedCount = safeNum(existing.compromisedCount) + (hasCompromised ? 1 : 0);
-  const newTrainingCount = safeNum(existing.trainingCompletedCount) + (hasTraining ? 1 : 0);
-  const newReportedCount = safeNum(existing.reportedCount) + (hasReported ? 1 : 0);
+  const newOpenedCount = safeNum(existing.openedCount) + Number(hasOpened);
+  const newAttachmentCount = safeNum(existing.attachmentOpenedCount) + Number(hasAttachmentOpened);
+  const newClickedCount = safeNum(existing.clickedCount) + Number(hasClicked);
+  const newCompromisedCount = safeNum(existing.compromisedCount) + Number(hasCompromised);
+  const newTrainingCount = safeNum(existing.trainingCompletedCount) + Number(hasTraining);
+  const newReportedCount = safeNum(existing.reportedCount) + Number(hasReported);
   const newTotalCampaigns = safeNum(existing.totalCampaigns) + 1;
 
   const fellThisTime = hasClicked || hasAttachmentOpened;
   const fellInPast = safeNum(existing.clickedCount) > 0 || safeNum(existing.attachmentOpenedCount) > 0;
   const isRecidivist = fellThisTime && fellInPast;
   const newConsecutive = existing.isConsecutive || isRecidivist;
-
   const riskScore = calculateRiskScore(newClickedCount, newAttachmentCount, newCompromisedCount, newReportedCount, newTrainingCount, newConsecutive);
 
-  const updatedProfile: PhishingProfile = {
-    email, firstName: finalFirstName, lastName: finalLastName, department: finalDepartment,
-    totalCampaigns: newTotalCampaigns, openedCount: newOpenedCount, attachmentOpenedCount: newAttachmentCount, clickedCount: newClickedCount,
-    compromisedCount: newCompromisedCount, trainingCompletedCount: newTrainingCount, reportedCount: newReportedCount,
-    riskScore: riskScore, lastCampaignClicked: fellThisTime, isConsecutive: newConsecutive
+  return {
+    email, hasOpened, hasAttachmentOpened, hasClicked, hasCompromised, hasTraining, hasReported, isRecidivist,
+    profile: { email, firstName: finalFirstName, lastName: finalLastName, department: finalDepartment, totalCampaigns: newTotalCampaigns, openedCount: newOpenedCount, attachmentOpenedCount: newAttachmentCount, clickedCount: newClickedCount, compromisedCount: newCompromisedCount, trainingCompletedCount: newTrainingCount, reportedCount: newReportedCount, riskScore, lastCampaignClicked: fellThisTime, isConsecutive: newConsecutive }
   };
-
-  return { email, hasOpened, hasAttachmentOpened, hasClicked, hasCompromised, hasTraining, hasReported, isRecidivist, updatedProfile };
 };
 
 const processProofpointData = (text: string, profiles: PhishingProfile[]) => {
   const lines = text.split('\n');
   if (lines.length < 2) throw new Error("Fichier vide ou invalide.");
-
   const headers = parseCSVLine(lines[0]);
-  const indices = {
-    idxEmail: headers.indexOf('Email Address'),
-    idxFirstName: headers.indexOf('First Name'),
-    idxLastName: headers.indexOf('Last Name'),
-    idxOrg: headers.findIndex(h => ['DOMAINE', 'ORGANISATION', 'Group', 'EMPLOI'].includes(h)),
-    idxOpened: headers.findIndex(h => ['Date Email Opened', 'Primary Email Opened'].includes(h)),
-    idxAttachment: headers.findIndex(h => ['Primary Attachment Opened', 'Attachment Opened'].includes(h)),
-    idxClicked: headers.findIndex(h => ['Date Clicked', 'Primary Clicked'].includes(h)),
-    idxCompromised: headers.findIndex(h => ['Primary Compromised Login', 'Weak Egress'].includes(h)),
-    idxTraining: headers.indexOf('Acknowledgement Completed'),
-    idxReported: headers.findIndex(h => ['Date Reported', 'Reported'].includes(h))
-  };
-
+  const indices = getProofpointIndices(headers);
   if (indices.idxEmail === -1) throw new Error("Colonne 'Email Address' introuvable dans le CSV.");
 
-  let target = 0, opened = 0, attachmentOpened = 0, clicked = 0, compromised = 0, trainingCompleted = 0, reported = 0, recidivists = 0;
-  const failedEmails: string[] = [];
-  const updatedProfiles: PhishingProfile[] = [];
-  const detailedResults: any[] = [];
-  const existingProfilesMap = new Map(profiles.map(p => [p.email, p]));
+  const result = { target: 0, opened: 0, attachmentOpened: 0, clicked: 0, compromised: 0, trainingCompleted: 0, reported: 0, recidivists: 0, failedEmails: [] as string[], updatedProfiles: [] as PhishingProfile[], detailedResults: [] as any[] };
+  const map = new Map(profiles.map(p => [p.email, p]));
 
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    const cols = parseCSVLine(line);
+    if (!lines[i].trim()) continue;
+    const cols = parseCSVLine(lines[i]);
+    if (cols.length < headers.length - 2) continue;
 
-    const res = processSingleProofpointLine(cols, headers, indices, existingProfilesMap);
-    if (!res) continue;
+    const res = analyzeProofpointRow(cols, indices, map);
+    result.target++;
+    result.opened += Number(res.hasOpened);
+    result.attachmentOpened += Number(res.hasAttachmentOpened);
+    result.clicked += Number(res.hasClicked);
+    if (res.hasClicked) result.failedEmails.push(res.email);
+    result.compromised += Number(res.hasCompromised);
+    result.trainingCompleted += Number(res.hasTraining);
+    result.reported += Number(res.hasReported);
+    result.recidivists += Number(res.isRecidivist);
 
-    target++;
-    if (res.hasOpened) opened++;
-    if (res.hasAttachmentOpened) attachmentOpened++;
-    if (res.hasClicked) { clicked++; failedEmails.push(res.email); }
-    if (res.hasCompromised) compromised++;
-    if (res.hasTraining) trainingCompleted++;
-    if (res.hasReported) reported++;
-    if (res.isRecidivist) recidivists++;
-
-    detailedResults.push({ email: res.email, opened: res.hasOpened, attachment: res.hasAttachmentOpened, clicked: res.hasClicked, compromised: res.hasCompromised, training: res.hasTraining, reported: res.hasReported, isRecidivist: res.isRecidivist });
-    updatedProfiles.push(res.updatedProfile);
+    result.detailedResults.push({ email: res.email, opened: res.hasOpened, attachment: res.hasAttachmentOpened, clicked: res.hasClicked, compromised: res.hasCompromised, training: res.hasTraining, reported: res.hasReported, isRecidivist: res.isRecidivist });
+    result.updatedProfiles.push(res.profile);
   }
+  return result;
+};
 
-  return { target, opened, attachmentOpened, clicked, compromised, trainingCompleted, reported, recidivists, failedEmails, updatedProfiles, detailedResults };
+// ============================================================================
+// MOTEURS D'EXTRACTION DE DONNÉES LMS (Refactorisés)
+// ============================================================================
+const findLmsColumns = (workbook: XLSX.WorkBook) => {
+  for (const sheetName of workbook.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(workbook.Sheets[sheetName]);
+    if (rows.length > 0) {
+      const objKeys = Object.keys(rows[0]);
+      const kMail = objKeys.find(k => k.trim().toLowerCase() === 'mail');
+      const kParcours = objKeys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
+      const kEtat = objKeys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
+      const kStart = objKeys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début');
+      const kEnd = objKeys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin');
+      if (kMail && kParcours && kEtat) return { rows, keys: { mail: kMail, parcours: kParcours, etat: kEtat, start: kStart || '', end: kEnd || '' } };
+    }
+  }
+  return { rows: [], keys: null };
 };
 
 const processLmsRow = (row: any, keys: Record<string, string>, currentProfilesMap: Map<string, PhishingProfile>, existingCompletedEmails: string[]) => {
-  const email = String(row[keys.mailKey] || "").trim().toLowerCase();
-  const etat = String(row[keys.etatKey] || "").trim().toLowerCase();
-  const parcours = String(row[keys.parcoursKey] || "").trim();
+  const email = String(row[keys.mail] || "").trim().toLowerCase();
+  const etat = String(row[keys.etat] || "").trim().toLowerCase();
+  const parcours = String(row[keys.parcours] || "").trim();
 
   if (!email || email === "undefined" || email === "") return null;
 
@@ -250,57 +250,39 @@ const processLmsRow = (row: any, keys: Record<string, string>, currentProfilesMa
 };
 
 const processLmsWorkbookData = (workbook: XLSX.WorkBook, modules: ElearningModule[], profiles: PhishingProfile[]) => {
-  let validRows: any[] = [];
-  let keys: Record<string, string> = {} as any;
+  const { rows: validRows, keys } = findLmsColumns(workbook);
+  if (!keys) throw new Error("Colonnes obligatoires introuvables dans l'Excel.");
 
-  for (const sheetName of workbook.SheetNames) {
-    const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet);
-    if (rows.length > 0) {
-      const objKeys = Object.keys(rows[0]);
-      const mKey = objKeys.find(k => k.trim().toLowerCase() === 'mail');
-      const pKey = objKeys.find(k => k.trim().toLowerCase() === 'nom du parcours 1');
-      const eKey = objKeys.find(k => k.trim().toLowerCase() === 'etat du parcours 1');
-      const startKey = objKeys.find(k => k.trim().toLowerCase() === 'date de début de session 1' || k.trim().toLowerCase() === 'date de début');
-      const endKey = objKeys.find(k => k.trim().toLowerCase() === 'date de fin de session 1' || k.trim().toLowerCase() === 'date de fin');
-
-      if (mKey && pKey && eKey) {
-        validRows = rows;
-        keys = { mailKey: mKey, parcoursKey: pKey, etatKey: eKey, startDateKey: startKey || '', endDateKey: endKey || '' };
-        break;
-      }
-    }
-  }
-
-  if (validRows.length === 0 || !keys.mailKey) throw new Error("Colonnes obligatoires introuvables dans l'Excel.");
-
-  let moduleName = "";
   let startDateFound: string | undefined = undefined;
   let endDateFound: string | undefined = undefined;
-  let total = 0, completed = 0, inProgress = 0, notStarted = 0;
-  const profilesToUpdate: PhishingProfile[] = [];
-  const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
-
   validRows.forEach((row) => {
-    if (!endDateFound && keys.endDateKey && row[keys.endDateKey]) endDateFound = parseExcelDate(row[keys.endDateKey]);
-    if (!startDateFound && keys.startDateKey && row[keys.startDateKey]) startDateFound = parseExcelDate(row[keys.startDateKey]);
+    if (!endDateFound && keys.end && row[keys.end]) endDateFound = parseExcelDate(row[keys.end]);
+    if (!startDateFound && keys.start && row[keys.start]) startDateFound = parseExcelDate(row[keys.start]);
   });
 
-  const tempName = String(validRows[0][keys.parcoursKey] || "").trim();
+  const tempName = String(validRows[0][keys.parcours] || "").trim();
   const matchingModules = modules.filter(m => m.name.toLowerCase() === tempName.toLowerCase() && (m.formatType === 'E-Learning' || (m as any).format_type === 'E-Learning'));
-  let matchedModule: ElearningModule | undefined = undefined;
+  matchingModules.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+  let matchedModule = matchingModules.length > 0 ? matchingModules[0] : undefined;
   let isRenewal = false;
 
-  if (matchingModules.length > 0) {
-    matchingModules.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-    const existingDeadlineIso = matchingModules[0].deadline ? new Date(matchingModules[0].deadline).toISOString().split('T')[0] : null;
+  if (matchedModule) {
+    const existingDeadlineIso = matchedModule.deadline ? new Date(matchedModule.deadline).toISOString().split('T')[0] : null;
     const newDeadlineIso = endDateFound ? new Date(endDateFound).toISOString().split('T')[0] : null;
-    if (existingDeadlineIso && newDeadlineIso && existingDeadlineIso !== newDeadlineIso) { isRenewal = true; }
-    else { matchedModule = matchingModules[0]; }
+    if (existingDeadlineIso && newDeadlineIso && existingDeadlineIso !== newDeadlineIso) {
+      isRenewal = true;
+      matchedModule = undefined;
+    }
   }
 
   const existingCompletedEmails = matchedModule?.completedBy || (matchedModule as any)?.completed_by || [];
   const newlyCompletedEmails: string[] = [];
+  const profilesToUpdate: PhishingProfile[] = [];
+  const currentProfilesMap = new Map(profiles.map(p => [p.email.toLowerCase(), p]));
+
+  let moduleName = "";
+  let total = 0, completed = 0, inProgress = 0, notStarted = 0;
 
   validRows.forEach((row) => {
     const res = processLmsRow(row, keys, currentProfilesMap, existingCompletedEmails);
@@ -332,7 +314,7 @@ const processLmsWorkbookData = (workbook: XLSX.WorkBook, modules: ElearningModul
 };
 
 // ============================================================================
-// SOUS-COMPOSANTS DE RENDU
+// SOUS-COMPOSANTS DE RENDU UI
 // ============================================================================
 
 const KpiGrid = ({ campaigns, profiles, elearningModules, sessionModules }: any) => {
@@ -614,7 +596,7 @@ const ProfilageTabContent = ({ profiles, uniqueDepartments }: any) => {
 
   const getSortIcon = (key: string) => {
     if (sortConfig?.key !== key) return <ArrowUpDown className="w-4 h-4 ml-1 opacity-50 inline" />;
-    return sortConfig?.direction === 'asc' ? <ArrowUp className="w-4 h-4 ml-1 inline" /> : <ArrowDown className="w-4 h-4 ml-1 inline" />;
+    return sortConfig.direction === 'asc' ? <ArrowUp className="w-4 h-4 ml-1 inline" /> : <ArrowDown className="w-4 h-4 ml-1 inline" />;
   };
 
   if (profiles.length === 0) {
@@ -889,16 +871,13 @@ export default function AwarenessView() {
   const [participantToRemove, setParticipantToRemove] = useState<string | null>(null);
 
   const [newCampaign, setNewCampaign] = useState({
-    name: "", sendDate: new Date().toISOString().split('T')[0], difficulty: "moyen",
-    targetCount: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0,
-    compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, recidivistsCount: 0, failedEmails: [] as string[],
-    detailedResults: [] as any[], fileLoaded: false
+    name: "", sendDate: new Date().toISOString().split('T')[0], difficulty: "moyen", targetCount: 0, openedCount: 0, attachmentOpenedCount: 0, clickedCount: 0,
+    compromisedCount: 0, trainingCompletedCount: 0, reportedCount: 0, recidivistsCount: 0, failedEmails: [] as string[], detailedResults: [] as any[], fileLoaded: false
   });
 
   const [parsedLmsData, setParsedLmsData] = useState({
     name: "", originalExcelName: "", targetAudience: "Tous", totalAssigned: 0, completedCount: 0, inProgressCount: 0, notStartedCount: 0, completedBy: [] as string[],
-    startDate: undefined as string | undefined, deadline: undefined as string | undefined,
-    fileLoaded: false, selectedModuleId: "new", isRenewal: false
+    startDate: undefined as string | undefined, deadline: undefined as string | undefined, fileLoaded: false, selectedModuleId: "new", isRenewal: false
   });
 
   const [attendanceEmails, setAttendanceEmails] = useState("");
@@ -1022,7 +1001,7 @@ export default function AwarenessView() {
       const module = modules.find(m => m.id === moduleId);
       if (!module) throw new Error("Module introuvable");
 
-      const emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,10}/gi;
+      const emailRegex = /[^\s@]+@[^\s@]+\.[^\s@]+/g;
       const extractedEmails = rawEmails.match(emailRegex) || [];
       const existingCompletedEmails = module.completedBy || (module as any).completed_by || [];
       const newlyCompletedEmails: string[] = [];
@@ -1072,7 +1051,6 @@ export default function AwarenessView() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Participant retiré !"); setSelectedModule(null); }
   });
 
-  // --- PARSEURS ET UPLOADERS ---
   const handleProofpointUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1278,7 +1256,6 @@ export default function AwarenessView() {
         </SheetContent>
       </Sheet>
 
-      {/* PANNEAU SESSION/E-LEARNING */}
       <Sheet open={!!selectedModule && !isAttendanceModalOpen} onOpenChange={(open) => !open && setSelectedModule(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
