@@ -4,7 +4,7 @@ import {
   fetchProjects, createProject, updateProject, deleteProject,
   fetchApplications, createApplication, updateApplication, deleteApplication,
   fetchVulnerabilities, createVulnerability, updateVulnerabilityStatus,
-  Project, Application, Vulnerability
+  Project, Application
 } from "@/lib/supabase-security";
 import { toast } from "sonner";
 
@@ -26,7 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ShieldAlert, ShieldCheck, Rocket, Bug, Plus, AlertTriangle, Loader2, Trash2, CheckCircle2, Pencil, Network, FileSearch, Settings2, Search, Clock, History, Target } from "lucide-react";
 
 // ============================================================================
-// 1. UTILITAIRES DE DESIGN ET DE CALCUL (CORRIGÉS POUR LE DARK MODE)
+// 1. UTILITAIRES DE DESIGN ET DE CALCUL
 // ============================================================================
 
 const formatFrDate = (dateStr: string | null | undefined) => {
@@ -45,7 +45,7 @@ const getDeadlineStatus = (lastDate: string | null, freqMonths: number) => {
   if (!lastDate) return "missing";
   const deadline = new Date(lastDate);
   deadline.setMonth(deadline.getMonth() + (freqMonths || 12));
-  const diffDays = Math.ceil((deadline.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.ceil((deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
   if (diffDays < 0) return "expired";
   if (diffDays <= 90) return "warning";
   return "ok";
@@ -99,7 +99,7 @@ const getVulnColor = (sev: string, isResolved: boolean) => {
 
 const checkSlaOverdue = (createdAt: string, severity: string) => {
   const createdDate = new Date(createdAt);
-  const diffDays = Math.ceil(Math.abs(new Date().getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.ceil(Math.abs(Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
   switch (severity) {
     case 'critique': return diffDays > 7;
     case 'eleve': return diffDays > 30;
@@ -118,8 +118,278 @@ const getAuditTypeInfo = (type: string) => {
   }
 };
 
+// --- EXTRACTIONS DE TERNAIRES COMPLEXES ---
+const getPasCoverageBorderClass = (coverage: number) => {
+  if (coverage >= 80) return 'border-l-emerald-500';
+  if (coverage > 0) return 'border-l-amber-500';
+  return 'border-l-slate-300';
+};
+
+const getPasCoverageIconClass = (coverage: number) => {
+  if (coverage >= 80) return 'text-emerald-500';
+  if (coverage > 0) return 'text-amber-500';
+  return 'text-slate-400';
+};
+
+const getRiskAnalysisBorderClass = (coverage: number) => {
+  if (coverage >= 80) return 'border-l-primary';
+  if (coverage > 0) return 'border-l-amber-500';
+  return 'border-l-slate-300';
+};
+
+const getAuditCoverageBorderClass = (coverage: number) => {
+  if (coverage >= 80) return 'border-l-blue-500';
+  if (coverage > 0) return 'border-l-amber-500';
+  return 'border-l-slate-300';
+};
+
+const getSeverityTextClass = (severity: string, isResolved: boolean) => {
+  if (isResolved) return 'text-emerald-600 dark:text-emerald-400';
+  switch (severity) {
+    case 'critique': return 'text-rose-600 dark:text-rose-400';
+    case 'eleve': return 'text-orange-600 dark:text-orange-400';
+    case 'moyen': return 'text-amber-600 dark:text-amber-400';
+    default: return 'text-slate-600 dark:text-slate-400';
+  }
+};
+
 // ============================================================================
-// 2. COMPOSANT PRINCIPAL
+// 2. SOUS-COMPOSANTS DE RENDU (Pour réduire la complexité cognitive)
+// ============================================================================
+
+const KpiGrid = ({ pasCoverage, validatedPas, totalProjects, projectsAtRisk, riskAnalysisCoverage, appsWithRiskAnalysis, totalApps, auditCoverage, auditedApps, totalCriticalVulns, totalHighVulns }: any) => (
+  <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+    <Card className={`border-l-4 shadow-sm ${getPasCoverageBorderClass(pasCoverage)}`}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Couverture PAS</CardTitle>
+        <ShieldCheck className={`w-4 h-4 ${getPasCoverageIconClass(pasCoverage)}`} />
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{pasCoverage}%</div>
+        <p className="text-xs text-muted-foreground mt-1">{validatedPas} projets sur {totalProjects}</p>
+      </CardContent>
+    </Card>
+
+    <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50' : 'border-l-slate-200'}`}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className={`text-sm font-medium ${projectsAtRisk > 0 ? 'text-rose-600' : 'text-muted-foreground'}`}>Alerte Go-Live</CardTitle>
+        <Rocket className={`w-4 h-4 ${projectsAtRisk > 0 ? 'text-rose-600' : 'text-muted-foreground'}`} />
+      </CardHeader>
+      <CardContent>
+        <div className={`text-2xl font-bold ${projectsAtRisk > 0 ? 'text-rose-600' : ''}`}>{projectsAtRisk}</div>
+        <p className="text-xs text-muted-foreground mt-1">Projets risqués sans PAS</p>
+      </CardContent>
+    </Card>
+
+    <Card className={`border-l-4 shadow-sm ${getRiskAnalysisBorderClass(riskAnalysisCoverage)}`}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Couverture Analyses Risques</CardTitle>
+        <Target className="w-4 h-4 text-primary" />
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
+        <p className="text-xs text-muted-foreground mt-1">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
+      </CardContent>
+    </Card>
+
+    <Card className={`border-l-4 shadow-sm ${getAuditCoverageBorderClass(auditCoverage)}`}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Couverture Audit</CardTitle>
+        <ShieldAlert className="w-4 h-4 text-blue-500" />
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{auditCoverage}%</div>
+        <p className="text-xs text-muted-foreground mt-1">{auditedApps} périmètres sur {totalApps}</p>
+      </CardContent>
+    </Card>
+
+    <Card className={`border-l-4 shadow-sm ${(totalCriticalVulns + totalHighVulns) > 0 ? 'border-l-rose-600' : 'border-l-emerald-500'}`}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Dette Majeure</CardTitle>
+        <Bug className={`w-4 h-4 ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-500'}`} />
+      </CardHeader>
+      <CardContent>
+        <div className={`text-2xl font-bold ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{totalCriticalVulns + totalHighVulns}</div>
+        <p className="text-xs text-muted-foreground mt-1">Vulnérabilités Crit/Élev</p>
+      </CardContent>
+    </Card>
+  </div>
+);
+
+const ProjectsTable = ({ filteredProjects, setSelectedProject }: any) => {
+  if (filteredProjects.length === 0) {
+    return <div className="p-12 text-center text-muted-foreground">Aucun projet trouvé.</div>;
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow className="bg-muted/30">
+          <TableHead>Projet</TableHead>
+          <TableHead>Chef de Projet</TableHead>
+          <TableHead>Niveau de Risque</TableHead>
+          <TableHead>Date Demande</TableHead>
+          <TableHead>Date Go-Live</TableHead>
+          <TableHead className="text-right">Statut PAS</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {filteredProjects.map((project: Project) => (
+          <TableRow key={project.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedProject(project)}>
+            <TableCell className="font-medium">{project.name}</TableCell>
+            <TableCell className="text-muted-foreground text-sm">{project.manager || "-"}</TableCell>
+            <TableCell>{getRiskBadge(project.riskLevel)}</TableCell>
+            <TableCell className="text-sm font-medium text-muted-foreground">
+              {formatFrDate(project.requestDate || project.createdAt)}
+            </TableCell>
+            <TableCell className="text-sm font-medium flex items-center gap-1.5 mt-2">
+              <Rocket className="w-3.5 h-3.5 text-muted-foreground" />
+              {formatFrDate(project.goLiveDate)}
+            </TableCell>
+            <TableCell className="text-right">{getPasStatusBadge(project.pasStatus)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+};
+
+const AuditsTable = ({ filteredApps, activeVulns, setSelectedApp, setShowResolvedHistory }: any) => {
+  if (filteredApps.length === 0) {
+    return <div className="p-12 text-center text-muted-foreground">Aucun périmètre trouvé.</div>;
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow className="bg-muted/30">
+          <TableHead>Périmètre</TableHead>
+          <TableHead>Type de Contrôle</TableHead>
+          <TableHead>Prochaine Analyse de Risques</TableHead>
+          <TableHead>Vuln. Actives</TableHead>
+          <TableHead className="text-right">Prochain Audit</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {filteredApps.map((app: Application) => {
+          const appInfo = getAuditTypeInfo(app.auditType);
+          const riskStatus = getDeadlineStatus(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
+          const riskNextDateStr = calculateNextDeadlineStr(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
+          const auditStatus = getDeadlineStatus(app.lastAuditDate, app.auditFrequencyMonths);
+          const auditNextDateStr = calculateNextDeadlineStr(app.lastAuditDate, app.auditFrequencyMonths);
+          const appVulns = activeVulns.filter((v: any) => v.appId === app.id);
+          const vCrit = appVulns.filter((v: any) => v.severity === 'critique').length;
+          const vHigh = appVulns.filter((v: any) => v.severity === 'eleve').length;
+          const vMed = appVulns.filter((v: any) => v.severity === 'moyen').length;
+          const vLow = appVulns.filter((v: any) => v.severity === 'faible').length;
+
+          return (
+            <TableRow key={app.id} className="cursor-pointer hover:bg-muted/50" onClick={() => { setSelectedApp(app); setShowResolvedHistory(false); }}>
+              <TableCell>
+                <div className="font-medium text-foreground">{app.name}</div>
+                <Badge variant="outline" className="text-muted-foreground bg-muted/50 dark:bg-muted/20 w-max text-[10px] py-0 mt-1">
+                  Criticité : {app.criticality}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-sm text-muted-foreground">
+                <div className="flex items-center">
+                  {appInfo.icon} {appInfo.label}
+                </div>
+              </TableCell>
+              <TableCell className="text-sm">
+                {getDeadlineBadge(riskStatus, riskNextDateStr, true)}
+              </TableCell>
+              <TableCell>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {vCrit > 0 && <Badge variant="outline" className="bg-rose-500 text-white border-transparent dark:bg-rose-500/20 dark:text-rose-400 dark:border-rose-500/30">{vCrit} Crit.</Badge>}
+                  {vHigh > 0 && <Badge variant="outline" className="bg-orange-500 text-white border-transparent dark:bg-orange-500/20 dark:text-orange-400 dark:border-orange-500/30">{vHigh} Élev.</Badge>}
+                  {vMed > 0 && <Badge variant="outline" className="bg-amber-500 text-white border-transparent dark:bg-amber-500/20 dark:text-amber-400 dark:border-amber-500/30">{vMed} Moy.</Badge>}
+                  {vLow > 0 && <Badge variant="outline" className="bg-slate-500 text-white border-transparent dark:bg-slate-500/20 dark:text-slate-400 dark:border-slate-500/30">{vLow} Fble</Badge>}
+                  {appVulns.length === 0 && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✅ Zéro dette</span>}
+                </div>
+              </TableCell>
+              <TableCell className="text-right text-sm">
+                {getDeadlineBadge(auditStatus, auditNextDateStr, false)}
+              </TableCell>
+            </TableRow>
+          )
+        })}
+      </TableBody>
+    </Table>
+  );
+};
+
+const VulnerabilityList = ({ vulns, activeVulns, selectedApp, showResolvedHistory, setShowResolvedHistory, setIsAddVulnOpen, setVulnToClose }: any) => {
+  const displayedVulns = vulns.filter((v: any) => v.appId === selectedApp.id && v.status === (showResolvedHistory ? 'resolu' : 'ouvert'));
+
+  return (
+    <div className="space-y-4 pt-4 border-t border-border">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold flex items-center gap-2">
+          <Bug className="w-4 h-4 text-rose-500" /> Constats & Remédiation
+        </h4>
+        <Button size="sm" variant="outline" onClick={() => setIsAddVulnOpen(true)}>
+          <Plus className="w-3 h-3 mr-1" /> Déclarer
+        </Button>
+      </div>
+
+      <div className="flex p-1 bg-muted/50 rounded-lg">
+        <button
+          type="button"
+          className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${!showResolvedHistory ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+          onClick={() => setShowResolvedHistory(false)}
+        >
+          Actives ({activeVulns.filter((v: any) => v.appId === selectedApp.id).length})
+        </button>
+        <button
+          type="button"
+          className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1 ${showResolvedHistory ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+          onClick={() => setShowResolvedHistory(true)}
+        >
+          <History className="w-3 h-3" /> Résolues ({vulns.filter((v: any) => v.appId === selectedApp.id && v.status === 'resolu').length})
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        {displayedVulns.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic bg-muted/20 p-4 rounded-md border border-border text-center">
+            {showResolvedHistory ? "Aucun historique de correction pour le moment." : "Aucune vulnérabilité active. Beau travail !"}
+          </p>
+        ) : (
+          displayedVulns.map((vuln: any) => {
+            const isOverdue = !showResolvedHistory && checkSlaOverdue(vuln.createdAt, vuln.severity);
+            return (
+              <div key={vuln.id} className={`p-4 border rounded-lg ${getVulnColor(vuln.severity, showResolvedHistory)}`}>
+                <div className="flex justify-between items-start mb-2">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className={`text-[10px] uppercase font-bold tracking-wider ${getSeverityTextClass(vuln.severity, showResolvedHistory)}`}>
+                        Impact {vuln.severity}
+                      </span>
+                      {vuln.cve && <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-background text-foreground">{vuln.cve}</Badge>}
+                      {isOverdue && <Badge variant="outline" className="bg-rose-500 text-white dark:bg-rose-500/20 dark:text-rose-400 border-none text-[10px] px-1 py-0 h-4 flex items-center gap-1"><Clock className="w-2.5 h-2.5"/> SLA dépassé</Badge>}
+                      {showResolvedHistory && <Badge variant="outline" className="bg-emerald-500 text-white dark:bg-emerald-500/20 dark:text-emerald-400 border-none text-[10px] px-1 py-0 h-4">Corrigée</Badge>}
+                    </div>
+                    <h5 className="font-semibold text-sm line-clamp-2 text-foreground">{vuln.title}</h5>
+                  </div>
+                  {!showResolvedHistory && (
+                    <Button variant="ghost" size="icon" className="h-7 w-7 bg-background shadow-sm hover:bg-emerald-50 hover:text-emerald-600 border border-border flex-shrink-0" onClick={() => setVulnToClose(vuln.id)}>
+                      <CheckCircle2 className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+                <p className="text-xs leading-relaxed mt-2 p-2 rounded border border-border/50 bg-background/50 text-foreground">
+                  {vuln.description}
+                </p>
+              </div>
+            )
+          })
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
+// 3. COMPOSANT PRINCIPAL (Allégé)
 // ============================================================================
 export default function SecurityOpsView() {
   const queryClient = useQueryClient();
@@ -153,6 +423,7 @@ export default function SecurityOpsView() {
   const { data: apps = [], isLoading: isLoadingApps } = useQuery({ queryKey: ['applications'], queryFn: fetchApplications });
   const { data: vulns = [], isLoading: isLoadingVulns } = useQuery({ queryKey: ['vulnerabilities'], queryFn: fetchVulnerabilities });
 
+  // --- MUTATIONS ---
   const addProjectMutation = useMutation({
     mutationFn: createProject,
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['projects'] }); toast.success("Projet ajouté"); setIsAddProjectOpen(false); setNewProject({ name: "", manager: "", goLiveDate: "", riskLevel: "moyen", requestDate: new Date().toISOString().split('T')[0] }); }
@@ -188,6 +459,7 @@ export default function SecurityOpsView() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] }); toast.success("Vulnérabilité clôturée !"); setVulnToClose(null); }
   });
 
+  // --- VARIABLES DERIVÉES POUR LE DASHBOARD ---
   const totalProjects = projects.length;
   const validatedPas = projects.filter(p => p.pasStatus === "validated").length;
   const pasCoverage = totalProjects > 0 ? Math.round((validatedPas / totalProjects) * 100) : 0;
@@ -206,13 +478,14 @@ export default function SecurityOpsView() {
 
   const filteredProjects = projects.filter(p =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (p.manager && p.manager.toLowerCase().includes(searchQuery.toLowerCase()))
+    (p.manager?.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
   const filteredApps = apps.filter(a =>
     a.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  // --- HANDLERS ---
   const handleCreateProject = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newProject.name) return;
@@ -244,62 +517,11 @@ export default function SecurityOpsView() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
 
-      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        <Card className={`border-l-4 shadow-sm ${pasCoverage >= 80 ? 'border-l-emerald-500' : pasCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Couverture PAS</CardTitle>
-            <ShieldCheck className={`w-4 h-4 ${pasCoverage >= 80 ? 'text-emerald-500' : pasCoverage > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{pasCoverage}%</div>
-            <p className="text-xs text-muted-foreground mt-1">{validatedPas} projets sur {totalProjects}</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${projectsAtRisk > 0 ? 'border-l-rose-500 bg-rose-50/50' : 'border-l-slate-200'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className={`text-sm font-medium ${projectsAtRisk > 0 ? 'text-rose-600' : 'text-muted-foreground'}`}>Alerte Go-Live</CardTitle>
-            <Rocket className={`w-4 h-4 ${projectsAtRisk > 0 ? 'text-rose-600' : 'text-muted-foreground'}`} />
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${projectsAtRisk > 0 ? 'text-rose-600' : ''}`}>{projectsAtRisk}</div>
-            <p className="text-xs text-muted-foreground mt-1">Projets risqués sans PAS</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${riskAnalysisCoverage >= 80 ? 'border-l-primary' : riskAnalysisCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Couverture Analyses Risques</CardTitle>
-            <Target className="w-4 h-4 text-primary" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{riskAnalysisCoverage}%</div>
-            <p className="text-xs text-muted-foreground mt-1">{appsWithRiskAnalysis} périmètres sur {totalApps}</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${auditCoverage >= 80 ? 'border-l-blue-500' : auditCoverage > 0 ? 'border-l-amber-500' : 'border-l-slate-300'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Couverture Audit</CardTitle>
-            <ShieldAlert className="w-4 h-4 text-blue-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{auditCoverage}%</div>
-            <p className="text-xs text-muted-foreground mt-1">{auditedApps} périmètres sur {totalApps}</p>
-          </CardContent>
-        </Card>
-
-        <Card className={`border-l-4 shadow-sm ${(totalCriticalVulns + totalHighVulns) > 0 ? 'border-l-rose-600' : 'border-l-emerald-500'}`}>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Dette Majeure</CardTitle>
-            <Bug className={`w-4 h-4 ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-500'}`} />
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${(totalCriticalVulns + totalHighVulns) > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>{totalCriticalVulns + totalHighVulns}</div>
-            <p className="text-xs text-muted-foreground mt-1">Vulnérabilités Crit/Élev</p>
-          </CardContent>
-        </Card>
-      </div>
+      <KpiGrid
+        pasCoverage={pasCoverage} validatedPas={validatedPas} totalProjects={totalProjects} projectsAtRisk={projectsAtRisk}
+        riskAnalysisCoverage={riskAnalysisCoverage} appsWithRiskAnalysis={appsWithRiskAnalysis} totalApps={totalApps}
+        auditCoverage={auditCoverage} auditedApps={auditedApps} totalCriticalVulns={totalCriticalVulns} totalHighVulns={totalHighVulns}
+      />
 
       <Card className="shadow-sm">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -330,106 +552,16 @@ export default function SecurityOpsView() {
           </div>
 
           <TabsContent value="projects" className="m-0">
-            {filteredProjects.length === 0 ? (
-              <div className="p-12 text-center text-muted-foreground">Aucun projet trouvé.</div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/30">
-                    <TableHead>Projet</TableHead>
-                    <TableHead>Chef de Projet</TableHead>
-                    <TableHead>Niveau de Risque</TableHead>
-                    <TableHead>Date Demande</TableHead>
-                    <TableHead>Date Go-Live</TableHead>
-                    <TableHead className="text-right">Statut PAS</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredProjects.map((project) => (
-                    <TableRow key={project.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedProject(project)}>
-                      <TableCell className="font-medium">{project.name}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{project.manager || "-"}</TableCell>
-                      <TableCell>{getRiskBadge(project.riskLevel)}</TableCell>
-                      <TableCell className="text-sm font-medium text-muted-foreground">
-                        {formatFrDate(project.requestDate || project.createdAt)}
-                      </TableCell>
-                      <TableCell className="text-sm font-medium flex items-center gap-1.5 mt-2">
-                        <Rocket className="w-3.5 h-3.5 text-muted-foreground" />
-                        {formatFrDate(project.goLiveDate)}
-                      </TableCell>
-                      <TableCell className="text-right">{getPasStatusBadge(project.pasStatus)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+            <ProjectsTable filteredProjects={filteredProjects} setSelectedProject={setSelectedProject} />
           </TabsContent>
 
           <TabsContent value="audits" className="m-0">
-             {filteredApps.length === 0 ? (
-              <div className="p-12 text-center text-muted-foreground">Aucun périmètre trouvé.</div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/30">
-                    <TableHead>Périmètre</TableHead>
-                    <TableHead>Type de Contrôle</TableHead>
-                    <TableHead>Prochaine Analyse de Risques</TableHead>
-                    <TableHead>Vuln. Actives</TableHead>
-                    <TableHead className="text-right">Prochain Audit</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredApps.map((app) => {
-                    const appInfo = getAuditTypeInfo(app.auditType);
-                    const riskStatus = getDeadlineStatus(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
-                    const riskNextDateStr = calculateNextDeadlineStr(app.lastRiskAnalysisDate, app.riskAnalysisFrequencyMonths);
-                    const auditStatus = getDeadlineStatus(app.lastAuditDate, app.auditFrequencyMonths);
-                    const auditNextDateStr = calculateNextDeadlineStr(app.lastAuditDate, app.auditFrequencyMonths);
-                    const appVulns = activeVulns.filter(v => v.appId === app.id);
-                    const vCrit = appVulns.filter(v => v.severity === 'critique').length;
-                    const vHigh = appVulns.filter(v => v.severity === 'eleve').length;
-                    const vMed = appVulns.filter(v => v.severity === 'moyen').length;
-                    const vLow = appVulns.filter(v => v.severity === 'faible').length;
-
-                    return (
-                      <TableRow key={app.id} className="cursor-pointer hover:bg-muted/50" onClick={() => { setSelectedApp(app); setShowResolvedHistory(false); }}>
-                        <TableCell>
-                          <div className="font-medium text-foreground">{app.name}</div>
-                          <Badge variant="outline" className="text-muted-foreground bg-muted/50 dark:bg-muted/20 w-max text-[10px] py-0 mt-1">
-                            Criticité : {app.criticality}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          <div className="flex items-center">
-                            {appInfo.icon} {appInfo.label}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {getDeadlineBadge(riskStatus, riskNextDateStr, true)}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {vCrit > 0 && <Badge variant="outline" className="bg-rose-500 text-white border-transparent dark:bg-rose-500/20 dark:text-rose-400 dark:border-rose-500/30">{vCrit} Crit.</Badge>}
-                            {vHigh > 0 && <Badge variant="outline" className="bg-orange-500 text-white border-transparent dark:bg-orange-500/20 dark:text-orange-400 dark:border-orange-500/30">{vHigh} Élev.</Badge>}
-                            {vMed > 0 && <Badge variant="outline" className="bg-amber-500 text-white border-transparent dark:bg-amber-500/20 dark:text-amber-400 dark:border-amber-500/30">{vMed} Moy.</Badge>}
-                            {vLow > 0 && <Badge variant="outline" className="bg-slate-500 text-white border-transparent dark:bg-slate-500/20 dark:text-slate-400 dark:border-slate-500/30">{vLow} Fble</Badge>}
-                            {appVulns.length === 0 && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✅ Zéro dette</span>}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-right text-sm">
-                          {getDeadlineBadge(auditStatus, auditNextDateStr, false)}
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            )}
+            <AuditsTable filteredApps={filteredApps} activeVulns={activeVulns} setSelectedApp={setSelectedApp} setShowResolvedHistory={setShowResolvedHistory} />
           </TabsContent>
         </Tabs>
       </Card>
 
+      {/* --- SHEET PROJET --- */}
       <Sheet open={!!selectedProject} onOpenChange={(open) => !open && setSelectedProject(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
@@ -488,6 +620,7 @@ export default function SecurityOpsView() {
         </SheetContent>
       </Sheet>
 
+      {/* --- SHEET PÉRIMÈTRE --- */}
       <Sheet open={!!selectedApp} onOpenChange={(open) => !open && setSelectedApp(null)}>
         <SheetContent className="sm:max-w-md overflow-y-auto">
           <SheetHeader className="mb-6">
@@ -519,7 +652,6 @@ export default function SecurityOpsView() {
                   </div>
                   <div className="p-3 border border-border rounded-md text-center bg-primary/5">
                     <p className="text-[10px] text-primary uppercase mb-1">Prochaine Analyse</p>
-                    {/* CHANGEMENT ICI : <p> devient <div> pour éviter l'erreur DOM Nesting */}
                     <div className="font-medium text-sm flex items-center justify-center">
                       {getDeadlineBadge(
                         getDeadlineStatus(selectedApp.lastRiskAnalysisDate, selectedApp.riskAnalysisFrequencyMonths),
@@ -545,7 +677,6 @@ export default function SecurityOpsView() {
                   </div>
                   <div className="p-3 border border-border rounded-md text-center bg-blue-50/50 dark:bg-blue-900/10">
                     <p className="text-[10px] text-blue-600 uppercase mb-1">Prochain Audit</p>
-                    {/* CHANGEMENT ICI : <p> devient <div> pour éviter l'erreur DOM Nesting */}
                     <div className="font-medium text-sm flex items-center justify-center">
                       {getDeadlineBadge(
                         getDeadlineStatus(selectedApp.lastAuditDate, selectedApp.auditFrequencyMonths),
@@ -560,68 +691,15 @@ export default function SecurityOpsView() {
                 </Button>
               </div>
 
-              <div className="space-y-4 pt-4 border-t border-border">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-semibold flex items-center gap-2">
-                    <Bug className="w-4 h-4 text-rose-500" /> Constats & Remédiation
-                  </h4>
-                  <Button size="sm" variant="outline" onClick={() => setIsAddVulnOpen(true)}>
-                    <Plus className="w-3 h-3 mr-1" /> Déclarer
-                  </Button>
-                </div>
-
-                <div className="flex p-1 bg-muted/50 rounded-lg">
-                  <button
-                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${!showResolvedHistory ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
-                    onClick={() => setShowResolvedHistory(false)}
-                  >
-                    Actives ({activeVulns.filter(v => v.appId === selectedApp.id).length})
-                  </button>
-                  <button
-                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1 ${showResolvedHistory ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
-                    onClick={() => setShowResolvedHistory(true)}
-                  >
-                    <History className="w-3 h-3" /> Résolues ({vulns.filter(v => v.appId === selectedApp.id && v.status === 'resolu').length})
-                  </button>
-                </div>
-
-                <div className="space-y-3">
-                  {vulns.filter(v => v.appId === selectedApp.id && v.status === (showResolvedHistory ? 'resolu' : 'ouvert')).length === 0 ? (
-                    <p className="text-sm text-muted-foreground italic bg-muted/20 p-4 rounded-md border border-border text-center">
-                      {showResolvedHistory ? "Aucun historique de correction pour le moment." : "Aucune vulnérabilité active. Beau travail !"}
-                    </p>
-                  ) : (
-                    vulns.filter(v => v.appId === selectedApp.id && v.status === (showResolvedHistory ? 'resolu' : 'ouvert')).map(vuln => {
-                      const isOverdue = !showResolvedHistory && checkSlaOverdue(vuln.createdAt, vuln.severity);
-                      return (
-                        <div key={vuln.id} className={`p-4 border rounded-lg ${getVulnColor(vuln.severity, showResolvedHistory)}`}>
-                          <div className="flex justify-between items-start mb-2">
-                            <div>
-                              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                <span className={`text-[10px] uppercase font-bold tracking-wider ${showResolvedHistory ? 'text-emerald-600 dark:text-emerald-400' : vuln.severity === 'critique' ? 'text-rose-600 dark:text-rose-400' : vuln.severity === 'eleve' ? 'text-orange-600 dark:text-orange-400' : vuln.severity === 'moyen' ? 'text-amber-600 dark:text-amber-400' : 'text-slate-600 dark:text-slate-400'}`}>
-                                  Impact {vuln.severity}
-                                </span>
-                                {vuln.cve && <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 bg-background text-foreground">{vuln.cve}</Badge>}
-                                {isOverdue && <Badge variant="outline" className="bg-rose-500 text-white dark:bg-rose-500/20 dark:text-rose-400 border-none text-[10px] px-1 py-0 h-4 flex items-center gap-1"><Clock className="w-2.5 h-2.5"/> SLA dépassé</Badge>}
-                                {showResolvedHistory && <Badge variant="outline" className="bg-emerald-500 text-white dark:bg-emerald-500/20 dark:text-emerald-400 border-none text-[10px] px-1 py-0 h-4">Corrigée</Badge>}
-                              </div>
-                              <h5 className="font-semibold text-sm line-clamp-2 text-foreground">{vuln.title}</h5>
-                            </div>
-                            {!showResolvedHistory && (
-                              <Button variant="ghost" size="icon" className="h-7 w-7 bg-background shadow-sm hover:bg-emerald-50 hover:text-emerald-600 border border-border flex-shrink-0" onClick={() => setVulnToClose(vuln.id)}>
-                                <CheckCircle2 className="w-4 h-4" />
-                              </Button>
-                            )}
-                          </div>
-                          <p className="text-xs leading-relaxed mt-2 p-2 rounded border border-border/50 bg-background/50 text-foreground">
-                            {vuln.description}
-                          </p>
-                        </div>
-                      )
-                    })
-                  )}
-                </div>
-              </div>
+              <VulnerabilityList
+                vulns={vulns}
+                activeVulns={activeVulns}
+                selectedApp={selectedApp}
+                showResolvedHistory={showResolvedHistory}
+                setShowResolvedHistory={setShowResolvedHistory}
+                setIsAddVulnOpen={setIsAddVulnOpen}
+                setVulnToClose={setVulnToClose}
+              />
 
               <div className="mt-12 pt-6 border-t border-border">
                 <Button variant="destructive" className="w-full" onClick={() => setAppToDelete(selectedApp)}>
@@ -633,6 +711,7 @@ export default function SecurityOpsView() {
         </SheetContent>
       </Sheet>
 
+      {/* --- DIALOGS (Création / Édition) --- */}
       <Dialog open={isAddProjectOpen} onOpenChange={setIsAddProjectOpen}>
         <DialogContent>
           <DialogHeader>
@@ -819,11 +898,11 @@ export default function SecurityOpsView() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Fréquence Audit (mois)</Label>
-                  <Input type="number" min="1" value={appToEdit.auditFrequencyMonths} onChange={(e) => setAppToEdit({...appToEdit, auditFrequencyMonths: parseInt(e.target.value) || 12})} />
+                  <Input type="number" min="1" value={appToEdit.auditFrequencyMonths} onChange={(e) => setAppToEdit({...appToEdit, auditFrequencyMonths: Number.parseInt(e.target.value, 10) || 12})} />
                 </div>
                 <div className="space-y-2">
                   <Label>Fréq. Risques (mois)</Label>
-                  <Input type="number" min="1" value={appToEdit.riskAnalysisFrequencyMonths} onChange={(e) => setAppToEdit({...appToEdit, riskAnalysisFrequencyMonths: parseInt(e.target.value) || 36})} />
+                  <Input type="number" min="1" value={appToEdit.riskAnalysisFrequencyMonths} onChange={(e) => setAppToEdit({...appToEdit, riskAnalysisFrequencyMonths: Number.parseInt(e.target.value, 10) || 36})} />
                 </div>
               </div>
               <DialogFooter>
@@ -851,7 +930,7 @@ export default function SecurityOpsView() {
             </div>
             <div className="space-y-2">
               <Label>Impact métier (Vulgarisation)</Label>
-              <Textarea required placeholder="Expliquez le risque avec des mots simples pour la direction. (Ex: Un attaquant pourrait extraire la base de données des clients sans avoir besoin de mot de passe...)" value={newVuln.description} onChange={(e) => setNewVuln({...newVuln, description: e.target.value})} className="h-24"/>
+              <Textarea required placeholder="Expliquez le risque avec des mots simples pour la direction..." value={newVuln.description} onChange={(e) => setNewVuln({...newVuln, description: e.target.value})} className="h-24"/>
             </div>
             <div className="space-y-2">
               <Label>Sévérité</Label>
@@ -873,13 +952,12 @@ export default function SecurityOpsView() {
         </DialogContent>
       </Dialog>
 
+      {/* --- ALERT DIALOGS (Confirmations) --- */}
       <AlertDialog open={!!projectStatusToUpdate} onOpenChange={(open) => !open && setProjectStatusToUpdate(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Changement de statut (PAS)</AlertDialogTitle>
-            <AlertDialogDescription>
-              Confirmez-vous le changement de statut de sécurité du projet <strong>{projectStatusToUpdate?.name}</strong> vers "{projectStatusToUpdate?.status}" ?
-            </AlertDialogDescription>
+            <AlertDialogDescription>Confirmez-vous le changement de statut de sécurité du projet <strong>{projectStatusToUpdate?.name}</strong> vers "{projectStatusToUpdate?.status}" ?</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
@@ -897,9 +975,7 @@ export default function SecurityOpsView() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Analyse de risques effectuée</AlertDialogTitle>
-            <AlertDialogDescription>
-              Marquer l'analyse de risques pour <strong>{appToMarkRiskAnalyzed?.name}</strong> comme ayant été mise à jour aujourd'hui ? Cela repoussera la prochaine échéance selon la fréquence configurée.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Marquer l'analyse de risques pour <strong>{appToMarkRiskAnalyzed?.name}</strong> comme ayant été mise à jour aujourd'hui ? Cela repoussera la prochaine échéance.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
@@ -918,9 +994,7 @@ export default function SecurityOpsView() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Renouveler l'audit</AlertDialogTitle>
-            <AlertDialogDescription>
-              Marquer <strong>{appToMarkAudited?.name}</strong> comme ayant été audité aujourd'hui ? Cela repoussera automatiquement la prochaine date d'échéance.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Marquer <strong>{appToMarkAudited?.name}</strong> comme ayant été audité aujourd'hui ? Cela repoussera automatiquement la prochaine date d'échéance.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
@@ -939,9 +1013,7 @@ export default function SecurityOpsView() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Correction validée</AlertDialogTitle>
-            <AlertDialogDescription>
-              Confirmez-vous que cette vulnérabilité a été corrigée ? Elle sera archivée dans l'historique.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Confirmez-vous que cette vulnérabilité a été corrigée ? Elle sera archivée dans l'historique.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
@@ -957,9 +1029,7 @@ export default function SecurityOpsView() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="text-destructive">Supprimer ce projet ?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Cette action est irréversible et supprimera le projet de vos indicateurs.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Cette action est irréversible et supprimera le projet de vos indicateurs.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
@@ -976,9 +1046,7 @@ export default function SecurityOpsView() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="text-destructive">Supprimer ce périmètre ?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Toutes les vulnérabilités (actives et résolues) associées seront également supprimées.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Toutes les vulnérabilités (actives et résolues) associées seront également supprimées.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
