@@ -1,5 +1,4 @@
 // src/pages/Governance.tsx
-import AppLayout from "@/components/layout/AppLayout";
 import GovernanceView from "@/components/gouvernance/GovernanceView";
 
 export default function Governance() {

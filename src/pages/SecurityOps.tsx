@@ -1,4 +1,3 @@
-import AppLayout from "@/components/layout/AppLayout";
 import SecurityOpsView from "@/components/security/SecurityOpsView";
 
 export default function SecurityOps() {

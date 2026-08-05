@@ -1,4 +1,3 @@
-import AppLayout from "@/components/layout/AppLayout";
 import { Moon, Sun } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useEffect, useState } from "react";

@@ -1,4 +1,3 @@
-import AppLayout from "@/components/layout/AppLayout";
 import AwarenessView from "@/components/security/AwarenessView";
 
 const Awareness = () => {

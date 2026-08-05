@@ -33,14 +33,14 @@ export default function ChangePasswordPage() {
       setLoading(false);
       return;
     }
-    if (!user || !user.email) {
+    // Utilisation de l'optional chaining recommandé par le linter
+    if (!user?.email) {
       setError("Impossible de vérifier l'utilisateur actuel.");
       setLoading(false);
       return;
     }
 
     // 2. Vérification du mot de passe actuel (Astuce Supabase)
-    // On essaie de "connecter" l'utilisateur avec le mot de passe actuel qu'il a saisi
     const { error: signInError } = await supabase.auth.signInWithPassword({
       email: user.email,
       password: currentPassword,
@@ -65,7 +65,7 @@ export default function ChangePasswordPage() {
       setNewPassword('');
       setConfirmPassword('');
 
-      // Optionnel : Rediriger vers le tableau de bord après 3 secondes
+      // Rediriger vers le tableau de bord après 3 secondes
       setTimeout(() => {
         navigate('/');
       }, 3000);
@@ -166,6 +166,7 @@ export default function ChangePasswordPage() {
 
         <div className="mt-6 text-center">
           <button
+            type="button" // Ajout de l'attribut type explicite
             onClick={() => navigate('/')}
             className="text-sm text-slate-500 hover:text-indigo-600 transition-colors"
           >
