@@ -1,4 +1,3 @@
-
 -- Create timestamp update function
 CREATE OR REPLACE FUNCTION public.update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -67,9 +66,18 @@ CREATE TRIGGER update_kpi_entries_updated_at
 CREATE INDEX idx_kpi_entries_kpi_id ON public.kpi_entries(kpi_id);
 CREATE INDEX idx_kpi_entries_period ON public.kpi_entries(period);
 
--- Storage bucket for uploaded files
-INSERT INTO storage.buckets (id, name, public) VALUES ('kpi-files', 'kpi-files', true);
+-- Storage bucket for uploaded files using a PL/pgSQL block and a constant variable
+DO $$
+DECLARE
+  bucket_name CONSTANT TEXT := 'kpi-files';
+BEGIN
+  -- Insert into buckets
+  INSERT INTO storage.buckets (id, name, public) 
+  VALUES (bucket_name, bucket_name, true)
+  ON CONFLICT (id) DO NOTHING;
 
-CREATE POLICY "KPI files are publicly accessible" ON storage.objects FOR SELECT USING (bucket_id = 'kpi-files');
-CREATE POLICY "Anyone can upload KPI files" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'kpi-files');
-CREATE POLICY "Anyone can delete KPI files" ON storage.objects FOR DELETE USING (bucket_id = 'kpi-files');
+  -- Create RLS policies dynamically using the constant
+  EXECUTE format('CREATE POLICY "KPI files are publicly accessible" ON storage.objects FOR SELECT USING (bucket_id = %L)', bucket_name);
+  EXECUTE format('CREATE POLICY "Anyone can upload KPI files" ON storage.objects FOR INSERT WITH CHECK (bucket_id = %L)', bucket_name);
+  EXECUTE format('CREATE POLICY "Anyone can delete KPI files" ON storage.objects FOR DELETE USING (bucket_id = %L)', bucket_name);
+END $$;
