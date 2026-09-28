@@ -21,7 +21,7 @@ export default function Login() {
     setError('');
 
     // Vérification de sécurité simple
-    const domaineAutorise = "@gmail.com";
+    const domaineAutorise = "@actionlogement.fr.com";
     if (!email.toLowerCase().endsWith(domaineAutorise)) {
       setError("Adresse non autorisée");
       return;
