@@ -1,4 +1,7 @@
 import React from "react";
+
+// Imports originaux mis en commentaire temporairement pour éviter les erreurs
+/*
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -6,8 +9,26 @@ import {
   TrendingUp, TrendingDown, BadgeEuro,
   Lock, Scale, ArrowUpRight, ShieldCheck, Cpu
 } from "lucide-react";
+*/
 
 export default function ExecutivePanel() {
+
+  // --- NOUVEAU RENDU (PLACEHOLDER GRISÉ) ---
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[50vh] mt-8 space-y-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-muted/10 p-8 text-center shadow-sm opacity-80">
+      <h2 className="text-4xl md:text-5xl font-black text-muted-foreground tracking-tight">
+        🚧 À venir
+      </h2>
+      <p className="text-lg text-muted-foreground/70 max-w-md">
+        Le tableau de bord exécutif est encore en cours de développement.
+      </p>
+    </div>
+  );
+
+  /* =========================================================================
+     ANCIEN CODE SAUVEGARDÉ EN COMMENTAIRE
+     =========================================================================
+
   // --- SYNTHÈSE STRATÉGIQUE HAUT NIVEAU (Périmètre 4000 collaborateurs) ---
   const executiveData = {
     macro: {
@@ -69,7 +90,7 @@ export default function ExecutivePanel() {
   return (
     <div className="space-y-6 mt-4">
 
-      {/* 1. BLOC DES INDICATEURS MACRO-STRATÉGIQUES (4 Cartes Clés) */}
+      {/* 1. BLOC DES INDICATEURS MACRO-STRATÉGIQUES (4 Cartes Clés) * /}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
 
         <div className="p-6 rounded-2xl border border-border bg-card shadow-sm flex flex-col justify-between border-t-4 border-t-emerald-500">
@@ -130,7 +151,7 @@ export default function ExecutivePanel() {
 
       </div>
 
-      {/* 2. SYNTHÈSE PAR GRAND PILIER MÉTIER */}
+      {/* 2. SYNTHÈSE PAR GRAND PILIER MÉTIER * /}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {executiveData.pillars.map((pillar) => {
           const IconComp = pillar.icon;
@@ -154,10 +175,10 @@ export default function ExecutivePanel() {
         })}
       </div>
 
-      {/* 3. ARBITRAGES STRATÉGIQUES & RADAR DE CONFORMITÉ */}
+      {/* 3. ARBITRAGES STRATÉGIQUES & RADAR DE CONFORMITÉ * /}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-        {/* Décisions COMEX */}
+        {/* Décisions COMEX * /}
         <div className="p-6 rounded-2xl border border-border bg-card shadow-sm lg:col-span-2 space-y-4">
            <h3 className="text-lg font-bold flex items-center gap-2 text-foreground border-b border-border pb-4">
              <Scale className="w-5 h-5 text-primary" /> Notes d'Arbitrage & Décisions Requises (Comité des Risques)
@@ -182,7 +203,7 @@ export default function ExecutivePanel() {
            </div>
         </div>
 
-        {/* Radar de Conformité */}
+        {/* Radar de Conformité * /}
         <div className="p-6 rounded-2xl border border-border bg-card shadow-sm flex flex-col justify-between">
           <h3 className="text-sm font-bold text-muted-foreground uppercase mb-6 flex items-center gap-2"><Lock className="w-4 h-4"/> Conformité par Cadre</h3>
           <div className="space-y-6">
@@ -212,4 +233,5 @@ export default function ExecutivePanel() {
 
     </div>
   );
+  ========================================================================= */
 }

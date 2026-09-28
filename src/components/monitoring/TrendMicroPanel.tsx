@@ -1,12 +1,33 @@
 import React from "react";
+
+// Imports originaux mis en commentaire temporairement pour éviter les erreurs "unused variables"
+/*
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Laptop } from "lucide-react";
+*/
 
 export default function TrendMicroPanel() {
+
+  // --- NOUVEAU RENDU (PLACEHOLDER GRISÉ) ---
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[50vh] mt-8 space-y-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-muted/10 p-8 text-center shadow-sm opacity-80">
+      <h2 className="text-4xl md:text-5xl font-black text-muted-foreground tracking-tight">
+        🚧 À venir
+      </h2>
+      <p className="text-lg text-muted-foreground/70 max-w-md">
+        Le panneau Trend Micro est encore en cours de développement.
+      </p>
+    </div>
+  );
+
+  /* =========================================================================
+     ANCIEN CODE SAUVEGARDÉ EN COMMENTAIRE
+     =========================================================================
+
   const data = {
     kpis: {
       edrCoverage: "98.5%",
@@ -44,7 +65,7 @@ export default function TrendMicroPanel() {
         </Card>
       </div>
 
-      {/* Journal des détections endpoints */}
+      {/* Journal des détections endpoints * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-bold flex items-center gap-2"><Laptop className="w-5 h-5 text-blue-500" /> Journal des Menaces Endpoints (Trend Micro XDR)</CardTitle>
@@ -70,4 +91,5 @@ export default function TrendMicroPanel() {
       </Card>
     </div>
   );
+  ========================================================================= */
 }

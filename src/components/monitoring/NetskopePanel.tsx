@@ -1,4 +1,7 @@
 import React from "react";
+
+// Imports originaux mis en commentaire temporairement pour éviter les erreurs "unused variables"
+/*
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "@/components/ui/table";
@@ -10,8 +13,26 @@ import {
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip as RechartsTooltip, Legend
 } from "recharts";
+*/
 
 export default function NetskopePanel() {
+
+  // --- NOUVEAU RENDU (PLACEHOLDER GRISÉ) ---
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[50vh] mt-8 space-y-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-muted/10 p-8 text-center shadow-sm opacity-80">
+      <h2 className="text-4xl md:text-5xl font-black text-muted-foreground tracking-tight">
+        🚧 À venir
+      </h2>
+      <p className="text-lg text-muted-foreground/70 max-w-md">
+        Le panneau Netskope est encore en cours de développement.
+      </p>
+    </div>
+  );
+
+  /* =========================================================================
+     ANCIEN CODE SAUVEGARDÉ EN COMMENTAIRE
+     =========================================================================
+
   // --- MOCK DATA ENTERPRISE : CLOUD & SHADOW IT ---
   const data = {
     // 1. KPI Globaux Netskope
@@ -53,7 +74,7 @@ export default function NetskopePanel() {
 
       {/* ==============================================================================
           1. BANDEAU SUPÉRIEUR (EXECUTIVE SUMMARY NETSKOPE)
-          ============================================================================== */}
+          ============================================================================== * /}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card className="border-l-4 border-l-orange-500 bg-card shadow-sm flex flex-col justify-between">
           <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
@@ -117,10 +138,10 @@ export default function NetskopePanel() {
 
       {/* ==============================================================================
           2. SECTION : USAGES ET SHADOW IT (Tableaux & Graphiques)
-          ============================================================================== */}
+          ============================================================================== * /}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-        {/* Pie Chart */}
+        {/* Pie Chart * /}
         <Card className="border border-border shadow-sm col-span-1">
           <CardHeader className="border-b border-border bg-secondary/10">
             <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -132,7 +153,7 @@ export default function NetskopePanel() {
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={data.categoryUsage} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={5} dataKey="value">
-                    {/* Correction SonarQube : Utilisation de entry.name au lieu de l'index */}
+                    {/* Correction SonarQube : Utilisation de entry.name au lieu de l'index * /}
                     {data.categoryUsage.map((entry) => (
                       <Cell key={`cell-${entry.name}`} fill={entry.color} />
                     ))}
@@ -145,7 +166,7 @@ export default function NetskopePanel() {
           </CardContent>
         </Card>
 
-        {/* Table Shadow IT */}
+        {/* Table Shadow IT * /}
         <Card className="border border-border shadow-sm col-span-1 lg:col-span-2 overflow-hidden">
           <CardHeader className="border-b border-border bg-secondary/10">
             <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -186,7 +207,7 @@ export default function NetskopePanel() {
 
       {/* ==============================================================================
           3. SECTION : UEBA (Comportements Utilisateurs à Risque)
-          ============================================================================== */}
+          ============================================================================== * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10">
           <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -222,4 +243,5 @@ export default function NetskopePanel() {
 
     </div>
   );
+  ========================================================================= */
 }

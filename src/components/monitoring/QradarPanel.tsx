@@ -1,4 +1,7 @@
 import React from "react";
+
+// Imports originaux mis en commentaire temporairement pour éviter les erreurs "unused variables"
+/*
 import { useQuery } from "@tanstack/react-query";
 import { callQradarApi } from "@/services/qradarService";
 
@@ -20,114 +23,132 @@ import {
   ResponsiveContainer, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend
 } from "recharts";
-
-// --- FONCTIONS UTILITAIRES (Pour éliminer les ternaires imbriqués de l'UI) ---
-const getLogSourceStatusColor = (status: string) => {
-  if (status.includes('Sain')) return 'text-emerald-500';
-  if (status.includes('Angle mort')) return 'text-orange-500';
-  return 'text-destructive';
-};
-
-const getFpRateColor = (fpRate: string) => {
-  return Number.parseInt(fpRate, 10) > 20 ? 'text-destructive' : 'text-emerald-500';
-};
-
-const getRiskBadgeVariant = (risk: string): "destructive" | "default" | "secondary" | "outline" => {
-  if (risk === 'Élevé') return 'destructive';
-  if (risk === 'Moyen') return 'default';
-  return 'secondary';
-};
-
-const getTrendColorClass = (trend: string) => {
-  if (trend === 'En hausse') return 'text-orange-500 flex items-center gap-1';
-  if (trend === 'En baisse') return 'text-emerald-500 flex items-center gap-1';
-  return 'text-muted-foreground';
-};
-
-const renderTrendIcon = (trend: string) => {
-  if (trend === 'En hausse') return <TrendingUp className="w-3 h-3" />;
-  if (trend === 'En baisse') return <TrendingDown className="w-3 h-3" />;
-  return null;
-};
-
-// --- MOCK DATA ENTERPRISE (Fallback si l'API ne répond pas ou en mode démo) ---
-const MOCK_QRADAR_DATA = {
-  kpis: {
-    mttd: "14m", mttr: "2.5h",
-    mttrTrend: "-15m",
-    falsePositiveRate: 18,
-    epsAvg: "14 500",
-    epsPeak: "22 400",
-    logsVolume: "4.5 TB / jour",
-    activeCriticalOffenses: 34,
-    totalOffenses30d: 1749
-  },
-  trends: {
-    offensesOverTime: [
-      { day: '01', alerts: 120, critical: 1 }, { day: '05', alerts: 250, critical: 5 },
-      { day: '10', alerts: 180, critical: 2 }, { day: '15', alerts: 450, critical: 12 },
-      { day: '20', alerts: 200, critical: 3 }, { day: '25', alerts: 300, critical: 8 },
-      { day: '30', alerts: 150, critical: 3 }
-    ],
-    resolutionFunnel: [
-      { step: 'Alertes Brutes', value: 850000 },
-      { step: 'Événements Corrélés', value: 45000 },
-      { step: 'Offenses Générées', value: 1749 },
-      { step: 'Escalades N2/N3', value: 145 },
-      { step: 'Incidents Majeurs', value: 34 }
-    ]
-  },
-  priorityOffenses: [
-    // Masquage des adresses IP en dur avec un join pour éviter l'alerte SonarQube "no-secrets / hardcoded IP"
-    { id: "OFF-10452", description: "Mouvement Latéral Improbable (AD)", magnitude: 8, source: ["10", "50", "2", "14"].join("."), target: ["10", "10", "1", "5"].join(".") + " (SRV-DB)", status: "Assigné (SOC N2)", time: "Il y a 2h" },
-    { id: "OFF-10453", description: "Exfiltration massive suspectée vers IP Tor", magnitude: 9, source: ["10", "50", "3", "88"].join("."), target: ["185", "20", "3", "4"].join("."), status: "Investigation", time: "Il y a 4h" },
-    { id: "OFF-10454", description: "Multiples échecs d'auth. VPN (Brute Force)", magnitude: 7, source: ["89", "123", "45", "6"].join("."), target: "VPN Gateway", status: "Nouveau", time: "Il y a 30m" }
-  ],
-  mitreHeatmap: [
-    { tactic: "Initial Access", score: 85, color: "bg-destructive" },
-    { tactic: "Execution", score: 40, color: "bg-orange-500" },
-    { tactic: "Persistence", score: 20, color: "bg-yellow-500" },
-    { tactic: "Privilege Esc.", score: 60, color: "bg-orange-500" },
-    { tactic: "Defense Evasion", score: 30, color: "bg-yellow-500" },
-    { tactic: "Credential Access", score: 95, color: "bg-destructive" },
-    { tactic: "Discovery", score: 50, color: "bg-orange-500" },
-    { tactic: "Lateral Movement", score: 75, color: "bg-destructive" },
-    { tactic: "Collection", score: 15, color: "bg-emerald-500" },
-    { tactic: "Exfiltration", score: 25, color: "bg-yellow-500" }
-  ],
-  logSources: [
-    { type: "Firewalls (Palo Alto)", count: 12, eps: "8 500", volume: "2.1 TB", status: "100% (Sain)" },
-    { type: "Active Directory (DCs)", count: 4, eps: "3 200", volume: "850 GB", status: "100% (Sain)" },
-    { type: "EDR (Trend Micro)", count: 4000, eps: "1 500", volume: "450 GB", status: "100% (Sain)" },
-    { type: "Serveurs Linux (DMZ)", count: 145, eps: "300", volume: "85 GB", status: "Angle mort (60%)" },
-    { type: "Applications Métier", count: 8, eps: "1000", volume: "1.0 TB", status: "Erreurs de parsing" }
-  ],
-  topRules: [
-    { name: "Multiples échecs d'authentification suivis d'un succès", category: "Credential Access", count: 450, fpRate: "25%" },
-    { name: "Connexion VPN depuis une IP géolocalisée à risque", category: "Initial Access", count: 320, fpRate: "5%" },
-    { name: "Exécution de PowerShell encodé", category: "Execution", count: 145, fpRate: "12%" },
-    { name: "Découverte de réseau / Scan de ports", category: "Discovery", count: 85, fpRate: "45%" }
-  ],
-  segments: [
-    { name: "LAN Utilisateurs (VLAN 10-50)", alerts: 1050, critical: 12, risk: "Moyen", trend: "Stable" },
-    { name: "DMZ Web (VLAN 100)", alerts: 420, critical: 18, risk: "Élevé", trend: "En hausse" },
-    { name: "Datacenter Core (VLAN 200)", alerts: 145, critical: 4, risk: "Moyen", trend: "En baisse" },
-    { name: "Réseau Invités", alerts: 134, critical: 0, risk: "Faible", trend: "Stable" }
-  ]
-};
-
-// Fonction de récupération fetch via l'Edge Function QRadar
-const fetchQradarData = async () => {
-  try {
-    await callQradarApi('/siem/offenses', 'GET', { range: '0-9' });
-    return MOCK_QRADAR_DATA;
-  } catch (error) {
-    console.warn("⚠️ Impossible de joindre l'API QRadar en direct, bascule sur les données de démonstration.", error);
-    return MOCK_QRADAR_DATA;
-  }
-};
+*/
 
 export default function QradarPanel() {
+
+  // --- NOUVEAU RENDU (PLACEHOLDER GRISÉ) ---
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[50vh] mt-8 space-y-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-muted/10 p-8 text-center shadow-sm opacity-80">
+      <h2 className="text-4xl md:text-5xl font-black text-muted-foreground tracking-tight">
+        🚧 À venir
+      </h2>
+      <p className="text-lg text-muted-foreground/70 max-w-md">
+        Le panneau QRadar est encore en cours de développement.
+      </p>
+    </div>
+  );
+
+  /* =========================================================================
+     ANCIEN CODE SAUVEGARDÉ EN COMMENTAIRE
+     =========================================================================
+
+  // --- FONCTIONS UTILITAIRES (Pour éliminer les ternaires imbriqués de l'UI) ---
+  const getLogSourceStatusColor = (status: string) => {
+    if (status.includes('Sain')) return 'text-emerald-500';
+    if (status.includes('Angle mort')) return 'text-orange-500';
+    return 'text-destructive';
+  };
+
+  const getFpRateColor = (fpRate: string) => {
+    return Number.parseInt(fpRate, 10) > 20 ? 'text-destructive' : 'text-emerald-500';
+  };
+
+  const getRiskBadgeVariant = (risk: string): "destructive" | "default" | "secondary" | "outline" => {
+    if (risk === 'Élevé') return 'destructive';
+    if (risk === 'Moyen') return 'default';
+    return 'secondary';
+  };
+
+  const getTrendColorClass = (trend: string) => {
+    if (trend === 'En hausse') return 'text-orange-500 flex items-center gap-1';
+    if (trend === 'En baisse') return 'text-emerald-500 flex items-center gap-1';
+    return 'text-muted-foreground';
+  };
+
+  const renderTrendIcon = (trend: string) => {
+    if (trend === 'En hausse') return <TrendingUp className="w-3 h-3" />;
+    if (trend === 'En baisse') return <TrendingDown className="w-3 h-3" />;
+    return null;
+  };
+
+  // --- MOCK DATA ENTERPRISE (Fallback si l'API ne répond pas ou en mode démo) ---
+  const MOCK_QRADAR_DATA = {
+    kpis: {
+      mttd: "14m", mttr: "2.5h",
+      mttrTrend: "-15m",
+      falsePositiveRate: 18,
+      epsAvg: "14 500",
+      epsPeak: "22 400",
+      logsVolume: "4.5 TB / jour",
+      activeCriticalOffenses: 34,
+      totalOffenses30d: 1749
+    },
+    trends: {
+      offensesOverTime: [
+        { day: '01', alerts: 120, critical: 1 }, { day: '05', alerts: 250, critical: 5 },
+        { day: '10', alerts: 180, critical: 2 }, { day: '15', alerts: 450, critical: 12 },
+        { day: '20', alerts: 200, critical: 3 }, { day: '25', alerts: 300, critical: 8 },
+        { day: '30', alerts: 150, critical: 3 }
+      ],
+      resolutionFunnel: [
+        { step: 'Alertes Brutes', value: 850000 },
+        { step: 'Événements Corrélés', value: 45000 },
+        { step: 'Offenses Générées', value: 1749 },
+        { step: 'Escalades N2/N3', value: 145 },
+        { step: 'Incidents Majeurs', value: 34 }
+      ]
+    },
+    priorityOffenses: [
+      // Masquage des adresses IP en dur avec un join pour éviter l'alerte SonarQube "no-secrets / hardcoded IP"
+      { id: "OFF-10452", description: "Mouvement Latéral Improbable (AD)", magnitude: 8, source: ["10", "50", "2", "14"].join("."), target: ["10", "10", "1", "5"].join(".") + " (SRV-DB)", status: "Assigné (SOC N2)", time: "Il y a 2h" },
+      { id: "OFF-10453", description: "Exfiltration massive suspectée vers IP Tor", magnitude: 9, source: ["10", "50", "3", "88"].join("."), target: ["185", "20", "3", "4"].join("."), status: "Investigation", time: "Il y a 4h" },
+      { id: "OFF-10454", description: "Multiples échecs d'auth. VPN (Brute Force)", magnitude: 7, source: ["89", "123", "45", "6"].join("."), target: "VPN Gateway", status: "Nouveau", time: "Il y a 30m" }
+    ],
+    mitreHeatmap: [
+      { tactic: "Initial Access", score: 85, color: "bg-destructive" },
+      { tactic: "Execution", score: 40, color: "bg-orange-500" },
+      { tactic: "Persistence", score: 20, color: "bg-yellow-500" },
+      { tactic: "Privilege Esc.", score: 60, color: "bg-orange-500" },
+      { tactic: "Defense Evasion", score: 30, color: "bg-yellow-500" },
+      { tactic: "Credential Access", score: 95, color: "bg-destructive" },
+      { tactic: "Discovery", score: 50, color: "bg-orange-500" },
+      { tactic: "Lateral Movement", score: 75, color: "bg-destructive" },
+      { tactic: "Collection", score: 15, color: "bg-emerald-500" },
+      { tactic: "Exfiltration", score: 25, color: "bg-yellow-500" }
+    ],
+    logSources: [
+      { type: "Firewalls (Palo Alto)", count: 12, eps: "8 500", volume: "2.1 TB", status: "100% (Sain)" },
+      { type: "Active Directory (DCs)", count: 4, eps: "3 200", volume: "850 GB", status: "100% (Sain)" },
+      { type: "EDR (Trend Micro)", count: 4000, eps: "1 500", volume: "450 GB", status: "100% (Sain)" },
+      { type: "Serveurs Linux (DMZ)", count: 145, eps: "300", volume: "85 GB", status: "Angle mort (60%)" },
+      { type: "Applications Métier", count: 8, eps: "1000", volume: "1.0 TB", status: "Erreurs de parsing" }
+    ],
+    topRules: [
+      { name: "Multiples échecs d'authentification suivis d'un succès", category: "Credential Access", count: 450, fpRate: "25%" },
+      { name: "Connexion VPN depuis une IP géolocalisée à risque", category: "Initial Access", count: 320, fpRate: "5%" },
+      { name: "Exécution de PowerShell encodé", category: "Execution", count: 145, fpRate: "12%" },
+      { name: "Découverte de réseau / Scan de ports", category: "Discovery", count: 85, fpRate: "45%" }
+    ],
+    segments: [
+      { name: "LAN Utilisateurs (VLAN 10-50)", alerts: 1050, critical: 12, risk: "Moyen", trend: "Stable" },
+      { name: "DMZ Web (VLAN 100)", alerts: 420, critical: 18, risk: "Élevé", trend: "En hausse" },
+      { name: "Datacenter Core (VLAN 200)", alerts: 145, critical: 4, risk: "Moyen", trend: "En baisse" },
+      { name: "Réseau Invités", alerts: 134, critical: 0, risk: "Faible", trend: "Stable" }
+    ]
+  };
+
+  // Fonction de récupération fetch via l'Edge Function QRadar
+  const fetchQradarData = async () => {
+    try {
+      await callQradarApi('/siem/offenses', 'GET', { range: '0-9' });
+      return MOCK_QRADAR_DATA;
+    } catch (error) {
+      console.warn("⚠️ Impossible de joindre l'API QRadar en direct, bascule sur les données de démonstration.", error);
+      return MOCK_QRADAR_DATA;
+    }
+  };
+
   const { data = MOCK_QRADAR_DATA, isLoading } = useQuery({
     queryKey: ['qradar-secure-data'],
     queryFn: fetchQradarData,
@@ -148,7 +169,7 @@ export default function QradarPanel() {
 
       {/* ==============================================================================
           1. BANDEAU SUPÉRIEUR PERMANENT (EXECUTIVE SUMMARY SOC)
-          ============================================================================== */}
+          ============================================================================== * /}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
 
         <Card className="border-l-4 border-l-emerald-500 bg-card shadow-sm flex flex-col justify-between">
@@ -231,7 +252,7 @@ export default function QradarPanel() {
 
       {/* ==============================================================================
           2. SECTION : PERFORMANCE & TENDANCE
-          ============================================================================== */}
+          ============================================================================== * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10">
           <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -277,7 +298,7 @@ export default function QradarPanel() {
 
       {/* ==============================================================================
           3. SECTION : OFFENSES ACTIVES PRIORITAIRES
-          ============================================================================== */}
+          ============================================================================== * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -322,10 +343,10 @@ export default function QradarPanel() {
 
       {/* ==============================================================================
           ACCORDÉONS TECHNIQUES (4 À 7)
-          ============================================================================== */}
+          ============================================================================== * /}
       <Accordion type="multiple" className="w-full space-y-4">
 
-        {/* SECTION 4 : COUVERTURE MITRE ATT&CK */}
+        {/* SECTION 4 : COUVERTURE MITRE ATT&CK * /}
         <AccordionItem value="item-4" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -345,7 +366,7 @@ export default function QradarPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* SECTION 5 : SANTÉ DES SOURCES DE LOGS */}
+        {/* SECTION 5 : SANTÉ DES SOURCES DE LOGS * /}
         <AccordionItem value="item-5" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -378,7 +399,7 @@ export default function QradarPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* SECTION 6 : TOP RÈGLES DE CORRÉLATION */}
+        {/* SECTION 6 : TOP RÈGLES DE CORRÉLATION * /}
         <AccordionItem value="item-6" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -412,7 +433,7 @@ export default function QradarPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* SECTION 7 : STATISTIQUES PAR SEGMENT / ASSET */}
+        {/* SECTION 7 : STATISTIQUES PAR SEGMENT / ASSET * /}
         <AccordionItem value="item-7" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -451,4 +472,5 @@ export default function QradarPanel() {
 
     </div>
   );
+  ========================================================================= */
 }

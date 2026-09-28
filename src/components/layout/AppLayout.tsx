@@ -17,7 +17,7 @@ const NAV_ITEMS = [
   { path: "/messagerie", label: "Messagerie SSI", icon: Mail },
   { path: "/risques", label: "Suivi des Risques", icon: Radar },
   { path: "/monitoring", label: "Monitoring SI", icon: Activity },
-  //{ path: "/reports", label: "Rapports", icon: FileText },
+  { path: "/reports", label: "Rapports", icon: FileText },
 ];
 
 // Utilitaire pour le titre du bouton d'épinglage (Évite les ternaires imbriqués pour SonarQube)

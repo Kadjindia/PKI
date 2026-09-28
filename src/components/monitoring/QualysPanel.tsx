@@ -1,4 +1,7 @@
 import React from "react";
+
+// Imports originaux mis en commentaire temporairement pour éviter les erreurs "unused variables"
+/*
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger
 } from "@/components/ui/accordion";
@@ -18,21 +21,39 @@ import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, Cell
 } from "recharts";
-
-// --- FONCTIONS UTILITAIRES (Évite les ternaires imbriqués) ---
-const getScoreBadgeVariant = (score: number): "destructive" | "default" | "secondary" => {
-  if (score >= 8) return 'destructive';
-  if (score >= 6) return 'default';
-  return 'secondary';
-};
-
-const getAgingColor = (index: number): string => {
-  if (index > 3) return '#7f1d1d';
-  if (index > 2) return '#b91c1c';
-  return '#ef4444';
-};
+*/
 
 export default function QualysPanel() {
+
+  // --- NOUVEAU RENDU (PLACEHOLDER GRISÉ) ---
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[50vh] mt-8 space-y-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-muted/10 p-8 text-center shadow-sm opacity-80">
+      <h2 className="text-4xl md:text-5xl font-black text-muted-foreground tracking-tight">
+        🚧 À venir
+      </h2>
+      <p className="text-lg text-muted-foreground/70 max-w-md">
+        Le panneau Qualys est encore en cours de développement.
+      </p>
+    </div>
+  );
+
+  /* =========================================================================
+     ANCIEN CODE SAUVEGARDÉ EN COMMENTAIRE
+     =========================================================================
+
+  // --- FONCTIONS UTILITAIRES (Évite les ternaires imbriqués) ---
+  const getScoreBadgeVariant = (score: number): "destructive" | "default" | "secondary" => {
+    if (score >= 8) return 'destructive';
+    if (score >= 6) return 'default';
+    return 'secondary';
+  };
+
+  const getAgingColor = (index: number): string => {
+    if (index > 3) return '#7f1d1d';
+    if (index > 2) return '#b91c1c';
+    return '#ef4444';
+  };
+
   // --- MOCK DATA ENTERPRISE (Scale : 4000 utilisateurs / 4850 actifs) ---
   const data = {
     // 1. KPI Globaux
@@ -103,7 +124,7 @@ export default function QualysPanel() {
 
       {/* ==============================================================================
           1. BANDEAU SUPÉRIEUR PERMANENT (EXECUTIVE SUMMARY QUALYS)
-          ============================================================================== */}
+          ============================================================================== * /}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
 
         <Card className="border-l-4 border-l-emerald-500 bg-card shadow-sm flex flex-col justify-between">
@@ -170,7 +191,7 @@ export default function QualysPanel() {
 
       {/* ==============================================================================
           2. SECTION : TENDANCES ET AGING (OUVERTE PAR DÉFAUT)
-          ============================================================================== */}
+          ============================================================================== * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10">
           <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -180,7 +201,7 @@ export default function QualysPanel() {
         <CardContent className="p-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-            {/* Graphique d'évolution des vulnérabilités */}
+            {/* Graphique d'évolution des vulnérabilités * /}
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 text-center">Tendance des Vulnérabilités Actives (6 Mois)</h4>
               <div className="h-64 w-full">
@@ -198,7 +219,7 @@ export default function QualysPanel() {
               </div>
             </div>
 
-            {/* Bar Chart Aging */}
+            {/* Bar Chart Aging * /}
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 text-center">Vieillissement des Vulnérabilités Critiques (Aging)</h4>
               <div className="h-64 w-full">
@@ -224,7 +245,7 @@ export default function QualysPanel() {
 
       {/* ==============================================================================
           3. SECTION : DÉRIVE DES SLA (OUVERTE PAR DÉFAUT)
-          ============================================================================== */}
+          ============================================================================== * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -264,10 +285,10 @@ export default function QualysPanel() {
 
       {/* ==============================================================================
           ACCORDÉONS TECHNIQUES (4 À 6)
-          ============================================================================== */}
+          ============================================================================== * /}
       <Accordion type="multiple" className="w-full space-y-4">
 
-        {/* SECTION 4 : SCORE DE RISQUE PAR GROUPE */}
+        {/* SECTION 4 : SCORE DE RISQUE PAR GROUPE * /}
         <AccordionItem value="item-4" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -302,7 +323,7 @@ export default function QualysPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* SECTION 5 : DETTE TECHNIQUE (RÉCURRENTES) */}
+        {/* SECTION 5 : DETTE TECHNIQUE (RÉCURRENTES) * /}
         <AccordionItem value="item-5" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -336,7 +357,7 @@ export default function QualysPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* SECTION 6 : VULNÉRABILITÉS CRITIQUES ACTIONNABLES */}
+        {/* SECTION 6 : VULNÉRABILITÉS CRITIQUES ACTIONNABLES * /}
         <AccordionItem value="item-6" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -378,4 +399,5 @@ export default function QualysPanel() {
 
     </div>
   );
+  ========================================================================= */
 }

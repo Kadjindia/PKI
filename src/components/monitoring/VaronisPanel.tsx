@@ -1,4 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
+
+// Imports originaux mis en commentaire temporairement pour éviter les erreurs "unused variables"
+/*
+import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger
@@ -19,29 +23,47 @@ import {
   ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip
 } from "recharts";
-
-// --- FONCTIONS UTILITAIRES ---
-const getRiskScoreColor = (score: number) => {
-  if (score >= 80) return '#ef4444';
-  if (score >= 60) return '#f97316';
-  return '#10b981';
-};
-
-const getRiskLevelVariant = (riskLevel: string): "destructive" | "default" | "secondary" => {
-  if (riskLevel === 'Critique') return 'destructive';
-  if (riskLevel === 'Élevé') return 'default';
-  return 'secondary';
-};
-
-const getSeverityColor = (severity: string) => {
-  if (!severity) return 'secondary';
-  const s = severity.toUpperCase();
-  if (s.includes('HIGH') || s.includes('CRITICAL')) return 'destructive';
-  if (s.includes('MEDIUM')) return 'default';
-  return 'secondary';
-};
+*/
 
 export default function VaronisPanel() {
+
+  // --- NOUVEAU RENDU (PLACEHOLDER GRISÉ) ---
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[50vh] mt-8 space-y-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-muted/10 p-8 text-center shadow-sm opacity-80">
+      <h2 className="text-4xl md:text-5xl font-black text-muted-foreground tracking-tight">
+        🚧 À venir
+      </h2>
+      <p className="text-lg text-muted-foreground/70 max-w-md">
+        Le panneau Varonis est encore en cours de développement.
+      </p>
+    </div>
+  );
+
+  /* =========================================================================
+     ANCIEN CODE SAUVEGARDÉ EN COMMENTAIRE
+     =========================================================================
+
+  // --- FONCTIONS UTILITAIRES ---
+  const getRiskScoreColor = (score: number) => {
+    if (score >= 80) return '#ef4444';
+    if (score >= 60) return '#f97316';
+    return '#10b981';
+  };
+
+  const getRiskLevelVariant = (riskLevel: string): "destructive" | "default" | "secondary" => {
+    if (riskLevel === 'Critique') return 'destructive';
+    if (riskLevel === 'Élevé') return 'default';
+    return 'secondary';
+  };
+
+  const getSeverityColor = (severity: string) => {
+    if (!severity) return 'secondary';
+    const s = severity.toUpperCase();
+    if (s.includes('HIGH') || s.includes('CRITICAL')) return 'destructive';
+    if (s.includes('MEDIUM')) return 'default';
+    return 'secondary';
+  };
+
   // --- ÉTATS POUR LES VRAIES DONNÉES VARONIS ---
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>('En attente de synchronisation...');
@@ -120,7 +142,7 @@ export default function VaronisPanel() {
       `);
 
       // 2. Introspection ultra-stricte
-      setSyncStatus('Analyse du schéma de l\'API...');
+      setSyncStatus('Analyse du schéma de l\\'API...');
       const schemaData = await callVaronis(`
         query {
           __type(name: "Alert") {
@@ -144,7 +166,7 @@ export default function VaronisPanel() {
       const workingWhere = { status: { in: ["NEW", "UNDER_INVESTIGATION", "ESCALATED"] } };
 
       // 3. Initialisation du Job d'alertes (AVEC le champ results obligatoirement !)
-      setSyncStatus('Génération du Job d\'extraction...');
+      setSyncStatus('Génération du Job d\\'extraction...');
       const initData = await callVaronis(`
         query GetAlerts($where: Alert_FilterInput!) {
           alertsAsync(where: $where) {
@@ -175,7 +197,7 @@ export default function VaronisPanel() {
             alertsAsync(where: $where) {
               jobId
               results {
-                ${simpleFields.join('\n                ')}
+                ${simpleFields.join('\\n                ')}
               }
             }
           }
@@ -212,7 +234,7 @@ export default function VaronisPanel() {
   return (
     <div className="space-y-6">
 
-      {/* --- EN-TÊTE DU PANNEAU --- */}
+      {/* --- EN-TÊTE DU PANNEAU --- * /}
       <div className="flex justify-between items-center bg-card p-4 rounded-xl border border-border shadow-sm">
         <div>
           <h2 className="text-lg font-bold flex items-center gap-2">
@@ -235,7 +257,7 @@ export default function VaronisPanel() {
 
       {/* ==============================================================================
           1. BANDEAU SUPÉRIEUR (KPIs)
-          ============================================================================== */}
+          ============================================================================== * /}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
 
         <Card className="border-l-4 border-l-purple-500 bg-card shadow-sm flex flex-col justify-between">
@@ -298,7 +320,7 @@ export default function VaronisPanel() {
 
       {/* ==============================================================================
           2. EXPOSITION PAR DÉPARTEMENT
-          ============================================================================== */}
+          ============================================================================== * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10">
           <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -359,7 +381,7 @@ export default function VaronisPanel() {
 
       {/* ==============================================================================
           3. CLASSIFICATION DES DONNÉES
-          ============================================================================== */}
+          ============================================================================== * /}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -417,10 +439,10 @@ export default function VaronisPanel() {
 
       {/* ==============================================================================
           ACCORDÉONS TECHNIQUES
-          ============================================================================== */}
+          ============================================================================== * /}
       <Accordion type="multiple" defaultValue={["item-alerts"]} className="w-full space-y-4">
 
-        {/* --- VRAIES ALERTES --- */}
+        {/* --- VRAIES ALERTES --- * /}
         <AccordionItem value="item-alerts" className="border border-destructive/30 rounded-2xl bg-card overflow-hidden shadow-sm">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-destructive/5">
             <div className="flex items-center gap-3 text-base font-bold text-destructive">
@@ -494,7 +516,7 @@ export default function VaronisPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* --- PERMISSIONS EXCESSIVES (MOCK) --- */}
+        {/* --- PERMISSIONS EXCESSIVES (MOCK) --- * /}
         <AccordionItem value="item-4" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -531,7 +553,7 @@ export default function VaronisPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* --- POLITIQUES DE MENACES REELLES --- */}
+        {/* --- POLITIQUES DE MENACES REELLES --- * /}
         <AccordionItem value="item-5" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -580,7 +602,7 @@ export default function VaronisPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* --- GOUVERNANCE (MOCK) --- */}
+        {/* --- GOUVERNANCE (MOCK) --- * /}
         <AccordionItem value="item-6" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -612,4 +634,5 @@ export default function VaronisPanel() {
       </Accordion>
     </div>
   );
+  ========================================================================= */
 }

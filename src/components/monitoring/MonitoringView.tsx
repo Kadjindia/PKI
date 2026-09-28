@@ -32,11 +32,11 @@ export default function MonitoringView() {
           <TabsList className="inline-flex h-auto p-1 bg-secondary/30 min-w-max border border-border">
             <TabsTrigger value="executive" className="py-2.5 px-6 text-sm font-bold data-[state=active]:bg-blue-600 data-[state=active]:text-white transition-all shadow-sm">Vue Globale (Executive)</TabsTrigger>
             <TabsTrigger value="bitsight" className="py-2.5 px-4 text-sm">BitSight</TabsTrigger>
+            <TabsTrigger value="cortex" className="py-2.5 px-4 text-sm">Cortex XSIAM</TabsTrigger>
             <TabsTrigger value="qradar" className="py-2.5 px-4 text-sm">QRadar (SIEM)</TabsTrigger>
             <TabsTrigger value="qualys" className="py-2.5 px-4 text-sm">Qualys (Vuln)</TabsTrigger>
             <TabsTrigger value="netskope" className="py-2.5 px-4 text-sm">Netskope (Cloud)</TabsTrigger>
             <TabsTrigger value="varonis" className="py-2.5 px-4 text-sm">Varonis (Data)</TabsTrigger>
-            <TabsTrigger value="cortex" className="py-2.5 px-4 text-sm">Cortex XSIAM</TabsTrigger>
             <TabsTrigger value="trend" className="py-2.5 px-4 text-sm">Trend Micro</TabsTrigger>
           </TabsList>
         </div>
