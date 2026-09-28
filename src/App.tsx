@@ -24,6 +24,7 @@ import Messagerie from "./pages/Messagerie";
 import Risks from "./pages/Risks";
 import Monitoring from "./pages/Monitoring";
 import Settings from "./pages/Settings";
+import Reports from "./pages/Reports";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -62,6 +63,7 @@ const App = () => (
                       <Route path="/risques" element={<Risks />} />
                       <Route path="/monitoring" element={<Monitoring />} />
                       <Route path="/parametres" element={<Settings />} />
+                      <Route path="/reports" element={<Reports />} />
                       <Route path="*" element={<NotFound />} />
                     </Routes>
                   </AppLayout>

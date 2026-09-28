@@ -5,7 +5,7 @@ const BITSIGHT_COMPANY_GUID = Deno.env.get("BITSIGHT_COMPANY_GUID");
 const BITSIGHT_BASE_URL = "https://api.bitsighttech.com/ratings/v1";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*", // à restreindre à le domaine interne en prod
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, content-type",
 };
 
@@ -14,7 +14,6 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // 1. Vérifier que l'utilisateur est authentifié (JWT Supabase valide)
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) {
     return new Response(JSON.stringify({ error: "Non authentifié" }), {
@@ -37,7 +36,6 @@ Deno.serve(async (req) => {
     });
   }
 
-  // 2. Vérifier que les secrets serveur sont bien configurés
   if (!BITSIGHT_TOKEN || !BITSIGHT_COMPANY_GUID) {
     return new Response(JSON.stringify({ error: "BitSight non configuré côté serveur" }), {
       status: 500,
@@ -45,9 +43,8 @@ Deno.serve(async (req) => {
     });
   }
 
-  // 3. Relayer vers BitSight — le endpoint et les query params sont transmis par le front
   const url = new URL(req.url);
-  const targetPath = url.searchParams.get("path"); // ex: "assets", "findings"
+  const targetPath = url.searchParams.get("path");
   const extraParams = new URLSearchParams(url.search);
   extraParams.delete("path");
 

@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger
 } from "@/components/ui/accordion";
@@ -7,10 +8,11 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 import {
   Database, Users, Lock, ShieldAlert, AlertTriangle,
-  UserX, FolderOpen, Activity, CheckCircle2
+  UserX, FolderOpen, Activity, RefreshCw, CheckCircle, Clock
 } from "lucide-react";
 
 import {
@@ -18,7 +20,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip
 } from "recharts";
 
-// --- FONCTIONS UTILITAIRES (Pour éliminer les ternaires imbriqués de l'UI) ---
+// --- FONCTIONS UTILITAIRES ---
 const getRiskScoreColor = (score: number) => {
   if (score >= 80) return '#ef4444';
   if (score >= 60) return '#f97316';
@@ -31,26 +33,33 @@ const getRiskLevelVariant = (riskLevel: string): "destructive" | "default" | "se
   return 'secondary';
 };
 
-const getAlertSeverityVariant = (severity: string): "destructive" | "default" | "secondary" => {
-  if (severity === 'Critique') return 'destructive';
-  if (severity === 'Élevé') return 'default';
+const getSeverityColor = (severity: string) => {
+  if (!severity) return 'secondary';
+  const s = severity.toUpperCase();
+  if (s.includes('HIGH') || s.includes('CRITICAL')) return 'destructive';
+  if (s.includes('MEDIUM')) return 'default';
   return 'secondary';
 };
 
 export default function VaronisPanel() {
-  // --- MOCK DATA ENTERPRISE (Scale : 4000 utilisateurs / 1.8 PB de données) ---
+  // --- ÉTATS POUR LES VRAIES DONNÉES VARONIS ---
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string>('En attente de synchronisation...');
+  const [varonisData, setVaronisData] = useState<{
+    policies: any[];
+    alerts: any[];
+    jobId: string | null;
+  }>({ policies: [], alerts: [], jobId: null });
+
+  // --- MOCK DATA ENTERPRISE (Pour les KPIs nécessitant d'autres endpoints) ---
   const data = {
-    // 1. KPI Globaux Varonis
     kpis: {
       totalData: "1.8 PB",
       sensitiveDataFound: "450 TB",
       globalAccessFiles: "2.3M",
-      staleData: "850 TB", // Données non touchées depuis > 1 an
-      activeAlerts: 12,
+      staleData: "850 TB",
       dormantAccounts: 345
     },
-
-    // 2. Exposition par Département
     riskByDepartment: [
       { dept: "DAF (Finance)", score: 92, riskLevel: "Critique", sensitiveFiles: 145000, globalAccess: 4500 },
       { dept: "Ressources Humaines", score: 85, riskLevel: "Élevé", sensitiveFiles: 320000, globalAccess: 1200 },
@@ -58,8 +67,6 @@ export default function VaronisPanel() {
       { dept: "Marketing & Com", score: 40, riskLevel: "Faible", sensitiveFiles: 12000, globalAccess: 125000 },
       { dept: "DSI / IT", score: 78, riskLevel: "Élevé", sensitiveFiles: 45000, globalAccess: 800 }
     ],
-
-    // 3. Classification des données sensibles
     dataClassification: [
       { name: 'PII (Données Personnelles - RGPD)', value: 65, color: '#3b82f6' },
       { name: 'Données Financières (PCI-DSS)', value: 20, color: '#f97316' },
@@ -71,24 +78,12 @@ export default function VaronisPanel() {
       { category: "Financier (PCI-DSS)", criteria: "Numéros de CB, Bilans", filesCount: "350K", maxRiskLoc: String.raw`\\fs-corp\DAF\Cloture` },
       { category: "Propriété Intellectuelle", criteria: "Brevets, Code Source, Plans", filesCount: "85K", maxRiskLoc: String.raw`\\fs-corp\R&D\Projet_X` }
     ],
-
-    // 4. Permissions Excessives ("Global Access")
     excessivePermissions: [
       { path: String.raw`\\fs-corp\DAF\M&A_2026`, owner: "S. Martin (DAF)", issue: "Accessible au groupe 'Tout le monde'", sensitiveHits: 450, status: "Révocation Auto." },
       { path: String.raw`\\fs-corp\RH\Evaluations_2025`, owner: "L. Bernard (DRH)", issue: "Héritage cassé + Droits directs", sensitiveHits: 3200, status: "En attente Data Owner" },
       { path: String.raw`\\fs-corp\IT\Passwords_Backup`, owner: "Orphelin (Sans Prop.)", issue: "Dossier partagé publiquement", sensitiveHits: 15, status: "Révocation Immédiate" },
       { path: String.raw`\\fs-corp\Direction\Board_Minutes`, owner: "M. Dupont (PDG)", issue: "Accessible au groupe 'Utilisateurs du domaine'", sensitiveHits: 125, status: "Corrigé" }
     ],
-
-    // 5. Alertes Comportementales (UEBA / Insider Threat)
-    behavioralAlerts: [
-      { alert: "Accès massif à des données financières", user: "svc_backup_old", type: "Compte de service", time: "03:15 AM", severity: "Critique", action: "Compte désactivé (AD)" },
-      { alert: "Exfiltration potentielle (Upload volume anormal)", user: "j.doe (Départ imminent)", type: "Employé", time: "14:22 PM", severity: "Critique", action: "Session révoquée" },
-      { alert: "Élévation de privilèges suivie d'accès PII", user: "admin_temp", type: "Prestataire IT", time: "Hier, 22:40", severity: "Élevé", action: "Investigation SOC" },
-      { alert: "Accès à des données sensibles jamais consultées", user: "a.turing (Marketing)", type: "Employé", time: "Ce matin, 09:10", severity: "Moyen", action: "Alerte Manager" }
-    ],
-
-    // 6. Gouvernance des Identités (AD / Entra ID)
     identityGovernance: [
       { metric: "Comptes utilisateurs dormants (> 90 jours)", value: 345, risk: "Désactivation automatique recommandée" },
       { metric: "Mots de passe qui n'expirent jamais", value: 12, risk: "Violation politique de sécurité" },
@@ -97,11 +92,149 @@ export default function VaronisPanel() {
     ]
   };
 
+  // --- FONCTION DE SYNCHRONISATION ET DE POLLING ---
+  const fetchRealAlerts = async () => {
+    setIsRefreshing(true);
+    setSyncStatus('Initialisation de la connexion...');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Non connecté à Supabase");
+
+      const varonisProxyUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/varonis-proxy?path=/api/graphql`;
+      const headers = {
+        'Authorization': `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json'
+      };
+
+      const callVaronis = async (query: string, variables?: Record<string, unknown>) => {
+        const res = await fetch(varonisProxyUrl, { method: 'POST', headers, body: JSON.stringify({ query, variables }) });
+        const json = await res.json();
+        if (json.errors) throw new Error(json.errors[0].message);
+        return json.data;
+      };
+
+      // 1. Dictionnaire des menaces
+      setSyncStatus('Récupération du dictionnaire des menaces...');
+      const metaData = await callVaronis(`
+        query { threatDetectionPolicies { id name } }
+      `);
+
+      // 2. Introspection ultra-stricte
+      setSyncStatus('Analyse du schéma de l\'API...');
+      const schemaData = await callVaronis(`
+        query {
+          __type(name: "Alert") {
+            fields { name type { kind ofType { kind } } args { name } }
+          }
+        }
+      `);
+
+      const alertFields = schemaData?.__type?.fields || [];
+      const simpleFields = alertFields
+        .filter((f: any) => {
+          const k = f.type?.kind;
+          const ok = f.type?.ofType?.kind;
+          return (k === 'SCALAR' || k === 'ENUM' || ok === 'SCALAR' || ok === 'ENUM') && (!f.args || f.args.length === 0);
+        })
+        .map((f: any) => f.name)
+        .filter((name: string) => ['id', 'status', 'severity', 'alertDescription'].includes(name));
+
+      if (simpleFields.length === 0) simpleFields.push('id'); // Fallback absolu
+
+      const workingWhere = { status: { in: ["NEW", "UNDER_INVESTIGATION", "ESCALATED"] } };
+
+      // 3. Initialisation du Job d'alertes (AVEC le champ results obligatoirement !)
+      setSyncStatus('Génération du Job d\'extraction...');
+      const initData = await callVaronis(`
+        query GetAlerts($where: Alert_FilterInput!) {
+          alertsAsync(where: $where) {
+            jobId
+            results { id }
+          }
+        }
+      `, { where: workingWhere });
+
+      const generatedJobId = initData?.alertsAsync?.jobId;
+      if (!generatedJobId) throw new Error("Varonis n'a pas renvoyé de jobId.");
+
+      setVaronisData(prev => ({ ...prev, jobId: generatedJobId, policies: metaData.threatDetectionPolicies || [] }));
+      setSyncStatus(`Job ${generatedJobId.split('-')[0]} en cours d'analyse...`);
+
+      // 4. Boucle de Polling
+      let isCompleted = false;
+      let attempts = 0;
+      let finalAlerts: any[] = [];
+
+      while (!isCompleted && attempts < 8) {
+        await new Promise(r => setTimeout(r, 4000)); // Pause de 4s
+        attempts++;
+        setSyncStatus(`Vérification des résultats (Tentative ${attempts}/8)...`);
+
+        const pollData = await callVaronis(`
+          query PollAlerts($where: Alert_FilterInput!) {
+            alertsAsync(where: $where) {
+              jobId
+              results {
+                ${simpleFields.join('\n                ')}
+              }
+            }
+          }
+        `, { where: workingWhere });
+
+        const results = pollData?.alertsAsync?.results;
+
+        // Si l'API renvoie des résultats, c'est terminé.
+        if (results !== null && results !== undefined) {
+          isCompleted = true;
+          finalAlerts = results;
+        }
+      }
+
+      if (!isCompleted) {
+        setSyncStatus("⚠️ Délai d'attente dépassé, mais le job tourne toujours côté Varonis.");
+      } else {
+        setSyncStatus(`✅ ${finalAlerts.length} alertes récupérées avec succès.`);
+        setVaronisData(prev => ({ ...prev, alerts: finalAlerts }));
+      }
+
+    } catch (error: any) {
+      console.error("❌ Échec :", error);
+      setSyncStatus(`Erreur : ${error.message}`);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchRealAlerts();
+  }, []);
+
   return (
     <div className="space-y-6">
 
+      {/* --- EN-TÊTE DU PANNEAU --- */}
+      <div className="flex justify-between items-center bg-card p-4 rounded-xl border border-border shadow-sm">
+        <div>
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 text-blue-600" /> Varonis Data Security Platform
+          </h2>
+          <p className="text-xs text-muted-foreground">{syncStatus}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {varonisData.policies.length > 0 && (
+            <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 gap-1">
+              <CheckCircle className="w-3 h-3" /> API Connectée
+            </Badge>
+          )}
+          <Button variant="outline" size="sm" onClick={fetchRealAlerts} disabled={isRefreshing}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+            {isRefreshing ? 'Actualisation...' : 'Actualiser'}
+          </Button>
+        </div>
+      </div>
+
       {/* ==============================================================================
-          1. BANDEAU SUPÉRIEUR PERMANENT (EXECUTIVE SUMMARY VARONIS)
+          1. BANDEAU SUPÉRIEUR (KPIs)
           ============================================================================== */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
 
@@ -149,33 +282,31 @@ export default function VaronisPanel() {
 
         <Card className="border-t-4 border-t-destructive bg-card shadow-sm flex flex-col justify-between">
           <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Insider Threats</CardTitle>
+            <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Alertes (Temps Réel)</CardTitle>
             <ShieldAlert className="w-5 h-5 text-destructive" />
           </CardHeader>
           <CardContent>
             <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-black tracking-tight text-destructive">{data.kpis.activeAlerts}</span>
-              <span className="text-xs text-muted-foreground font-medium">Alertes Actives</span>
+              <span className="text-4xl font-black tracking-tight text-destructive">{varonisData.alerts.length || 0}</span>
+              <span className="text-xs text-muted-foreground font-medium">Actives</span>
             </div>
-            <p className="text-[11px] text-muted-foreground mt-2">Anomalies comportementales (UEBA)</p>
+            <p className="text-[11px] text-muted-foreground mt-2">Statuts NEW / INVESTIGATION</p>
           </CardContent>
         </Card>
 
       </div>
 
       {/* ==============================================================================
-          2. SECTION : EXPOSITION PAR DÉPARTEMENT (OUVERTE PAR DÉFAUT)
+          2. EXPOSITION PAR DÉPARTEMENT
           ============================================================================== */}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10">
           <CardTitle className="text-base font-bold flex items-center gap-2">
-            <Activity className="w-5 h-5 text-blue-500" /> 2. Score de Risque et Exposition par Département
+            <Activity className="w-5 h-5 text-blue-500" /> 1. Score de Risque et Exposition par Département
           </CardTitle>
         </CardHeader>
         <CardContent className="p-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-            {/* Bar Chart Risk by Dept */}
             <div className="space-y-2">
               <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 text-center">Score de Risque Data par Direction (0-100)</h4>
               <div className="h-64 w-full">
@@ -194,8 +325,6 @@ export default function VaronisPanel() {
                 </ResponsiveContainer>
               </div>
             </div>
-
-            {/* Tableau Récapitulatif */}
             <div className="overflow-hidden flex flex-col justify-center">
               <Table>
                 <TableHeader>
@@ -224,25 +353,22 @@ export default function VaronisPanel() {
                 </TableBody>
               </Table>
             </div>
-
           </div>
         </CardContent>
       </Card>
 
       {/* ==============================================================================
-          3. SECTION : CLASSIFICATION DES DONNÉES (OUVERTE PAR DÉFAUT)
+          3. CLASSIFICATION DES DONNÉES
           ============================================================================== */}
       <Card className="border border-border shadow-sm">
         <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-bold flex items-center gap-2">
-            <Lock className="w-5 h-5 text-emerald-500" /> 3. Classification Automatique (Moteur d'inspection Varonis)
+            <Lock className="w-5 h-5 text-emerald-500" /> 2. Classification Automatique
           </CardTitle>
           <Badge variant="outline" className="border-emerald-500 text-emerald-500">{data.kpis.sensitiveDataFound} de données sensibles identifiées</Badge>
         </CardHeader>
         <CardContent className="p-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-            {/* Pie Chart Classification */}
             <div className="lg:col-span-1 space-y-2 border-r border-border pr-4">
               <h4 className="text-xs font-bold text-muted-foreground uppercase text-center">Répartition des types de données</h4>
               <div className="h-48 w-full">
@@ -263,8 +389,6 @@ export default function VaronisPanel() {
                 ))}
               </div>
             </div>
-
-            {/* Détails Classification */}
             <div className="lg:col-span-2 overflow-hidden flex flex-col justify-center">
               <Table>
                 <TableHeader>
@@ -287,21 +411,94 @@ export default function VaronisPanel() {
                 </TableBody>
               </Table>
             </div>
-
           </div>
         </CardContent>
       </Card>
 
       {/* ==============================================================================
-          ACCORDÉONS TECHNIQUES (4 À 6)
+          ACCORDÉONS TECHNIQUES
           ============================================================================== */}
-      <Accordion type="multiple" className="w-full space-y-4">
+      <Accordion type="multiple" defaultValue={["item-alerts"]} className="w-full space-y-4">
 
-        {/* SECTION 4 : PERMISSIONS EXCESSIVES */}
+        {/* --- VRAIES ALERTES --- */}
+        <AccordionItem value="item-alerts" className="border border-destructive/30 rounded-2xl bg-card overflow-hidden shadow-sm">
+          <AccordionTrigger className="px-6 py-4 hover:no-underline bg-destructive/5">
+            <div className="flex items-center gap-3 text-base font-bold text-destructive">
+              <AlertTriangle className="w-5 h-5" /> 3. Flux d'Alertes en Temps Réel (Données de Prod)
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="p-0">
+            <div className="p-4 bg-muted/30 border-b border-border flex justify-between items-center text-xs">
+              <span className="text-muted-foreground font-medium">Alertes remontées avec le statut NEW, UNDER_INVESTIGATION ou ESCALATED.</span>
+              {varonisData.jobId && (
+                <Badge variant="outline" className="font-mono bg-white flex items-center gap-1">
+                  {isRefreshing ? <Clock className="w-3 h-3 animate-spin"/> : <CheckCircle className="w-3 h-3 text-emerald-500"/>}
+                  Ticket API : {varonisData.jobId.split('-')[0]}
+                </Badge>
+              )}
+            </div>
+
+            <div className="overflow-x-auto max-h-[500px]">
+              <Table>
+                <TableHeader className="sticky top-0 bg-secondary/5 z-10 shadow-sm">
+                  <TableRow>
+                    <TableHead className="pl-6 w-24">ID Alerte</TableHead>
+                    <TableHead>Horodatage</TableHead>
+                    <TableHead>Sévérité</TableHead>
+                    <TableHead>Statut</TableHead>
+                    <TableHead>Détails bruts</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {isRefreshing && varonisData.alerts.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center py-12 text-muted-foreground">
+                        <Activity className="w-8 h-8 mx-auto mb-3 animate-pulse text-blue-300" />
+                        Interrogation de Varonis en cours...
+                      </TableCell>
+                    </TableRow>
+                  ) : varonisData.alerts.length > 0 ? (
+                    varonisData.alerts.map((alert: any, idx: number) => (
+                      <TableRow key={alert.id || idx}>
+                        <TableCell className="pl-6 font-mono text-xs text-muted-foreground">{alert.id}</TableCell>
+                        <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
+                          {alert.generationTime ? new Date(alert.generationTime).toLocaleString() : 'N/A'}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={getSeverityColor(alert.severity || '')}>
+                            {alert.severity || 'Inconnu'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{alert.status || 'NEW'}</Badge>
+                        </TableCell>
+                        <TableCell className="text-xs font-mono text-muted-foreground max-w-xs truncate" title={JSON.stringify(alert)}>
+                          {Object.entries(alert)
+                            .filter(([k]) => !['id', 'generationTime', 'severity', 'status'].includes(k))
+                            .map(([k, v]) => `${k}: ${v}`)
+                            .join(' | ')}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center py-12 text-muted-foreground">
+                        <CheckCircle className="w-8 h-8 mx-auto mb-3 text-emerald-400 opacity-50" />
+                        Aucune nouvelle alerte à traiter sur Varonis.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+
+        {/* --- PERMISSIONS EXCESSIVES (MOCK) --- */}
         <AccordionItem value="item-4" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
-              <FolderOpen className="w-5 h-5 text-orange-500" /> 4. Cartographie des Permissions Excessives ("Global Access")
+              <FolderOpen className="w-5 h-5 text-orange-500" /> 4. Cartographie des Permissions Excessives
             </div>
           </AccordionTrigger>
           <AccordionContent className="p-0">
@@ -334,50 +531,56 @@ export default function VaronisPanel() {
           </AccordionContent>
         </AccordionItem>
 
-        {/* SECTION 5 : ALERTES COMPORTEMENTALES (UEBA) */}
+        {/* --- POLITIQUES DE MENACES REELLES --- */}
         <AccordionItem value="item-5" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
-              <AlertTriangle className="w-5 h-5 text-destructive" /> 5. Menaces Internes & Comportements Anormaux (UEBA)
+              <Lock className="w-5 h-5 text-emerald-500" /> 5. Règles de Détection Varonis (Données Réelles API)
             </div>
           </AccordionTrigger>
           <AccordionContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-secondary/5">
-                  <TableHead className="pl-6">Alerte Détectée</TableHead>
-                  <TableHead>Sévérité</TableHead>
-                  <TableHead>Utilisateur / Compte</TableHead>
-                  <TableHead>Date / Heure</TableHead>
-                  <TableHead>Réponse Varonis / SOC</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.behavioralAlerts.map((a) => (
-                  <TableRow key={`${a.user}-${a.time}`}>
-                    <TableCell className="pl-6 font-bold text-sm text-foreground">{a.alert}</TableCell>
-                    <TableCell>
-                      <Badge variant={getAlertSeverityVariant(a.severity)}>
-                        {a.severity}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <span className="block font-medium text-sm">{a.user}</span>
-                      <span className="text-[10px] text-muted-foreground uppercase">{a.type}</span>
-                    </TableCell>
-                    <TableCell className="text-xs">{a.time}</TableCell>
-                    <TableCell className={`text-sm font-bold ${a.action.includes('désactivé') || a.action.includes('révoquée') ? 'text-emerald-500 flex items-center gap-1' : 'text-orange-500'}`}>
-                      {a.action.includes('désactivé') || a.action.includes('révoquée') ? <CheckCircle2 className="w-4 h-4"/> : null}
-                      {a.action}
-                    </TableCell>
+            <div className="p-4 bg-muted/30 border-b border-border flex justify-between items-center text-xs">
+              <span className="text-muted-foreground font-medium">Liste des politiques de menaces comportementales (UEBA) actuellement actives sur votre instance.</span>
+            </div>
+            <div className="max-h-96 overflow-y-auto">
+              <Table>
+                <TableHeader className="sticky top-0 bg-secondary/5 z-10 shadow-sm">
+                  <TableRow>
+                    <TableHead className="pl-6 w-20">ID</TableHead>
+                    <TableHead>Nom de la Politique de Sécurité</TableHead>
+                    <TableHead className="w-32 text-right pr-6">Statut</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {varonisData.policies.length > 0 ? (
+                    varonisData.policies.slice(0, 50).map((policy) => (
+                      <TableRow key={policy.id}>
+                        <TableCell className="pl-6 font-mono text-xs text-muted-foreground">#{policy.id}</TableCell>
+                        <TableCell className="font-semibold text-sm text-foreground">{policy.name}</TableCell>
+                        <TableCell className="text-right pr-6">
+                           <Badge variant="outline" className="border-emerald-200 text-emerald-700 bg-emerald-50">Active</Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center py-8 text-muted-foreground">
+                        {isRefreshing ? "Synchronisation en cours..." : "Aucune donnée récupérée. Cliquez sur Actualiser."}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            {varonisData.policies.length > 50 && (
+              <div className="p-3 text-center bg-secondary/5 border-t border-border text-xs text-muted-foreground">
+                + {varonisData.policies.length - 50} autres règles chargées en mémoire.
+              </div>
+            )}
           </AccordionContent>
         </AccordionItem>
 
-        {/* SECTION 6 : GOUVERNANCE IDENTITÉS AD */}
+        {/* --- GOUVERNANCE (MOCK) --- */}
         <AccordionItem value="item-6" className="border border-border rounded-2xl bg-card overflow-hidden">
           <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
             <div className="flex items-center gap-3 text-base font-bold">
@@ -403,14 +606,10 @@ export default function VaronisPanel() {
                 ))}
               </TableBody>
             </Table>
-            <div className="p-4 bg-secondary/5 border-t border-border flex justify-between items-center text-xs">
-              <span className="text-muted-foreground">Une intégration avec le système IAM/IGA est requise pour automatiser le nettoyage des comptes AD.</span>
-            </div>
           </AccordionContent>
         </AccordionItem>
 
       </Accordion>
-
     </div>
   );
 }

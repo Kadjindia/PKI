@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Shield, Settings, BookOpen,
   ShieldAlert, Users, Mail, Radar, ChevronLeft, ChevronRight, LogOut,
-  User, Lock, ChevronDown, Activity
+  User, Lock, ChevronDown, Activity, FileText
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import ProfileModal from "@/components/profile/ProfileModal";
@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { path: "/messagerie", label: "Messagerie SSI", icon: Mail },
   { path: "/risques", label: "Suivi des Risques", icon: Radar },
   { path: "/monitoring", label: "Monitoring SI", icon: Activity },
+  //{ path: "/reports", label: "Rapports", icon: FileText },
 ];
 
 // Utilitaire pour le titre du bouton d'épinglage (Évite les ternaires imbriqués pour SonarQube)
