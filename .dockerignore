@@ -1,0 +1,4 @@
+# Seuls le build et la conf nginx entrent dans le contexte
+*
+!dist/
+!nginx.conf
