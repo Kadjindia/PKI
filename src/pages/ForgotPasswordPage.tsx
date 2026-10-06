@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Mail, KeyRound, Loader2, ArrowLeft } from 'lucide-react';
+import { Mail, Loader2, ArrowLeft } from 'lucide-react';
+import logoSi from '@/assets/logo-si.png';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState<string>('');
@@ -52,9 +53,7 @@ export default function ForgotPasswordPage() {
 
         {/* En-tête */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 bg-white/80 flex items-center justify-center rounded-2xl mb-4 shadow-sm border border-slate-100">
-            <KeyRound className="w-8 h-8 text-indigo-600" />
-          </div>
+          <img src={logoSi} alt="Logo SI" className="w-16 h-16 object-contain mb-4 drop-shadow-[0_4px_12px_rgba(30,64,120,0.15)]" />
           <h1 className="text-3xl font-bold text-slate-800 tracking-tight text-center">Mot de passe oublié</h1>
           <p className="text-slate-500 text-sm mt-3 text-center leading-relaxed">
             Entrez votre adresse e-mail pour recevoir un lien de réinitialisation.
