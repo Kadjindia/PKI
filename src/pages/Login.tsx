@@ -48,9 +48,7 @@ export default function Login() {
 
         {/* En-tête */}
         <div className="flex flex-col items-center mb-10">
-          <div className="w-16 h-16 bg-white/80 flex items-center justify-center rounded-2xl mb-4 shadow-sm border border-slate-100">
-            <img src={logoSi} alt="Logo SI" className="w-11 h-11 object-contain" />
-          </div>
+          <img src={logoSi} alt="Logo SI" className="w-16 h-16 object-contain mb-4 drop-shadow-[0_4px_12px_rgba(30,64,120,0.15)]" />
           <h1 className="text-3xl font-bold text-slate-800 tracking-tight">Connexion</h1>
         </div>
 

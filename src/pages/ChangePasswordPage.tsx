@@ -1,7 +1,8 @@
 import { useState, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { Lock, Loader2, ShieldCheck, KeyRound } from 'lucide-react';
+import { Lock, Loader2, KeyRound } from 'lucide-react';
+import logoSi from '@/assets/logo-si.png';
 import { useAuth } from '@/context/AuthContext';
 
 export default function ChangePasswordPage() {
@@ -87,9 +88,7 @@ export default function ChangePasswordPage() {
 
         {/* En-tête */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 bg-white/80 flex items-center justify-center rounded-2xl mb-4 shadow-sm border border-slate-100">
-            <ShieldCheck className="w-8 h-8 text-indigo-600" />
-          </div>
+          <img src={logoSi} alt="Logo SI" className="w-16 h-16 object-contain mb-4 drop-shadow-[0_4px_12px_rgba(30,64,120,0.15)]" />
           <h1 className="text-2xl font-bold text-slate-800 tracking-tight text-center">Sécurité du compte</h1>
           <p className="text-slate-500 text-sm mt-3 text-center leading-relaxed">
             Veuillez saisir votre mot de passe actuel pour en définir un nouveau.
