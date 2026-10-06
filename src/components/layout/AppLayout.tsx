@@ -8,6 +8,8 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import ProfileModal from "@/components/profile/ProfileModal";
 import { supabase } from "@/integrations/supabase/client";
+import logoSi from "@/assets/logo-si.png";
+import logoSiDark from "@/assets/logo-si-dark.png";
 
 const NAV_ITEMS = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -149,9 +151,10 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
       <aside className={`border-r border-border flex flex-col bg-sidebar shrink-0 sticky top-0 h-screen z-50 transition-all duration-300 ease-in-out ${isExpanded ? "w-64" : "w-20"}`} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
         <div className="px-[18px] border-b border-border overflow-hidden h-[85px] flex items-center">
           <div className="flex items-center gap-3">
-            {/* Pastille blanche : garde le logo lisible sur le thème sombre */}
-            <div className="w-11 h-11 rounded-xl bg-white flex items-center justify-center shrink-0 shadow-md ring-1 ring-black/5">
-              <img src="/favicon.png" alt="Logo SI" className="w-9 h-9 object-contain" />
+            {/* Logo SI : variante claire sur le thème sombre (par défaut), couleurs d'origine sur le thème clair */}
+            <div className="w-11 h-11 flex items-center justify-center shrink-0">
+              <img src={logoSiDark} alt="Logo SI" className="w-10 h-10 object-contain drop-shadow-[0_0_10px_hsl(var(--primary)/0.25)] [.light-theme_&]:hidden" />
+              <img src={logoSi} alt="Logo SI" className="w-10 h-10 object-contain hidden [.light-theme_&]:block" />
             </div>
             {isExpanded && (
               <div className="whitespace-nowrap animate-in fade-in duration-300">
