@@ -1,12 +1,11 @@
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "node:path";
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => {
-  // Charge les variables d'environnement pour récupérer le FQDN de Cortex
-  const env = loadEnv(mode, process.cwd(), '');
-
+export default defineConfig(() => {
+  // Les appels aux outils (BitSight, Cortex, QRadar, Varonis) passent par les
+  // Edge Functions Supabase, qui détiennent les secrets : pas de proxy ici.
   return {
     server: {
       host: "localhost",
@@ -14,22 +13,6 @@ export default defineConfig(({ mode }) => {
       hmr: {
         overlay: false,
       },
-      proxy: {
-        // Proxy existant pour BitSight
-        '/api/bitsight': {
-          target: 'https://api.bitsighttech.com',
-          changeOrigin: true,
-          secure: false,
-          rewrite: (path) => path.replace(/^\/api\/bitsight/, '')
-        },
-        // Nouveau proxy pour Cortex XSIAM
-        '/api/cortex': {
-          target: `https://${env.VITE_CORTEX_FQDN}`,
-          changeOrigin: true,
-          secure: false,
-          rewrite: (path) => path.replace(/^\/api\/cortex/, '')
-        }
-      }
     },
     plugins: [
       react(),
