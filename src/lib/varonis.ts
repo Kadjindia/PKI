@@ -113,3 +113,156 @@ export function summarizeAlerts(alerts: VaronisAlert[], latestLimit = 20): Varon
     latest,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Filtre de période et indicateurs de pilotage (calculés côté navigateur sur
+// generationTime, la syntaxe de filtre de date Varonis n'étant pas confirmée).
+// ---------------------------------------------------------------------------
+
+export type TimePrefix = "last" | "this";
+export type TimeUnit = "days" | "months" | "years";
+export interface TimeRange { from: number; to: number }
+
+export function computeRange(prefix: TimePrefix, value: number, unit: TimeUnit, now = new Date()): TimeRange {
+  if (prefix === "this") {
+    const y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+    if (unit === "days") return { from: new Date(y, m, d).getTime(), to: now.getTime() };
+    if (unit === "months") return { from: new Date(y, m, 1).getTime(), to: now.getTime() };
+    return { from: new Date(y, 0, 1).getTime(), to: now.getTime() };
+  }
+  const n = Math.max(1, Math.floor(value) || 1);
+  const from = new Date(now);
+  if (unit === "days") from.setDate(from.getDate() - n);
+  else if (unit === "months") from.setMonth(from.getMonth() - n);
+  else from.setFullYear(from.getFullYear() - n);
+  return { from: from.getTime(), to: now.getTime() };
+}
+
+/** Période de même durée juste avant, pour les comparaisons. */
+export function previousRange(range: TimeRange): TimeRange {
+  const span = range.to - range.from;
+  return { from: range.from - span, to: range.from };
+}
+
+export function filterByRange(alerts: VaronisAlert[], range: TimeRange): VaronisAlert[] {
+  return alerts.filter((a) => {
+    const t = alertDate(a)?.getTime();
+    return t !== undefined && t >= range.from && t <= range.to;
+  });
+}
+
+/** Dates de la plus ancienne et de la plus récente alerte reçues. */
+export function dataCoverage(alerts: VaronisAlert[]): { oldest: Date; newest: Date } | null {
+  const times = alerts.map((a) => alertDate(a)?.getTime()).filter((t): t is number => t !== undefined);
+  if (times.length === 0) return null;
+  return { oldest: new Date(Math.min(...times)), newest: new Date(Math.max(...times)) };
+}
+
+/** Évolution en % par rapport à la période précédente (null si pas de base). */
+export function variation(current: number, previous: number): number | null {
+  if (previous === 0) return current === 0 ? 0 : null;
+  return Math.round(((current - previous) / previous) * 100);
+}
+
+export type Granularity = "hour" | "day" | "week" | "month";
+const DAY_MS = 24 * 3600 * 1000;
+
+export function granularityFor(range: TimeRange): Granularity {
+  const span = range.to - range.from;
+  if (span <= 2 * DAY_MS) return "hour";
+  if (span <= 45 * DAY_MS) return "day";
+  if (span <= 180 * DAY_MS) return "week";
+  return "month";
+}
+
+function bucketStart(t: number, g: Granularity): number {
+  const d = new Date(t);
+  if (g === "hour") return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime();
+  if (g === "day") return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  if (g === "week") {
+    const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+    return monday.getTime();
+  }
+  return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+}
+
+function nextBucket(t: number, g: Granularity): number {
+  const d = new Date(t);
+  if (g === "hour") d.setHours(d.getHours() + 1);
+  else if (g === "day") d.setDate(d.getDate() + 1);
+  else if (g === "week") d.setDate(d.getDate() + 7);
+  else d.setMonth(d.getMonth() + 1);
+  return d.getTime();
+}
+
+export interface TimelinePoint { start: number; high: number; medium: number; low: number; unknown: number; total: number }
+
+/** Alertes par intervalle (heure, jour, semaine ou mois), ventilées par sévérité. */
+export function buildTimeline(alerts: VaronisAlert[], range: TimeRange, g = granularityFor(range)): TimelinePoint[] {
+  const points = new Map<number, TimelinePoint>();
+  for (let t = bucketStart(range.from, g); t <= range.to; t = nextBucket(t, g)) {
+    points.set(t, { start: t, high: 0, medium: 0, low: 0, unknown: 0, total: 0 });
+  }
+  for (const a of alerts) {
+    const t = alertDate(a)?.getTime();
+    if (t === undefined) continue;
+    const p = points.get(bucketStart(t, g));
+    if (!p) continue;
+    p[normalizeSeverity(a.policy?.severity)]++;
+    p.total++;
+  }
+  return [...points.values()];
+}
+
+/** Répartition des alertes par heure de la journée (heure locale). */
+export function hourlyDistribution(alerts: VaronisAlert[]): { hour: number; count: number }[] {
+  const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 }));
+  for (const a of alerts) {
+    const d = alertDate(a);
+    if (d) hours[d.getHours()].count++;
+  }
+  return hours;
+}
+
+/** Alertes hors heures ouvrées : avant 8 h, après 19 h ou le week-end. */
+export function isOffHours(d: Date): boolean {
+  const day = d.getDay();
+  return day === 0 || day === 6 || d.getHours() < 8 || d.getHours() >= 19;
+}
+
+export interface Insight { level: "critical" | "warning" | "info"; text: string }
+
+/** Points d'attention rédigés pour le RSSI, à partir des alertes de la période. */
+export function buildInsights(current: VaronisAlert[], previous: VaronisAlert[]): Insight[] {
+  const insights: Insight[] = [];
+  if (current.length === 0) return insights;
+  const s = summarizeAlerts(current);
+
+  if (s.openHigh > 0) {
+    insights.push({ level: "critical", text: `${s.openHigh} alerte${s.openHigh > 1 ? "s" : ""} de sévérité élevée ${s.openHigh > 1 ? "sont" : "est"} encore ouverte${s.openHigh > 1 ? "s" : ""}.` });
+  }
+  const sensitiveOpen = s.sensitive;
+  if (sensitiveOpen > 0) {
+    insights.push({ level: "warning", text: `${sensitiveOpen} alerte${sensitiveOpen > 1 ? "s" : ""} ouverte${sensitiveOpen > 1 ? "s" : ""} concerne${sensitiveOpen > 1 ? "nt" : ""} des données sensibles.` });
+  }
+  const evo = variation(current.length, previous.length);
+  if (evo !== null && Math.abs(evo) >= 20 && previous.length > 0) {
+    insights.push({
+      level: evo > 0 ? "warning" : "info",
+      text: `Volume d'alertes en ${evo > 0 ? "hausse" : "baisse"} de ${Math.abs(evo)} % par rapport à la période précédente.`,
+    });
+  }
+  const off = current.filter((a) => { const d = alertDate(a); return d ? isOffHours(d) : false; }).length;
+  const offPct = Math.round((off / current.length) * 100);
+  if (offPct >= 30) {
+    insights.push({ level: "warning", text: `${offPct} % des alertes surviennent hors heures ouvrées (soir, nuit ou week-end).` });
+  }
+  const top = s.topPolicies[0];
+  if (top && top.count >= 2) {
+    insights.push({ level: "info", text: `Politique la plus déclenchée : « ${top.name} » (${top.count} alertes ouvertes).` });
+  }
+  const treated = s.total - s.open;
+  insights.push({ level: "info", text: `Taux de traitement : ${Math.round((treated / s.total) * 100)} % des alertes de la période sont fermées.` });
+  return insights;
+}
