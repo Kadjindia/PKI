@@ -9,18 +9,19 @@ import {
 } from "@/components/ui/table";
 import {
   ShieldAlert, AlertOctagon, Database, Bell, RefreshCw, Loader2, AlertTriangle, Inbox,
+  Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks, Target,
 } from "lucide-react";
 import {
+  ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip as RechartsTooltip, Legend,
+} from "recharts";
+import {
   summarizeAlerts, normalizeSeverity, formatStatus, alertDate, isOpen,
-  SEVERITY_LABELS, type SeverityLevel, type VaronisProxyResponse,
+  computeRange, previousRange, filterByRange, dataCoverage, variation,
+  granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
+  SEVERITY_LABELS,
+  type SeverityLevel, type VaronisAlert, type VaronisProxyResponse, type TimePrefix, type TimeUnit, type Granularity, type Insight,
 } from "@/lib/varonis";
-
-const SEVERITY_STYLES: Record<SeverityLevel, { bar: string; badge: string }> = {
-  high: { bar: "bg-red-500", badge: "bg-red-500/15 text-red-600 border-red-500/30" },
-  medium: { bar: "bg-orange-500", badge: "bg-orange-500/15 text-orange-600 border-orange-500/30" },
-  low: { bar: "bg-emerald-500", badge: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30" },
-  unknown: { bar: "bg-muted-foreground/40", badge: "bg-muted text-muted-foreground border-border" },
-};
 
 // Le job Varonis peut durer plusieurs minutes : la fonction le lance et répond
 // tout de suite avec son identifiant, puis on l'interroge toutes les 3 s.
@@ -55,11 +56,69 @@ async function fetchVaronisAlerts(onProgress: (progress: number | null) => void)
   return res;
 }
 
+// --- Présentation -----------------------------------------------------------
+
+const SEVERITY_ORDER: SeverityLevel[] = ["high", "medium", "low", "unknown"];
+const SEVERITY_COLORS: Record<SeverityLevel, string> = {
+  high: "#ef4444", medium: "#f97316", low: "#10b981", unknown: "#94a3b8",
+};
+const SEVERITY_BADGE: Record<SeverityLevel, string> = {
+  high: "bg-red-500/15 text-red-600 border-red-500/30",
+  medium: "bg-orange-500/15 text-orange-600 border-orange-500/30",
+  low: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
+  unknown: "bg-muted text-muted-foreground border-border",
+};
+const GRANULARITY_LABEL: Record<Granularity, string> = {
+  hour: "par heure", day: "par jour", week: "par semaine", month: "par mois",
+};
+const INSIGHT_STYLE: Record<Insight["level"], { icon: typeof Info; className: string }> = {
+  critical: { icon: AlertOctagon, className: "text-red-500 bg-red-500/10 border-red-500/20" },
+  warning: { icon: AlertTriangle, className: "text-orange-500 bg-orange-500/10 border-orange-500/20" },
+  info: { icon: Info, className: "text-sky-500 bg-sky-500/10 border-sky-500/20" },
+};
+const TOOLTIP_STYLE = {
+  contentStyle: { background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 },
+  labelStyle: { color: "hsl(var(--foreground))", fontWeight: 700 },
+  itemStyle: { color: "hsl(var(--foreground))" },
+};
+const AXIS_TICK = { fontSize: 11, fill: "hsl(var(--muted-foreground))" };
+
 const formatDate = (d: Date | null) =>
   d ? d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : "—";
+const formatDay = (d: Date) => d.toLocaleDateString("fr-FR");
+
+function formatBucket(t: number, g: Granularity): string {
+  const d = new Date(t);
+  if (g === "hour") return `${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} ${d.getHours()}h`;
+  if (g === "day") return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+  if (g === "week") return `sem. ${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })}`;
+  return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+}
+
+/** Évolution vs période précédente : une hausse d'alertes est mauvaise (rouge). */
+function TrendBadge({ value }: { readonly value: number | null }) {
+  if (value === null) return <span className="text-[11px] text-muted-foreground">comparaison indisponible</span>;
+  if (value === 0) {
+    return <span className="inline-flex items-center gap-1 text-[11px] font-bold text-muted-foreground"><Minus className="w-3 h-3" /> stable</span>;
+  }
+  const up = value > 0;
+  const Icon = up ? TrendingUp : TrendingDown;
+  return (
+    <span className={`inline-flex items-center gap-1 text-[11px] font-bold ${up ? "text-red-500" : "text-emerald-500"}`}>
+      <Icon className="w-3 h-3" /> {up ? "+" : ""}{value} % vs période préc.
+    </span>
+  );
+}
+
+/** Alertes de sévérité élevée levées (ouvertes ou fermées). */
+const countHigh = (list: VaronisAlert[]) => list.filter((a) => normalizeSeverity(a.policy?.severity) === "high").length;
 
 export default function VaronisPanel() {
   const [progress, setProgress] = useState<number | null>(null);
+  const [timePrefix, setTimePrefix] = useState<TimePrefix>("last");
+  const [timeValue, setTimeValue] = useState<number>(30);
+  const [timeUnit, setTimeUnit] = useState<TimeUnit>("days");
+
   const { data, error, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ["varonis-alerts"],
     queryFn: () => fetchVaronisAlerts(setProgress),
@@ -68,27 +127,97 @@ export default function VaronisPanel() {
     retry: false,
   });
 
-  const summary = useMemo(() => summarizeAlerts(data?.alerts ?? []), [data]);
+  const view = useMemo(() => {
+    const all = data?.alerts ?? [];
+    const range = computeRange(timePrefix, timeValue, timeUnit);
+    const current = filterByRange(all, range);
+    const prevRange = previousRange(range);
+    const previous = filterByRange(all, prevRange);
+    const coverage = dataCoverage(all);
+    // Pas de comparaison si la période précédente commence avant les données reçues
+    const canCompare = coverage !== null && prevRange.from >= coverage.oldest.getTime();
+    const granularity = granularityFor(range);
+    const summary = summarizeAlerts(current);
+    const offHours = current.filter((a) => { const d = alertDate(a); return d ? isOffHours(d) : false; }).length;
+    return {
+      range,
+      coverage,
+      totalReceived: all.length,
+      current,
+      summary,
+      volumeTrend: canCompare ? variation(current.length, previous.length) : null,
+      highRaised: countHigh(current),
+      highTrend: canCompare ? variation(countHigh(current), countHigh(previous)) : null,
+      granularity,
+      timeline: buildTimeline(current, range, granularity).map((p) => ({ ...p, label: formatBucket(p.start, granularity) })),
+      hourly: hourlyDistribution(current),
+      offHoursPct: current.length ? Math.round((offHours / current.length) * 100) : 0,
+      insights: buildInsights(current, canCompare ? previous : []),
+      treatedPct: summary.total ? Math.round(((summary.total - summary.open) / summary.total) * 100) : 0,
+    };
+  }, [data, timePrefix, timeValue, timeUnit]);
+
+  const { summary, coverage } = view;
+  const periodStartsBeforeData = coverage !== null && view.range.from < coverage.oldest.getTime();
 
   const header = (
-    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
       <div>
-        <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
-          <ShieldAlert className="w-5 h-5 text-primary" /> Varonis — Alertes de sécurité des données
+        <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
+          <ShieldAlert className="w-7 h-7 text-primary" /> Sécurité des données — Varonis
         </h2>
-        <p className="text-sm text-muted-foreground">
-          {dataUpdatedAt ? `Dernière synchronisation : ${formatDate(new Date(dataUpdatedAt))}` : "Données en direct depuis Varonis"}
+        <p className="text-muted-foreground font-medium mt-1">
+          Alertes de menaces sur les données et suivi de leur traitement
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {dataUpdatedAt ? `Synchronisé le ${formatDate(new Date(dataUpdatedAt))}` : "Données en direct depuis Varonis"}
+          {coverage && ` · Données disponibles du ${formatDay(coverage.oldest)} au ${formatDay(coverage.newest)} (${view.totalReceived} alertes)`}
           {data?.jobStatus === "PARTIAL_RESULTS" && " · résultats partiels"}
         </p>
       </div>
-      <button
-        type="button"
-        onClick={() => refetch()}
-        disabled={isFetching}
-        className="flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-      >
-        <RefreshCw className={`w-4 h-4 ${isFetching ? "animate-spin" : ""}`} /> Actualiser
-      </button>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 bg-secondary/20 p-2 rounded-xl border border-border">
+          <Calendar className="w-4 h-4 text-muted-foreground ml-2" />
+          <select
+            aria-label="Type de période"
+            value={timePrefix}
+            onChange={(e) => setTimePrefix(e.target.value as TimePrefix)}
+            className="bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-primary outline-none cursor-pointer"
+          >
+            <option value="last">Dernier(s)</option>
+            <option value="this">Ce/Cette</option>
+          </select>
+          {timePrefix === "last" && (
+            <input
+              aria-label="Nombre"
+              type="number"
+              min="1"
+              value={timeValue}
+              onChange={(e) => setTimeValue(Math.max(1, Number(e.target.value) || 1))}
+              className="bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 w-20 focus:ring-2 focus:ring-primary outline-none"
+            />
+          )}
+          <select
+            aria-label="Unité"
+            value={timeUnit}
+            onChange={(e) => setTimeUnit(e.target.value as TimeUnit)}
+            className="bg-background border border-border text-foreground font-bold text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-primary outline-none cursor-pointer"
+          >
+            <option value="days">{timePrefix === "this" ? "Jour" : "Jour(s)"}</option>
+            <option value="months">Mois</option>
+            <option value="years">{timePrefix === "this" ? "Année" : "Année(s)"}</option>
+          </select>
+        </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isFetching ? "animate-spin" : ""}`} /> Actualiser
+        </button>
+      </div>
     </div>
   );
 
@@ -129,85 +258,232 @@ export default function VaronisPanel() {
     );
   }
 
-  const kpis = [
-    { label: "Alertes ouvertes", value: summary.open, sub: `${summary.total} au total`, icon: Bell, color: "text-primary" },
-    { label: "Sévérité élevée", value: summary.openHigh, sub: "parmi les alertes ouvertes", icon: AlertOctagon, color: "text-red-500" },
-    { label: "Sur données sensibles", value: summary.sensitive, sub: "alertes ouvertes", icon: Database, color: "text-orange-500" },
-    { label: "Politiques déclenchées", value: summary.distinctPolicies, sub: "distinctes, alertes ouvertes", icon: ShieldAlert, color: "text-violet-500" },
-  ];
-
-  const severityOrder: SeverityLevel[] = ["high", "medium", "low", "unknown"];
-  const maxSeverity = Math.max(1, ...severityOrder.map((s) => summary.bySeverity[s]));
+  const severityData = SEVERITY_ORDER
+    .map((s) => ({ key: s, name: SEVERITY_LABELS[s], value: summary.bySeverity[s] }))
+    .filter((d) => d.value > 0);
+  const maxPolicy = Math.max(1, ...summary.topPolicies.map((p) => p.count));
 
   return (
     <div className="space-y-6">
       {header}
 
+      {periodStartsBeforeData && coverage && (
+        <div className="flex items-start gap-2 p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-500 text-sm">
+          <Info className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>
+            La période choisie commence avant la plus ancienne alerte renvoyée par Varonis ({formatDay(coverage.oldest)}) :
+            les chiffres et les comparaisons peuvent être incomplets.
+          </span>
+        </div>
+      )}
+
       {summary.total === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16 space-y-2 text-muted-foreground">
             <Inbox className="w-8 h-8" />
-            <p className="text-sm">Aucune alerte renvoyée par Varonis.</p>
+            <p className="text-sm">Aucune alerte Varonis sur cette période.</p>
           </CardContent>
         </Card>
       ) : (
         <>
-          {/* Indicateurs clés */}
+          {/* LIGNE 1 : INDICATEURS CLÉS */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {kpis.map(({ label, value, sub, icon: Icon, color }) => (
-              <Card key={label}>
-                <CardContent className="p-5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-muted-foreground">{label}</span>
-                    <Icon className={`w-4 h-4 ${color}`} />
-                  </div>
-                  <div className={`text-3xl font-black mt-2 ${color}`}>{value}</div>
-                  <p className="text-xs text-muted-foreground mt-1">{sub}</p>
-                </CardContent>
-              </Card>
-            ))}
+            <Card className="border-l-4 border-l-primary">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Alertes sur la période</CardTitle>
+                <div className="p-1.5 bg-primary/10 rounded-md"><Bell className="w-4 h-4 text-primary" /></div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-black text-foreground">{summary.total.toLocaleString("fr-FR")}</div>
+                <div className="mt-1"><TrendBadge value={view.volumeTrend} /></div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-amber-500">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">À traiter</CardTitle>
+                <div className="p-1.5 bg-amber-500/10 rounded-md"><ListChecks className="w-4 h-4 text-amber-500" /></div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-black text-foreground">{summary.open.toLocaleString("fr-FR")}</div>
+                <p className="text-[11px] font-medium text-muted-foreground mt-1">
+                  alertes ouvertes · {view.treatedPct} % traitées
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-red-500">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Sévérité élevée ouvertes</CardTitle>
+                <div className="p-1.5 bg-red-500/10 rounded-md"><AlertOctagon className="w-4 h-4 text-red-500" /></div>
+              </CardHeader>
+              <CardContent>
+                <div className={`text-3xl font-black ${summary.openHigh > 0 ? "text-red-500" : "text-foreground"}`}>{summary.openHigh}</div>
+                <p className="text-[11px] font-medium text-muted-foreground mt-1">{view.highRaised} levées sur la période</p>
+                <div><TrendBadge value={view.highTrend} /></div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-l-4 border-l-orange-500">
+              <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Données sensibles exposées</CardTitle>
+                <div className="p-1.5 bg-orange-500/10 rounded-md"><Database className="w-4 h-4 text-orange-500" /></div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-black text-foreground">{summary.sensitive}</div>
+                <p className="text-[11px] font-medium text-muted-foreground mt-1">
+                  alertes ouvertes · {summary.open ? Math.round((summary.sensitive / summary.open) * 100) : 0} % des ouvertes
+                </p>
+              </CardContent>
+            </Card>
           </div>
 
+          {/* LIGNE 2 : SÉVÉRITÉ + POINTS D'ATTENTION */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Répartition par sévérité */}
+            <Card className="flex flex-col">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-500" /> Alertes ouvertes par sévérité
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-2 flex-grow flex items-center justify-center min-h-[260px]">
+                {severityData.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Aucune alerte ouverte sur la période.</p>
+                ) : (
+                  <div className="relative w-full h-[240px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={severityData} dataKey="value" nameKey="name" innerRadius={65} outerRadius={95} paddingAngle={3} stroke="none">
+                          {severityData.map((d) => <Cell key={d.key} fill={SEVERITY_COLORS[d.key]} />)}
+                        </Pie>
+                        <RechartsTooltip {...TOOLTIP_STYLE} />
+                        <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="absolute inset-0 bottom-8 flex flex-col items-center justify-center pointer-events-none">
+                      <span className="text-3xl font-black text-foreground">{summary.open}</span>
+                      <span className="text-[10px] font-bold uppercase text-muted-foreground">ouvertes</span>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="lg:col-span-2 flex flex-col">
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Lightbulb className="w-4 h-4 text-amber-500" /> Points d&apos;attention
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-2">
+                {view.insights.map((ins) => {
+                  const { icon: Icon, className } = INSIGHT_STYLE[ins.level];
+                  return (
+                    <div key={ins.text} className={`flex items-start gap-3 p-3 rounded-lg border ${className}`}>
+                      <Icon className="w-4 h-4 mt-0.5 shrink-0" />
+                      <span className="text-sm font-medium text-foreground">{ins.text}</span>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 3 : ÉVOLUTION + RÉPARTITION HORAIRE */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card className="lg:col-span-2 flex flex-col">
+              <CardHeader className="pb-0 flex flex-row items-center justify-between">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-primary" /> Évolution des alertes par sévérité
+                </CardTitle>
+                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-1 rounded-md border border-primary/20">
+                  {GRANULARITY_LABEL[view.granularity]}
+                </span>
+              </CardHeader>
+              <CardContent className="pt-4 h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={view.timeline} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis dataKey="label" tick={AXIS_TICK} tickLine={false} axisLine={false} minTickGap={12} />
+                    <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
+                    <RechartsTooltip {...TOOLTIP_STYLE} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                    {SEVERITY_ORDER.filter((s) => s !== "unknown" || view.timeline.some((p) => p.unknown > 0)).map((s) => (
+                      <Bar key={s} dataKey={s} name={SEVERITY_LABELS[s]} stackId="sev" fill={SEVERITY_COLORS[s]} radius={s === "high" ? [3, 3, 0, 0] : 0} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+
+            <Card className="flex flex-col">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground pt-1">
+                  <span className="font-bold text-violet-500">{view.offHoursPct} %</span> hors heures ouvrées (avant 8 h, après 19 h, week-end)
+                </p>
+              </CardHeader>
+              <CardContent className="pt-4 h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={view.hourly} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis dataKey="hour" tick={AXIS_TICK} tickLine={false} axisLine={false} tickFormatter={(h) => `${h}h`} interval={3} />
+                    <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
+                    <RechartsTooltip {...TOOLTIP_STYLE} labelFormatter={(h) => `${h}h – ${Number(h) + 1}h`} formatter={(v) => [v, "Alertes"]} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
+                    <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                      {view.hourly.map((h) => (
+                        <Cell key={h.hour} fill={h.hour < 8 || h.hour >= 19 ? "#8b5cf6" : "#0ea5e9"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 4 : POLITIQUES + TRAITEMENT */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-base">Alertes ouvertes par sévérité</CardTitle></CardHeader>
-              <CardContent className="space-y-3">
-                {severityOrder.filter((s) => s !== "unknown" || summary.bySeverity.unknown > 0).map((s) => (
-                  <div key={s} className="space-y-1">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">{SEVERITY_LABELS[s]}</span>
-                      <span className="font-bold text-foreground">{summary.bySeverity[s]}</span>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Target className="w-4 h-4 text-rose-500" /> Menaces les plus fréquentes (alertes ouvertes)
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-3">
+                {summary.topPolicies.length === 0 && <p className="text-sm text-muted-foreground">Aucune alerte ouverte.</p>}
+                {summary.topPolicies.map((p) => (
+                  <div key={p.name} className="space-y-1">
+                    <div className="flex justify-between gap-3 text-sm">
+                      <span className="truncate font-medium text-foreground" title={p.name}>{p.name}</span>
+                      <span className="font-black shrink-0">{p.count}</span>
                     </div>
                     <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div className={`h-full ${SEVERITY_STYLES[s].bar}`} style={{ width: `${(summary.bySeverity[s] / maxSeverity) * 100}%` }} />
+                      <div className="h-full bg-rose-500" style={{ width: `${(p.count / maxPolicy) * 100}%` }} />
                     </div>
                   </div>
                 ))}
               </CardContent>
             </Card>
 
-            {/* Politiques les plus déclenchées */}
             <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-base">Politiques les plus déclenchées</CardTitle></CardHeader>
-              <CardContent>
-                <ul className="space-y-2">
-                  {summary.topPolicies.map((p) => (
-                    <li key={p.name} className="flex justify-between gap-3 text-sm">
-                      <span className="truncate text-foreground" title={p.name}>{p.name}</span>
-                      <span className="font-bold shrink-0">{p.count}</span>
-                    </li>
-                  ))}
-                  {summary.topPolicies.length === 0 && <li className="text-sm text-muted-foreground">Aucune alerte ouverte.</li>}
-                </ul>
-              </CardContent>
-            </Card>
-
-            {/* Statuts et catégories */}
-            <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-base">Statuts (toutes alertes)</CardTitle></CardHeader>
-              <CardContent>
-                <ul className="space-y-2">
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <ListChecks className="w-4 h-4 text-emerald-500" /> Traitement des alertes
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-4">
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-muted-foreground">Taux de traitement</span>
+                    <span className="font-black text-foreground">{view.treatedPct} %</span>
+                  </div>
+                  <div className="h-3 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full bg-emerald-500" style={{ width: `${view.treatedPct}%` }} />
+                  </div>
+                </div>
+                <ul className="space-y-1.5">
                   {summary.byStatus.map((st) => (
                     <li key={st.name} className="flex justify-between gap-3 text-sm">
                       <span className="text-foreground">{st.name}</span>
@@ -216,7 +492,7 @@ export default function VaronisPanel() {
                   ))}
                 </ul>
                 {summary.byCategory.length > 0 && (
-                  <div className="mt-4 pt-3 border-t border-border flex flex-wrap gap-1.5">
+                  <div className="pt-3 border-t border-border flex flex-wrap gap-1.5">
                     {summary.byCategory.map((c) => (
                       <Badge key={c.name} variant="secondary" className="font-normal">{c.name} · {c.count}</Badge>
                     ))}
@@ -226,16 +502,20 @@ export default function VaronisPanel() {
             </Card>
           </div>
 
-          {/* Dernières alertes */}
+          {/* LIGNE 5 : DERNIÈRES ALERTES */}
           <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">Dernières alertes</CardTitle></CardHeader>
-            <CardContent>
+            <CardHeader className="pb-2 border-b border-border/50">
+              <CardTitle className="text-xs font-bold text-muted-foreground uppercase">
+                Dernières alertes de la période
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-2">
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Date</TableHead>
-                      <TableHead>Politique</TableHead>
+                      <TableHead>Menace (politique)</TableHead>
                       <TableHead>Catégorie</TableHead>
                       <TableHead>Sévérité</TableHead>
                       <TableHead>Statut</TableHead>
@@ -252,7 +532,7 @@ export default function VaronisPanel() {
                           <TableCell className="font-medium">{a.policy?.name ?? "—"}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">{a.policy?.category ?? "—"}</TableCell>
                           <TableCell>
-                            <Badge variant="outline" className={SEVERITY_STYLES[sev].badge}>
+                            <Badge variant="outline" className={SEVERITY_BADGE[sev]}>
                               {a.policy?.severity ?? SEVERITY_LABELS.unknown}
                             </Badge>
                           </TableCell>
