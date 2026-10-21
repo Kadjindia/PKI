@@ -23,3 +23,14 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Variables d'environnement locales (seul le modèle est versionné)
+.env.*
+!.env.example
+
+# Cache local de la CLI Supabase (référence projet, URL du pooler…)
+supabase/.temp/
+
+# Le projet utilise npm (package-lock.json)
+bun.lock
+bun.lockb
