@@ -11,6 +11,7 @@ import {
   seedDefaultKpis,
 } from "@/lib/supabase-kpi";
 import { toast } from "sonner";
+import { useAuth } from "@/context/AuthContext";
 
 interface KpiContextType {
   kpis: KpiDefinition[];
@@ -58,9 +59,22 @@ export function KpiProvider({ children }: Readonly<{ children: ReactNode }>) {
     }
   }, []);
 
+  // Les tables ne sont accessibles qu'aux utilisateurs connectés (RLS) :
+  // on charge après la connexion et on vide les données à la déconnexion.
+  const { user } = useAuth();
+  const userId = user?.id;
+
   useEffect(() => {
+    if (!userId) {
+      setKpis([]);
+      setEntries([]);
+      setSelectedPeriod("");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     loadData();
-  }, [loadData]);
+  }, [userId, loadData]);
 
   // Calcul des périodes disponibles
   const availablePeriods = useMemo(() => {
