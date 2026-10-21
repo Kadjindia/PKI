@@ -4,6 +4,10 @@ const BITSIGHT_TOKEN = Deno.env.get("BITSIGHT_TOKEN");
 const BITSIGHT_COMPANY_GUID = Deno.env.get("BITSIGHT_COMPANY_GUID");
 const BITSIGHT_BASE_URL = "https://api.bitsighttech.com/ratings/v1";
 
+// Sous-chemins autorisés sous /companies/{GUID} ("" = fiche de l'entreprise).
+// Sans cette liste, un chemin "../<autre-guid>" permettait de sortir du périmètre.
+const ALLOWED_PATHS = new Set(["", "findings", "assets"]);
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, content-type",
@@ -44,7 +48,13 @@ Deno.serve(async (req) => {
   }
 
   const url = new URL(req.url);
-  const targetPath = url.searchParams.get("path");
+  const targetPath = url.searchParams.get("path") ?? "";
+  if (!ALLOWED_PATHS.has(targetPath)) {
+    return new Response(JSON.stringify({ error: "Chemin BitSight non autorisé" }), {
+      status: 403,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
   const extraParams = new URLSearchParams(url.search);
   extraParams.delete("path");
 
