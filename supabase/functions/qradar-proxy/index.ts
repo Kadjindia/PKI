@@ -3,6 +3,14 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const QRADAR_BASE_URL = Deno.env.get("QRADAR_BASE_URL");
 const QRADAR_SEC_TOKEN = Deno.env.get("QRADAR_SEC_TOKEN");
 
+// Liste blanche des appels autorisés (chemin -> méthodes). Seules des lectures :
+// le jeton QRadar a des droits étendus, il ne doit pas servir à modifier le SIEM.
+// Ajouter ici tout nouvel appel utilisé par le front.
+const ALLOWED_CALLS: Record<string, string[]> = {
+  "/siem/offenses": ["GET"],
+};
+const ALLOWED_QUERY_PARAMS = new Set(["range", "filter", "fields", "sort"]);
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -57,15 +65,23 @@ Deno.serve(async (req) => {
       }
     }
 
-    const targetPath = reqBody.path || ""; // ex: "/siem/offenses"
-    const method = reqBody.method || "GET";
+    const targetPath = typeof reqBody.path === "string" ? reqBody.path : ""; // ex: "/siem/offenses"
+    const method = typeof reqBody.method === "string" ? reqBody.method.toUpperCase() : "GET";
     const payload = reqBody.payload || null;
     const queryParams = reqBody.queryParams || {};
+
+    // Contrôle de la liste blanche (chemin exact + méthode)
+    if (!ALLOWED_CALLS[targetPath]?.includes(method)) {
+      console.warn(`Appel QRadar refusé : ${method} ${targetPath}`);
+      return new Response(JSON.stringify({ error: "Appel QRadar non autorisé" }), {
+        status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // Construction de l'URL cible avec sécurisation du typage des query params
     const urlObj = new URL(`${cleanBaseUrl}${targetPath}`);
     Object.entries(queryParams).forEach(([key, val]) => {
-      if (val !== null && val !== undefined) {
+      if (val !== null && val !== undefined && ALLOWED_QUERY_PARAMS.has(key)) {
         // Forçage explicite du typage pour satisfaire l'analyseur
         const rawVal = val as string | number | boolean | Record<string, unknown>;
         const stringValue = typeof rawVal === "object" ? JSON.stringify(rawVal) : String(rawVal);
