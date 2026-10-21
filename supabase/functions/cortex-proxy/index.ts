@@ -4,6 +4,18 @@ const CORTEX_FQDN = Deno.env.get("CORTEX_FQDN");
 const CORTEX_API_KEY_ID = Deno.env.get("CORTEX_API_KEY_ID");
 const CORTEX_API_KEY = Deno.env.get("CORTEX_API_KEY");
 
+// Liste blanche des endpoints Cortex autorisés (lecture uniquement).
+// Le chemin est concaténé au FQDN : sans cette liste, un chemin comme
+// "@autre-site.com/x" enverrait la requête signée vers un autre serveur.
+// Ajouter ici tout nouvel endpoint utilisé par le front.
+const ALLOWED_PATHS = new Set([
+  "/public_api/v1/incidents/get_incidents/",
+  "/public_api/v1/alerts/get_alerts_multi_events/",
+  "/public_api/v1/endpoints/get_endpoint/",
+  "/public_api/v1/xql/start_xql_query/",
+  "/public_api/v1/xql/get_query_results/",
+]);
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -59,8 +71,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    const targetPath = reqBody.path || "";
+    const targetPath = typeof reqBody.path === "string" ? reqBody.path : "";
     const payload = reqBody.payload || {};
+
+    if (!ALLOWED_PATHS.has(targetPath)) {
+      console.warn(`Appel Cortex refusé : ${targetPath}`);
+      return new Response(JSON.stringify({ error: "Endpoint Cortex non autorisé" }), {
+        status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     // 5. Hash Cryptographique avec génération aléatoire sécurisée (crypto.getRandomValues)
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
