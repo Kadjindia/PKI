@@ -8,8 +8,11 @@ const VARONIS_API_KEY = Deno.env.get("VARONIS_API_KEY");
 const AUTH_ENDPOINT = "/api/authentication/api_keys/token";
 const GRAPHQL_ENDPOINT = "/api/graphql";
 
-const POLL_MAX_ATTEMPTS = 12;   // ~ 12 x 1.5s = 18s de polling max
-const POLL_INTERVAL_MS = 1500;
+// Le job Varonis peut prendre plusieurs minutes : la fonction ne l'attend pas.
+// Elle lance le job (ou vérifie un job existant) et répond tout de suite :
+//   { status: "pending", jobId, jobProgress }   -> le front rappelle avec { jobId }
+//   { status: "done", jobStatus, jobProgress, alerts }
+const JOB_ID_PATTERN = /^[\w-]{1,128}$/;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*", // à restreindre en prod
@@ -88,8 +91,8 @@ async function startAlertsJob(baseUrl: string, token: string): Promise<string> {
   return data.alertsAsync.jobId;
 }
 
-/** Étape 3 : interroge le job jusqu'à obtenir un résultat final (ou expiration du délai). */
-async function pollAlertsJob(baseUrl: string, token: string, jobId: string) {
+/** Étape 3 : interroge une fois l'état du job (sans attendre). */
+async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
   const query = `
     query alertsQueryJob($jobId: ID!) {
       alertsQueryJob(jobId: $jobId) {
@@ -115,21 +118,13 @@ async function pollAlertsJob(baseUrl: string, token: string, jobId: string) {
     }
   `;
 
-  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
-    const data = await callVaronisGraphQL(baseUrl, token, query, { jobId });
-    const job = data.alertsQueryJob;
+  const data = await callVaronisGraphQL(baseUrl, token, query, { jobId });
+  const job = data.alertsQueryJob;
 
-    if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
-      return job;
-    }
-    if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
-      throw new Error(`Le job Varonis a échoué (statut: ${job.jobStatus})`);
-    }
-    // PENDING ou EXECUTING → on retente après une pause
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
+    throw new Error(`Le job Varonis a échoué (statut: ${job.jobStatus})`);
   }
-
-  throw new Error("Délai dépassé en attendant les résultats Varonis (job toujours en cours)");
+  return job;
 }
 
 Deno.serve(async (req) => {
@@ -162,16 +157,32 @@ Deno.serve(async (req) => {
 
     const baseUrl = VARONIS_BASE_URL.trim().replace(/\/$/, "");
 
-    // 3. Flux complet : token -> job -> polling
-    const token = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
-    const jobId = await startAlertsJob(baseUrl, token);
-    const job = await pollAlertsJob(baseUrl, token, jobId);
+    // 3. Lancement du job, ou vérification d'un job déjà lancé
+    let body: { jobId?: unknown } = {};
+    try {
+      body = (await req.json()) ?? {};
+    } catch {
+      // corps vide : lancement d'un nouveau job
+    }
+    if (body.jobId !== undefined && (typeof body.jobId !== "string" || !JOB_ID_PATTERN.test(body.jobId))) {
+      return jsonResponse({ error: "Identifiant de job invalide" }, 400);
+    }
 
-    return jsonResponse({
-      jobStatus: job.jobStatus,
-      jobProgress: job.jobProgress,
-      alerts: job.results,
-    });
+    const token = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
+    const jobId = (body.jobId as string | undefined) ?? await startAlertsJob(baseUrl, token);
+    const job = await checkAlertsJob(baseUrl, token, jobId);
+
+    if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
+      return jsonResponse({
+        status: "done",
+        jobStatus: job.jobStatus,
+        jobProgress: job.jobProgress,
+        alerts: job.results,
+      });
+    }
+
+    // PENDING ou EXECUTING : le front rappellera avec ce jobId
+    return jsonResponse({ status: "pending", jobId, jobStatus: job.jobStatus, jobProgress: job.jobProgress });
   } catch (err: any) {
     console.error("Erreur varonis-proxy:", err.message);
     return jsonResponse({ error: err.message }, 500);

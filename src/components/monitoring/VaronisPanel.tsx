@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
@@ -22,28 +22,47 @@ const SEVERITY_STYLES: Record<SeverityLevel, { bar: string; badge: string }> = {
   unknown: { bar: "bg-muted-foreground/40", badge: "bg-muted text-muted-foreground border-border" },
 };
 
-// Appel de l'Edge Function : elle s'authentifie auprès de Varonis, lance la
-// requête d'alertes (job asynchrone) et attend le résultat (~20 s maximum).
-async function fetchVaronisAlerts(): Promise<VaronisProxyResponse> {
-  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: {} });
+// Le job Varonis peut durer plusieurs minutes : la fonction le lance et répond
+// tout de suite avec son identifiant, puis on l'interroge toutes les 3 s.
+const POLL_INTERVAL_MS = 3000;
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
+async function callVaronisProxy(body: { jobId?: string }): Promise<VaronisProxyResponse> {
+  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body });
   if (error) {
     // On remonte le message renvoyé par la fonction plutôt que l'erreur générique
     if (error instanceof FunctionsHttpError) {
-      const body = await error.context.json().catch(() => null);
-      throw new Error(body?.error ?? `Erreur HTTP ${error.context.status}`);
+      const errBody = await error.context.json().catch(() => null);
+      throw new Error(errBody?.error ?? `Erreur HTTP ${error.context.status}`);
     }
     throw error;
   }
   return data as VaronisProxyResponse;
 }
 
+async function fetchVaronisAlerts(onProgress: (progress: number | null) => void): Promise<VaronisProxyResponse> {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let res = await callVaronisProxy({});
+  while (res.status === "pending" && res.jobId) {
+    onProgress(typeof res.jobProgress === "number" ? res.jobProgress : null);
+    if (Date.now() > deadline) {
+      throw new Error("Varonis n'a pas terminé la préparation des alertes en 5 minutes. Réessayez plus tard.");
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    res = await callVaronisProxy({ jobId: res.jobId });
+  }
+  onProgress(null);
+  return res;
+}
+
 const formatDate = (d: Date | null) =>
   d ? d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : "—";
 
 export default function VaronisPanel() {
+  const [progress, setProgress] = useState<number | null>(null);
   const { data, error, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ["varonis-alerts"],
-    queryFn: fetchVaronisAlerts,
+    queryFn: () => fetchVaronisAlerts(setProgress),
     staleTime: 1000 * 60 * 5,
     refetchInterval: 1000 * 60 * 15,
     retry: false,
@@ -79,7 +98,10 @@ export default function VaronisPanel() {
         {header}
         <div className="flex flex-col items-center justify-center py-24 space-y-3 text-muted-foreground">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <p className="text-sm">Interrogation de Varonis… (jusqu'à une vingtaine de secondes)</p>
+          <p className="text-sm">
+            Varonis prépare les alertes{progress !== null ? ` : ${Math.round(progress <= 1 ? progress * 100 : progress)} %` : "…"}
+          </p>
+          <p className="text-xs">Cela peut prendre une à plusieurs minutes selon le volume.</p>
         </div>
       </div>
     );
