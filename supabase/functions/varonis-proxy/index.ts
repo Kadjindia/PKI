@@ -14,6 +14,25 @@ const GRAPHQL_ENDPOINT = "/api/graphql";
 //   { status: "done", jobStatus, jobProgress, alerts }
 const JOB_ID_PATTERN = /^[\w-]{1,128}$/;
 
+// IMPORTANT (confirmé par le support Varonis) : les champs doivent être
+// demandés dans alertsAsync ET dans alertsQueryJob, sinon ils reviennent
+// null dans alertsQueryJob même s'ils y sont bien listés.
+const ALERT_RESULT_FIELDS = `
+  id
+  status
+  eventsCount
+  hasSensitiveResource
+  hasTaggedResource
+  isAssignedToVaronis
+  generationTime { dateTimeUtc }
+  policy {
+    id
+    name
+    severity
+    category
+  }
+`;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*", // à restreindre en prod
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -79,7 +98,7 @@ async function startAlertsJob(baseUrl: string, token: string): Promise<string> {
         jobStatus
         jobProgress
         results {
-          id
+          ${ALERT_RESULT_FIELDS}
         }
       }
     }
@@ -100,19 +119,7 @@ async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
         jobStatus
         jobProgress
         results {
-          id
-          status
-          eventsCount
-          hasSensitiveResource
-          hasTaggedResource
-          isAssignedToVaronis
-          generationTime { dateTimeUtc }
-          policy {
-            id
-            name
-            severity
-            category
-          }
+          ${ALERT_RESULT_FIELDS}
         }
       }
     }
