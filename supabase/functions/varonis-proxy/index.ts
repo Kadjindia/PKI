@@ -13,7 +13,7 @@ const POLL_INTERVAL_MS = 1500;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*", // à restreindre en prod
-  "Access-Control-Allow-Headers": "authorization, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
