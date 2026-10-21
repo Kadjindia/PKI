@@ -20,6 +20,8 @@ export interface VaronisAlert {
 }
 
 export interface VaronisProxyResponse {
+  status?: "pending" | "done";
+  jobId?: string;
   jobStatus?: string;
   jobProgress?: number;
   alerts?: VaronisAlert[] | null;
