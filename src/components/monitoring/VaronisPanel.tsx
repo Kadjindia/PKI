@@ -18,7 +18,7 @@ import {
 } from "recharts";
 import {
   summarizeAlerts, normalizeSeverity, formatStatus, alertDate, isOpen,
-  computeRange, previousRange, filterByRange, dataCoverage, compareCounts,
+  computeRange, previousRange, filterByRange, dataCoverage,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
   threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
   SEVERITY_LABELS, type ThreatFamily,
@@ -104,21 +104,19 @@ function formatBucket(t: number, g: Granularity): string {
 }
 
 /**
- * Évolution vs période précédente : une hausse d'alertes est mauvaise (rouge).
- * Sous 10 alertes sur la période précédente, l'écart est donné en nombre.
+ * Comparaison avec la période précédente de même durée, en clair :
+ * « contre 173 sur la période précédente ». Rouge si hausse, vert si baisse.
  */
-function TrendBadge({ current, previous, comparable }: { readonly current: number; readonly previous: number; readonly comparable: boolean }) {
-  if (!comparable) return <span className="text-[11px] text-muted-foreground">comparaison indisponible</span>;
-  const { delta, pct, absolute } = compareCounts(current, previous);
-  if (delta === 0) {
-    return <span className="inline-flex items-center gap-1 text-[11px] font-bold text-muted-foreground"><Minus className="w-3 h-3" /> stable vs période préc.</span>;
+function PreviousPeriod({ current, previous, comparable }: { readonly current: number; readonly previous: number; readonly comparable: boolean }) {
+  if (!comparable) {
+    return <span className="text-[11px] text-muted-foreground">Pas de données pour la période précédente</span>;
   }
-  const up = delta > 0;
-  const Icon = up ? TrendingUp : TrendingDown;
-  const text = absolute || pct === null ? `${up ? "+" : ""}${delta}` : `${up ? "+" : ""}${pct} %`;
+  const delta = current - previous;
+  const Icon = delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus;
+  const color = delta > 0 ? "text-red-500" : delta < 0 ? "text-emerald-500" : "text-muted-foreground";
   return (
-    <span className={`inline-flex items-center gap-1 text-[11px] font-bold ${up ? "text-red-500" : "text-emerald-500"}`}>
-      <Icon className="w-3 h-3" /> {text} vs période préc.
+    <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${color}`}>
+      <Icon className="w-3 h-3 shrink-0" /> contre {previous.toLocaleString("fr-FR")} sur la période précédente
     </span>
   );
 }
@@ -316,7 +314,7 @@ export default function VaronisPanel() {
               </CardHeader>
               <CardContent>
                 <div className="text-3xl font-black text-foreground">{summary.total.toLocaleString("fr-FR")}</div>
-                <div className="mt-1"><TrendBadge current={summary.total} previous={view.previousCount} comparable={view.canCompare} /></div>
+                <div className="mt-1"><PreviousPeriod current={summary.total} previous={view.previousCount} comparable={view.canCompare} /></div>
               </CardContent>
             </Card>
 
@@ -340,14 +338,14 @@ export default function VaronisPanel() {
               </CardHeader>
               <CardContent>
                 <div className={`text-3xl font-black ${summary.openHigh > 0 ? "text-red-500" : "text-foreground"}`}>{summary.openHigh}</div>
-                <p className="text-[11px] font-medium text-muted-foreground mt-1">{view.highRaised} levées sur la période</p>
-                <div><TrendBadge current={view.highRaised} previous={view.previousHigh} comparable={view.canCompare} /></div>
+                <p className="text-[11px] font-medium text-muted-foreground mt-1">{view.highRaised} alertes élevées sur la période</p>
+                <div><PreviousPeriod current={view.highRaised} previous={view.previousHigh} comparable={view.canCompare} /></div>
               </CardContent>
             </Card>
 
             <Card className="border-l-4 border-l-orange-500">
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Données sensibles exposées</CardTitle>
+                <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Alertes sur données sensibles</CardTitle>
                 <div className="p-1.5 bg-orange-500/10 rounded-md"><Database className="w-4 h-4 text-orange-500" /></div>
               </CardHeader>
               <CardContent>
@@ -375,9 +373,6 @@ export default function VaronisPanel() {
                   <div className="flex items-baseline gap-2 mt-2">
                     <span className={`text-2xl font-black ${active ? "text-red-500" : "text-foreground"}`}>{t.open}</span>
                     <span className="text-xs text-muted-foreground">ouverte{t.open > 1 ? "s" : ""} · {t.total} sur la période</span>
-                  </div>
-                  <div className="mt-1">
-                    <TrendBadge current={t.total} previous={t.previous} comparable={view.canCompare} />
                   </div>
                 </div>
               );

@@ -168,14 +168,6 @@ export function variation(current: number, previous: number): number | null {
   return Math.round(((current - previous) / previous) * 100);
 }
 
-/**
- * Comparaison avec la période précédente. Sous 10 alertes, un pourcentage
- * trompe (« +200 % » pour 2 -> 6) : on affiche alors l'écart en nombre.
- */
-export function compareCounts(current: number, previous: number): { delta: number; pct: number | null; absolute: boolean } {
-  return { delta: current - previous, pct: variation(current, previous), absolute: previous < 10 };
-}
-
 export type Granularity = "hour" | "day" | "week" | "month";
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -427,7 +419,8 @@ export function buildInsights(
     insights.push({ level: "warning", text: `Arriéré (toutes périodes) : ${ages.gt30} ${plural(ages.gt30, "alerte ouverte", "alertes ouvertes")} depuis plus de 30 jours.` });
   }
   const evo = variation(current.length, previous.length);
-  if (evo !== null && Math.abs(evo) >= 20 && previous.length > 0) {
+  // Seulement sur une base significative (au moins 10 alertes la période précédente)
+  if (evo !== null && Math.abs(evo) >= 20 && previous.length >= 10) {
     insights.push({
       level: evo > 0 ? "warning" : "info",
       text: `Volume d'alertes en ${evo > 0 ? "hausse" : "baisse"} de ${Math.abs(evo)} % par rapport à la période précédente.`,

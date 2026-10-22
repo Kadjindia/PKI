@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   normalizeSeverity, isOpen, formatStatus, summarizeAlerts, type VaronisAlert,
-  computeRange, previousRange, filterByRange, dataCoverage, variation, compareCounts,
+  computeRange, previousRange, filterByRange, dataCoverage, variation,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
   threatFamily, threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
 } from "@/lib/varonis";
@@ -112,10 +112,6 @@ describe("période", () => {
     expect(variation(0, 0)).toBe(0);
   });
 
-  it("passe à l'écart en nombre quand la base est petite", () => {
-    expect(compareCounts(6, 2)).toEqual({ delta: 4, pct: 200, absolute: true });
-    expect(compareCounts(130, 100)).toEqual({ delta: 30, pct: 30, absolute: false });
-  });
 });
 
 describe("chronologie et répartition horaire", () => {
@@ -161,8 +157,14 @@ describe("points d'attention", () => {
     const texts = buildInsights(current, previous).map((i) => i.text);
     expect(texts.some((t) => t.startsWith("2 alertes de sévérité élevée"))).toBe(true);
     expect(texts.some((t) => t.startsWith("1 alerte ouverte concerne des données sensibles"))).toBe(true);
-    expect(texts.some((t) => t.includes("hausse de 200 %"))).toBe(true);
     expect(texts.some((t) => t.includes("Taux de traitement : 33 %"))).toBe(true);
+  });
+
+  it("ne signale une hausse de volume que sur une base d'au moins 10 alertes", () => {
+    const many = (n: number, p: string) => Array.from({ length: n }, (_, i) => alert(p + i, { status: "CLOSED" }));
+    const hausse = (prev: number) => buildInsights(many(15, "c"), many(prev, "p")).some((i) => i.text.includes("hausse"));
+    expect(hausse(10)).toBe(true);  // 10 -> 15 : +50 %
+    expect(hausse(2)).toBe(false);  // base trop petite
   });
 
   it("ne produit rien sans alerte", () => {
