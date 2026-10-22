@@ -13,6 +13,7 @@ const GRAPHQL_ENDPOINT = "/api/graphql";
 //   { status: "pending", jobId, jobProgress }   -> le front rappelle avec { jobId }
 //   { status: "done", jobStatus, jobProgress, alerts }
 const JOB_ID_PATTERN = /^[\w-]{1,128}$/;
+const TYPE_NAME_PATTERN = /^[A-Za-z_]\w{0,63}$/;
 
 // IMPORTANT (confirmé par le support Varonis) : les champs doivent être
 // demandés dans alertsAsync ET dans alertsQueryJob, sinon ils reviennent
@@ -110,6 +111,30 @@ async function startAlertsJob(baseUrl: string, token: string): Promise<string> {
   return data.alertsAsync.jobId;
 }
 
+/**
+ * Mode diagnostic (lecture seule) : liste les champs d'un type GraphQL
+ * Varonis (ex. "Alert"), pour connaître les noms exacts avant de les
+ * demander dans les requêtes d'alertes.
+ */
+async function describeType(baseUrl: string, token: string, typeName: string) {
+  const query = `
+    query describe($name: String!) {
+      __type(name: $name) {
+        name
+        kind
+        fields {
+          name
+          description
+          type { name kind ofType { name kind ofType { name kind } } }
+        }
+        enumValues { name }
+      }
+    }
+  `;
+  const data = await callVaronisGraphQL(baseUrl, token, query, { name: typeName });
+  return data.__type;
+}
+
 /** Étape 3 : interroge une fois l'état du job (sans attendre). */
 async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
   const query = `
@@ -165,7 +190,7 @@ Deno.serve(async (req) => {
     const baseUrl = VARONIS_BASE_URL.trim().replace(/\/$/, "");
 
     // 3. Lancement du job, ou vérification d'un job déjà lancé
-    let body: { jobId?: unknown } = {};
+    let body: { jobId?: unknown; action?: unknown; typeName?: unknown } = {};
     try {
       body = (await req.json()) ?? {};
     } catch {
@@ -173,6 +198,16 @@ Deno.serve(async (req) => {
     }
     if (body.jobId !== undefined && (typeof body.jobId !== "string" || !JOB_ID_PATTERN.test(body.jobId))) {
       return jsonResponse({ error: "Identifiant de job invalide" }, 400);
+    }
+
+    // Mode diagnostic : { action: "schema", typeName: "Alert" }
+    if (body.action === "schema") {
+      const typeName = typeof body.typeName === "string" ? body.typeName : "Alert";
+      if (!TYPE_NAME_PATTERN.test(typeName)) {
+        return jsonResponse({ error: "Nom de type invalide" }, 400);
+      }
+      const schemaToken = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
+      return jsonResponse({ type: await describeType(baseUrl, schemaToken, typeName) });
     }
 
     const token = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
