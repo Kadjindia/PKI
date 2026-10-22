@@ -9,7 +9,8 @@ import {
 } from "@/components/ui/table";
 import {
   ShieldAlert, AlertOctagon, Database, Bell, RefreshCw, Loader2, AlertTriangle, Inbox,
-  Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks, Target,
+  Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks,
+  Lock, Upload, UserCog, Trash2, Hourglass, Users, Tag, Zap, Volume2,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -19,7 +20,8 @@ import {
   summarizeAlerts, normalizeSeverity, formatStatus, alertDate, isOpen,
   computeRange, previousRange, filterByRange, dataCoverage, variation,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
-  SEVERITY_LABELS,
+  threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
+  SEVERITY_LABELS, type ThreatFamily,
   type SeverityLevel, type VaronisAlert, type VaronisProxyResponse, type TimePrefix, type TimeUnit, type Granularity, type Insight,
 } from "@/lib/varonis";
 
@@ -76,6 +78,10 @@ const INSIGHT_STYLE: Record<Insight["level"], { icon: typeof Info; className: st
   warning: { icon: AlertTriangle, className: "text-orange-500 bg-orange-500/10 border-orange-500/20" },
   info: { icon: Info, className: "text-sky-500 bg-sky-500/10 border-sky-500/20" },
 };
+const THREAT_ICONS: Record<ThreatFamily, typeof Info> = {
+  ransomware: Lock, exfiltration: Upload, privileges: UserCog, destruction: Trash2,
+};
+
 const TOOLTIP_STYLE = {
   contentStyle: { background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 },
   labelStyle: { color: "hsl(var(--foreground))", fontWeight: 700 },
@@ -152,7 +158,16 @@ export default function VaronisPanel() {
       timeline: buildTimeline(current, range, granularity).map((p) => ({ ...p, label: formatBucket(p.start, granularity) })),
       hourly: hourlyDistribution(current),
       offHoursPct: current.length ? Math.round((offHours / current.length) * 100) : 0,
-      insights: buildInsights(current, canCompare ? previous : []),
+      // 6 points maximum, déjà classés du plus critique au plus informatif
+      insights: buildInsights(current, canCompare ? previous : [], all).slice(0, 6),
+      threats: threatTracking(current, canCompare ? previous : []),
+      canCompare,
+      ages: openAgeBuckets(all),
+      handling: handlingSplit(all),
+      escalation: escalationRate(current),
+      spikes: eventSpikes(current),
+      noise: policyNoise(current).slice(0, 8),
+      taggedOpen: current.filter((a) => isOpen(a) && a.hasTaggedResource).length,
       treatedPct: summary.total ? Math.round(((summary.total - summary.open) / summary.total) * 100) : 0,
     };
   }, [data, timePrefix, timeValue, timeUnit]);
@@ -261,7 +276,6 @@ export default function VaronisPanel() {
   const severityData = SEVERITY_ORDER
     .map((s) => ({ key: s, name: SEVERITY_LABELS[s], value: summary.bySeverity[s] }))
     .filter((d) => d.value > 0);
-  const maxPolicy = Math.max(1, ...summary.topPolicies.map((p) => p.count));
 
   return (
     <div className="space-y-6">
@@ -334,8 +348,33 @@ export default function VaronisPanel() {
                 <p className="text-[11px] font-medium text-muted-foreground mt-1">
                   alertes ouvertes · {summary.open ? Math.round((summary.sensitive / summary.open) * 100) : 0} % des ouvertes
                 </p>
+                <p className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
+                  <Tag className="w-3 h-3" /> dont <span className="font-bold text-foreground">{view.taggedOpen}</span> sur ressources taguées
+                </p>
               </CardContent>
             </Card>
+          </div>
+
+          {/* LIGNE 1 BIS : MENACES CRITIQUES */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {view.threats.map((t) => {
+              const Icon = THREAT_ICONS[t.key];
+              const active = t.open > 0;
+              return (
+                <div key={t.key} className={`p-4 rounded-xl border ${active ? "border-red-500/40 bg-red-500/5" : "border-border bg-card"}`}>
+                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                    <Icon className={`w-4 h-4 ${active ? "text-red-500" : "text-muted-foreground"}`} /> {t.label}
+                  </div>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className={`text-2xl font-black ${active ? "text-red-500" : "text-foreground"}`}>{t.open}</span>
+                    <span className="text-xs text-muted-foreground">ouverte{t.open > 1 ? "s" : ""} · {t.total} sur la période</span>
+                  </div>
+                  <div className="mt-1">
+                    <TrendBadge value={view.canCompare ? variation(t.total, t.previous) : null} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
           {/* LIGNE 2 : SÉVÉRITÉ + POINTS D'ATTENTION */}
@@ -385,6 +424,109 @@ export default function VaronisPanel() {
                     </div>
                   );
                 })}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 2 BIS : ARRIÉRÉ + PRISE EN CHARGE + PICS D'ACTIVITÉ */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Hourglass className="w-4 h-4 text-amber-500" /> Ancienneté des alertes ouvertes
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">Toutes périodes confondues (arriéré actuel)</p>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-4">
+                {(() => {
+                  const { lt7, d7to30, gt30 } = view.ages;
+                  const total = Math.max(1, lt7 + d7to30 + gt30);
+                  const segs = [
+                    { label: "< 7 jours", value: lt7, color: "bg-emerald-500" },
+                    { label: "7 à 30 jours", value: d7to30, color: "bg-amber-500" },
+                    { label: "> 30 jours", value: gt30, color: "bg-red-500" },
+                  ];
+                  return (
+                    <>
+                      <div className="flex h-3 rounded-full overflow-hidden bg-muted">
+                        {segs.map((sg) => <div key={sg.label} className={sg.color} style={{ width: `${(sg.value / total) * 100}%` }} />)}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        {segs.map((sg) => (
+                          <div key={sg.label}>
+                            <div className="text-xl font-black text-foreground">{sg.value}</div>
+                            <div className="text-[11px] text-muted-foreground flex items-center justify-center gap-1">
+                              <span className={`w-2 h-2 rounded-full ${sg.color}`} /> {sg.label}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-xs text-muted-foreground border-t border-border pt-3">
+                        {view.ages.highGt7 > 0
+                          ? <><span className="font-bold text-red-500">{view.ages.highGt7}</span> alerte{view.ages.highGt7 > 1 ? "s" : ""} élevée{view.ages.highGt7 > 1 ? "s" : ""} ouverte{view.ages.highGt7 > 1 ? "s" : ""} depuis plus de 7 jours</>
+                          : "Aucune alerte élevée ouverte depuis plus de 7 jours"}
+                        {view.ages.oldestDays !== null && ` · plus ancienne : ${view.ages.oldestDays} j`}
+                      </p>
+                    </>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Users className="w-4 h-4 text-sky-500" /> Prise en charge des alertes ouvertes
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">Équipe interne ou service managé Varonis (MDR)</p>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-3">
+                {(() => {
+                  const { varonis, internal } = view.handling;
+                  const total = Math.max(1, varonis + internal);
+                  return [
+                    { label: "Équipe interne", value: internal, color: "bg-sky-500" },
+                    { label: "Varonis (MDR)", value: varonis, color: "bg-violet-500" },
+                  ].map((r) => (
+                    <div key={r.label} className="space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-foreground">{r.label}</span>
+                        <span className="font-bold">{r.value} <span className="text-muted-foreground font-normal">({Math.round((r.value / total) * 100)} %)</span></span>
+                      </div>
+                      <div className="h-2 rounded-full bg-muted overflow-hidden">
+                        <div className={`h-full ${r.color}`} style={{ width: `${(r.value / total) * 100}%` }} />
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-red-500" /> Pics d&apos;activité
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">
+                  Alertes avec au moins {view.spikes.threshold} événements (activité massive : suppression, chiffrement, copie)
+                </p>
+              </CardHeader>
+              <CardContent className="pt-3">
+                {view.spikes.spikes.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Aucun pic d&apos;activité sur la période.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {view.spikes.spikes.map((a) => (
+                      <li key={a.id} className="flex items-center justify-between gap-3 text-sm">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-foreground" title={a.policy?.name ?? ""}>{a.policy?.name ?? "—"}</div>
+                          <div className="text-[11px] text-muted-foreground">{formatDate(alertDate(a))} · {formatStatus(a.status)}</div>
+                        </div>
+                        <span className="font-mono font-black text-red-500 shrink-0">{(a.eventsCount ?? 0).toLocaleString("fr-FR")}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -443,30 +585,8 @@ export default function VaronisPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 4 : POLITIQUES + TRAITEMENT */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader className="pb-2 border-b border-border/50">
-                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <Target className="w-4 h-4 text-rose-500" /> Menaces les plus fréquentes (alertes ouvertes)
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-4 space-y-3">
-                {summary.topPolicies.length === 0 && <p className="text-sm text-muted-foreground">Aucune alerte ouverte.</p>}
-                {summary.topPolicies.map((p) => (
-                  <div key={p.name} className="space-y-1">
-                    <div className="flex justify-between gap-3 text-sm">
-                      <span className="truncate font-medium text-foreground" title={p.name}>{p.name}</span>
-                      <span className="font-black shrink-0">{p.count}</span>
-                    </div>
-                    <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div className="h-full bg-rose-500" style={{ width: `${(p.count / maxPolicy) * 100}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
+          {/* LIGNE 4 : TRAITEMENT + POLITIQUES (VOLUME ET BRUIT) */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -483,7 +603,11 @@ export default function VaronisPanel() {
                     <div className="h-full bg-emerald-500" style={{ width: `${view.treatedPct}%` }} />
                   </div>
                 </div>
-                <ul className="space-y-1.5">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Taux d&apos;escalade</span>
+                  <span className="font-black text-foreground">{view.escalation} %</span>
+                </div>
+                <ul className="space-y-1.5 border-t border-border pt-3">
                   {summary.byStatus.map((st) => (
                     <li key={st.name} className="flex justify-between gap-3 text-sm">
                       <span className="text-foreground">{st.name}</span>
@@ -498,6 +622,49 @@ export default function VaronisPanel() {
                     ))}
                   </div>
                 )}
+              </CardContent>
+            </Card>
+
+            <Card className="lg:col-span-2">
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-violet-500" /> Politiques : volume et bruit
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">
+                  « Bruit probable » : sévérité faible ou moyenne et au moins 15 % des alertes de la période — réglage à envisager
+                </p>
+              </CardHeader>
+              <CardContent className="pt-2">
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Politique</TableHead>
+                        <TableHead>Sévérité</TableHead>
+                        <TableHead className="text-right">Alertes</TableHead>
+                        <TableHead className="text-right">Part</TableHead>
+                        <TableHead className="text-right">Ouvertes</TableHead>
+                        <TableHead className="text-right">Fermées</TableHead>
+                        <TableHead />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {view.noise.map((p) => (
+                        <TableRow key={p.name}>
+                          <TableCell className="font-medium max-w-[260px] truncate" title={p.name}>{p.name}</TableCell>
+                          <TableCell><Badge variant="outline" className={SEVERITY_BADGE[p.severity]}>{SEVERITY_LABELS[p.severity]}</Badge></TableCell>
+                          <TableCell className="text-right font-bold">{p.total}</TableCell>
+                          <TableCell className="text-right text-muted-foreground whitespace-nowrap">{p.share} %</TableCell>
+                          <TableCell className="text-right">{p.open}</TableCell>
+                          <TableCell className="text-right text-muted-foreground whitespace-nowrap">{p.closedPct} %</TableCell>
+                          <TableCell>
+                            {p.noisy && <Badge variant="outline" className="bg-violet-500/15 text-violet-600 border-violet-500/30 whitespace-nowrap">Bruit probable</Badge>}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               </CardContent>
             </Card>
           </div>
