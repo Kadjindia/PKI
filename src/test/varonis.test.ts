@@ -3,6 +3,7 @@ import {
   normalizeSeverity, isOpen, formatStatus, summarizeAlerts, type VaronisAlert,
   computeRange, previousRange, filterByRange, dataCoverage, variation,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
+  threatFamily, threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
 } from "@/lib/varonis";
 
 const alert = (id: string, over: Partial<VaronisAlert> = {}): VaronisAlert => ({
@@ -159,5 +160,79 @@ describe("points d'attention", () => {
 
   it("ne produit rien sans alerte", () => {
     expect(buildInsights([], [])).toEqual([]);
+  });
+});
+
+describe("pilotage SOC", () => {
+  const now = new Date("2026-10-21T12:00:00Z");
+  const daysAgo = (n: number) => ({ dateTimeUtc: new Date(now.getTime() - n * 86400e3).toISOString() });
+
+  it("classe les alertes par famille de menace (catégorie puis nom)", () => {
+    expect(threatFamily(alert("1", { policy: { category: "Ransomware", name: "x" } }))).toBe("ransomware");
+    expect(threatFamily(alert("2", { policy: { category: "Autre", name: "Activité de chiffrement suspecte" } }))).toBe("ransomware");
+    expect(threatFamily(alert("3", { policy: { category: "Exfiltration" } }))).toBe("exfiltration");
+    expect(threatFamily(alert("4", { policy: { name: "Ajout à un groupe Domain Admins" } }))).toBe("privileges");
+    expect(threatFamily(alert("5", { policy: { name: "Suppression massive de fichiers" } }))).toBe("destruction");
+    expect(threatFamily(alert("6", { policy: { name: "Connexion inhabituelle", category: "Accès" } }))).toBeNull();
+  });
+
+  it("compte les menaces critiques sur la période et la précédente", () => {
+    const cur = [
+      alert("1", { policy: { category: "Ransomware" } }),
+      alert("2", { policy: { category: "Ransomware" }, status: "CLOSED" }),
+    ];
+    const prev = [alert("p", { policy: { category: "Ransomware" } })];
+    const r = threatTracking(cur, prev).find((t) => t.key === "ransomware");
+    expect(r).toMatchObject({ total: 2, open: 1, previous: 1 });
+  });
+
+  it("répartit l'arriéré par ancienneté (alertes ouvertes uniquement)", () => {
+    const list = [
+      alert("1", { generationTime: daysAgo(2) }),
+      alert("2", { generationTime: daysAgo(10) }),                       // élevée, > 7 j
+      alert("3", { generationTime: daysAgo(45), policy: { severity: "Low" } }),
+      alert("4", { generationTime: daysAgo(90), status: "CLOSED" }),     // fermée : ignorée
+    ];
+    expect(openAgeBuckets(list, now)).toEqual({ lt7: 1, d7to30: 1, gt30: 1, oldestDays: 45, highGt7: 1 });
+  });
+
+  it("répartit la prise en charge et calcule le taux d'escalade", () => {
+    const list = [
+      alert("1", { isAssignedToVaronis: true }),
+      alert("2"),
+      alert("3", { status: "ESCALATED" }),
+      alert("4", { status: "CLOSED", isAssignedToVaronis: true }),
+    ];
+    expect(handlingSplit(list)).toEqual({ varonis: 1, internal: 2 });
+    expect(escalationRate(list)).toBe(25);
+    expect(escalationRate([])).toBe(0);
+  });
+
+  it("repère les pics d'événements (≥ 5 × la médiane, minimum 50)", () => {
+    const list = [10, 12, 8, 11, 400, 9, 60].map((n, i) => alert(String(i), { eventsCount: n }));
+    const { threshold, spikes } = eventSpikes(list);
+    expect(threshold).toBe(55); // médiane 11 × 5
+    expect(spikes.map((a) => a.eventsCount)).toEqual([400, 60]);
+  });
+
+  it("signale les politiques bruyantes peu graves", () => {
+    const list = [
+      ...Array.from({ length: 6 }, (_, i) => alert("l" + i, { policy: { name: "Bruit", severity: "Low" } })),
+      ...Array.from({ length: 4 }, (_, i) => alert("h" + i, { policy: { name: "Grave", severity: "High" } })),
+    ];
+    const rows = policyNoise(list);
+    expect(rows[0]).toMatchObject({ name: "Bruit", total: 6, share: 60, noisy: true });
+    expect(rows[1]).toMatchObject({ name: "Grave", noisy: false });
+  });
+
+  it("ajoute l'arriéré et les ressources taguées aux points d'attention", () => {
+    const all = [
+      alert("1", { generationTime: daysAgo(40), hasTaggedResource: true }),
+      alert("2", { generationTime: daysAgo(1) }),
+    ];
+    const texts = buildInsights(all, [], all, now).map((i) => i.text);
+    expect(texts).toContain("1 alerte élevée est ouverte depuis plus de 7 jours.");
+    expect(texts).toContain("Arriéré : 1 alerte ouverte depuis plus de 30 jours.");
+    expect(texts).toContain("1 alerte ouverte touche des ressources taguées (données critiques).");
   });
 });

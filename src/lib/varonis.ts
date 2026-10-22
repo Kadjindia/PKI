@@ -231,20 +231,188 @@ export function isOffHours(d: Date): boolean {
   return day === 0 || day === 6 || d.getHours() < 8 || d.getHours() >= 19;
 }
 
+// ---------------------------------------------------------------------------
+// Pilotage SOC : menaces critiques, ancienneté, prise en charge, bruit
+// ---------------------------------------------------------------------------
+
+export type ThreatFamily = "ransomware" | "exfiltration" | "privileges" | "destruction";
+
+export const THREAT_FAMILIES: { key: ThreatFamily; label: string }[] = [
+  { key: "ransomware", label: "Rançongiciel" },
+  { key: "exfiltration", label: "Exfiltration" },
+  { key: "privileges", label: "Élévation de privilèges" },
+  { key: "destruction", label: "Destruction de données" },
+];
+
+// Mots-clés recherchés dans la catégorie puis dans le nom de la politique
+// (les libellés exacts dépendent du tenant Varonis).
+const THREAT_KEYWORDS: Record<ThreatFamily, string[]> = {
+  ransomware: ["ransom", "rançon", "chiffr", "encrypt", "crypto"],
+  exfiltration: ["exfil", "fuite", "leak", "upload", "transfer", "copie massive"],
+  privileges: ["privil", "escalat", "élévation", "admin", "domain admin"],
+  destruction: ["delet", "suppression", "destruct", "wip", "effac"],
+};
+
+export function threatFamily(alert: VaronisAlert): ThreatFamily | null {
+  const texts = [alert.policy?.category, alert.policy?.name].map((t) => (t ?? "").toLowerCase());
+  for (const text of texts) {
+    if (!text) continue;
+    for (const { key } of THREAT_FAMILIES) {
+      if (THREAT_KEYWORDS[key].some((k) => text.includes(k))) return key;
+    }
+  }
+  return null;
+}
+
+export interface ThreatStat { key: ThreatFamily; label: string; total: number; open: number; previous: number }
+
+export function threatTracking(current: VaronisAlert[], previous: VaronisAlert[]): ThreatStat[] {
+  return THREAT_FAMILIES.map(({ key, label }) => {
+    const cur = current.filter((a) => threatFamily(a) === key);
+    return {
+      key,
+      label,
+      total: cur.length,
+      open: cur.filter(isOpen).length,
+      previous: previous.filter((a) => threatFamily(a) === key).length,
+    };
+  });
+}
+
+/** Âge en jours d'une alerte (null si pas de date). */
+export function ageInDays(alert: VaronisAlert, now = new Date()): number | null {
+  const d = alertDate(alert);
+  return d ? Math.max(0, Math.floor((now.getTime() - d.getTime()) / DAY_MS)) : null;
+}
+
+export interface AgeBuckets { lt7: number; d7to30: number; gt30: number; oldestDays: number | null; highGt7: number }
+
+/** Ancienneté des alertes encore ouvertes (arriéré), quelle que soit la période. */
+export function openAgeBuckets(alerts: VaronisAlert[], now = new Date()): AgeBuckets {
+  const b: AgeBuckets = { lt7: 0, d7to30: 0, gt30: 0, oldestDays: null, highGt7: 0 };
+  for (const a of alerts.filter(isOpen)) {
+    const age = ageInDays(a, now);
+    if (age === null) continue;
+    if (age < 7) b.lt7++;
+    else if (age <= 30) b.d7to30++;
+    else b.gt30++;
+    if (age >= 7 && normalizeSeverity(a.policy?.severity) === "high") b.highGt7++;
+    b.oldestDays = Math.max(b.oldestDays ?? 0, age);
+  }
+  return b;
+}
+
+/** Répartition de la prise en charge des alertes ouvertes : Varonis (MDR) ou équipe interne. */
+export function handlingSplit(alerts: VaronisAlert[]): { varonis: number; internal: number } {
+  const open = alerts.filter(isOpen);
+  const varonis = open.filter((a) => a.isAssignedToVaronis).length;
+  return { varonis, internal: open.length - varonis };
+}
+
+/** Part des alertes de la période passées au statut « escaladé ». */
+export function escalationRate(alerts: VaronisAlert[]): number {
+  if (alerts.length === 0) return 0;
+  const escalated = alerts.filter((a) => (a.status ?? "").toLowerCase().includes("escalat")).length;
+  return Math.round((escalated / alerts.length) * 100);
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const v = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
+/**
+ * Alertes au nombre d'événements anormalement élevé (≥ 5 fois la médiane de
+ * la période, et au moins 50) : activité massive (suppression, chiffrement, copie).
+ */
+export function eventSpikes(alerts: VaronisAlert[], limit = 5): { threshold: number; spikes: VaronisAlert[] } {
+  const counts = alerts.map((a) => a.eventsCount ?? 0).filter((c) => c > 0);
+  const threshold = Math.max(50, Math.ceil(median(counts) * 5));
+  const spikes = alerts
+    .filter((a) => (a.eventsCount ?? 0) >= threshold)
+    .sort((a, b) => (b.eventsCount ?? 0) - (a.eventsCount ?? 0))
+    .slice(0, limit);
+  return { threshold, spikes };
+}
+
+export interface PolicyNoise {
+  name: string;
+  severity: SeverityLevel;
+  total: number;
+  open: number;
+  closedPct: number;
+  share: number; // part des alertes de la période, en %
+  noisy: boolean;
+}
+
+/**
+ * Volume par politique. « Bruit probable » : sévérité faible ou moyenne et au
+ * moins 15 % des alertes de la période — candidate à un réglage.
+ */
+export function policyNoise(alerts: VaronisAlert[]): PolicyNoise[] {
+  const groups = new Map<string, VaronisAlert[]>();
+  for (const a of alerts) {
+    const name = a.policy?.name || "Politique inconnue";
+    groups.set(name, [...(groups.get(name) ?? []), a]);
+  }
+  return [...groups.entries()]
+    .map(([name, list]) => {
+      const open = list.filter(isOpen).length;
+      const severity = normalizeSeverity(list[0].policy?.severity);
+      const share = Math.round((list.length / alerts.length) * 100);
+      return {
+        name,
+        severity,
+        total: list.length,
+        open,
+        closedPct: Math.round(((list.length - open) / list.length) * 100),
+        share,
+        noisy: (severity === "low" || severity === "medium") && share >= 15,
+      };
+    })
+    .sort((a, b) => b.total - a.total);
+}
+
 export interface Insight { level: "critical" | "warning" | "info"; text: string }
 
-/** Points d'attention rédigés pour le RSSI, à partir des alertes de la période. */
-export function buildInsights(current: VaronisAlert[], previous: VaronisAlert[]): Insight[] {
+const plural = (n: number, one: string, many: string) => (n > 1 ? many : one);
+
+/**
+ * Points d'attention rédigés pour le RSSI. `allAlerts` (toutes les alertes
+ * reçues) sert à l'arriéré, qui ne dépend pas de la période choisie.
+ */
+export function buildInsights(
+  current: VaronisAlert[],
+  previous: VaronisAlert[],
+  allAlerts: VaronisAlert[] = current,
+  now = new Date(),
+): Insight[] {
   const insights: Insight[] = [];
   if (current.length === 0) return insights;
   const s = summarizeAlerts(current);
 
   if (s.openHigh > 0) {
-    insights.push({ level: "critical", text: `${s.openHigh} alerte${s.openHigh > 1 ? "s" : ""} de sévérité élevée ${s.openHigh > 1 ? "sont" : "est"} encore ouverte${s.openHigh > 1 ? "s" : ""}.` });
+    insights.push({ level: "critical", text: `${s.openHigh} ${plural(s.openHigh, "alerte", "alertes")} de sévérité élevée ${plural(s.openHigh, "est encore ouverte", "sont encore ouvertes")}.` });
   }
-  const sensitiveOpen = s.sensitive;
-  if (sensitiveOpen > 0) {
-    insights.push({ level: "warning", text: `${sensitiveOpen} alerte${sensitiveOpen > 1 ? "s" : ""} ouverte${sensitiveOpen > 1 ? "s" : ""} concerne${sensitiveOpen > 1 ? "nt" : ""} des données sensibles.` });
+  const ages = openAgeBuckets(allAlerts, now);
+  if (ages.highGt7 > 0) {
+    insights.push({ level: "critical", text: `${ages.highGt7} ${plural(ages.highGt7, "alerte élevée est ouverte", "alertes élevées sont ouvertes")} depuis plus de 7 jours.` });
+  }
+  const ransomware = current.filter((a) => threatFamily(a) === "ransomware" && isOpen(a)).length;
+  if (ransomware > 0) {
+    insights.push({ level: "critical", text: `${ransomware} ${plural(ransomware, "alerte ouverte évoque", "alertes ouvertes évoquent")} un comportement de rançongiciel.` });
+  }
+  const taggedOpen = current.filter((a) => isOpen(a) && a.hasTaggedResource).length;
+  if (taggedOpen > 0) {
+    insights.push({ level: "warning", text: `${taggedOpen} ${plural(taggedOpen, "alerte ouverte touche", "alertes ouvertes touchent")} des ressources taguées (données critiques).` });
+  }
+  if (s.sensitive > 0) {
+    insights.push({ level: "warning", text: `${s.sensitive} ${plural(s.sensitive, "alerte ouverte concerne", "alertes ouvertes concernent")} des données sensibles.` });
+  }
+  if (ages.gt30 > 0) {
+    insights.push({ level: "warning", text: `Arriéré : ${ages.gt30} ${plural(ages.gt30, "alerte ouverte", "alertes ouvertes")} depuis plus de 30 jours.` });
   }
   const evo = variation(current.length, previous.length);
   if (evo !== null && Math.abs(evo) >= 20 && previous.length > 0) {
@@ -258,9 +426,9 @@ export function buildInsights(current: VaronisAlert[], previous: VaronisAlert[])
   if (offPct >= 30) {
     insights.push({ level: "warning", text: `${offPct} % des alertes surviennent hors heures ouvrées (soir, nuit ou week-end).` });
   }
-  const top = s.topPolicies[0];
-  if (top && top.count >= 2) {
-    insights.push({ level: "info", text: `Politique la plus déclenchée : « ${top.name} » (${top.count} alertes ouvertes).` });
+  const noisy = policyNoise(current).filter((p) => p.noisy);
+  if (noisy.length > 0) {
+    insights.push({ level: "info", text: `${noisy.length} ${plural(noisy.length, "politique génère", "politiques génèrent")} beaucoup d'alertes peu graves : réglage à envisager (« ${noisy[0].name} »).` });
   }
   const treated = s.total - s.open;
   insights.push({ level: "info", text: `Taux de traitement : ${Math.round((treated / s.total) * 100)} % des alertes de la période sont fermées.` });
