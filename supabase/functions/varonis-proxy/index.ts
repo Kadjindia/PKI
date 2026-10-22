@@ -131,7 +131,9 @@ async function describeType(baseUrl: string, token: string, typeName: string) {
           name
           description
           type { name kind ofType { name kind ofType { name kind } } }
+          args { name type { name kind ofType { name kind ofType { name kind } } } }
         }
+        inputFields { name type { name kind ofType { name kind ofType { name kind } } } }
         enumValues { name }
       }
     }

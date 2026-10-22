@@ -8,8 +8,15 @@ import { Wrench, Loader2, Copy, Check } from "lucide-react";
 // des champs d'un type GraphQL Varonis. Lecture seule, aucune donnée d'alerte.
 
 interface GqlTypeRef { name: string | null; kind: string; ofType?: GqlTypeRef | null }
-interface GqlField { name: string; description: string | null; type: GqlTypeRef }
-interface GqlType { name: string; kind: string; fields: GqlField[] | null; enumValues: { name: string }[] | null }
+interface GqlArg { name: string; type: GqlTypeRef }
+interface GqlField { name: string; description: string | null; type: GqlTypeRef; args?: GqlArg[] | null }
+interface GqlType {
+  name: string;
+  kind: string;
+  fields: GqlField[] | null;
+  inputFields?: GqlArg[] | null; // types de filtre (INPUT_OBJECT)
+  enumValues: { name: string }[] | null;
+}
 
 /** Type lisible : [User!]! -> "liste de User", String! -> "String". */
 function typeLabel(t: GqlTypeRef | null | undefined): string {
@@ -94,6 +101,7 @@ export default function VaronisSchemaDiagnostic() {
                 <tr>
                   <th className="text-left p-2">Champ</th>
                   <th className="text-left p-2">Type</th>
+                  <th className="text-left p-2">Paramètres</th>
                   <th className="text-left p-2">Description</th>
                 </tr>
               </thead>
@@ -102,13 +110,23 @@ export default function VaronisSchemaDiagnostic() {
                   <tr key={f.name} className="border-t border-border">
                     <td className="p-2 font-mono font-semibold">{f.name}</td>
                     <td className="p-2 font-mono text-muted-foreground">{typeLabel(f.type)}</td>
+                    <td className="p-2 font-mono text-muted-foreground">
+                      {(f.args ?? []).map((a) => `${a.name}: ${typeLabel(a.type)}`).join(", ")}
+                    </td>
                     <td className="p-2 text-muted-foreground">{f.description ?? ""}</td>
+                  </tr>
+                ))}
+                {(result.inputFields ?? []).map((f) => (
+                  <tr key={f.name} className="border-t border-border">
+                    <td className="p-2 font-mono font-semibold">{f.name}</td>
+                    <td className="p-2 font-mono text-muted-foreground">{typeLabel(f.type)}</td>
+                    <td className="p-2 text-muted-foreground" colSpan={2}>champ de filtre</td>
                   </tr>
                 ))}
                 {(result.enumValues ?? []).map((v) => (
                   <tr key={v.name} className="border-t border-border">
                     <td className="p-2 font-mono font-semibold">{v.name}</td>
-                    <td className="p-2 text-muted-foreground" colSpan={2}>valeur possible</td>
+                    <td className="p-2 text-muted-foreground" colSpan={3}>valeur possible</td>
                   </tr>
                 ))}
               </tbody>
