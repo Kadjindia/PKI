@@ -21,6 +21,7 @@ describe("normalizeSeverity", () => {
     expect(normalizeSeverity("CRITICAL")).toBe("high");
     expect(normalizeSeverity("Medium")).toBe("medium");
     expect(normalizeSeverity("faible")).toBe("low");
+    expect(normalizeSeverity("Informational")).toBe("info");
     expect(normalizeSeverity(null)).toBe("unknown");
     expect(normalizeSeverity("???")).toBe("unknown");
   });
@@ -56,7 +57,7 @@ describe("summarizeAlerts", () => {
     expect(s.openHigh).toBe(1);
     expect(s.sensitive).toBe(1); // l'alerte 3 est fermée
     expect(s.distinctPolicies).toBe(3); // A, B, inconnue
-    expect(s.bySeverity).toEqual({ high: 1, medium: 1, low: 1, unknown: 1 });
+    expect(s.bySeverity).toEqual({ high: 1, medium: 1, low: 1, info: 0, unknown: 1 });
   });
 
   it("classe les politiques et catégories des alertes ouvertes", () => {
@@ -80,13 +81,14 @@ describe("summarizeAlerts", () => {
 describe("période", () => {
   const now = new Date(2026, 9, 21, 15, 0); // 21/10/2026 15:00 (heure locale)
 
-  it("calcule les N derniers jours / mois et les périodes calendaires", () => {
+  it("calcule les N derniers jours / mois (depuis minuit) et les périodes calendaires", () => {
     const r = computeRange("last", 7, "days", now);
-    expect(new Date(r.from)).toEqual(new Date(2026, 9, 14, 15, 0));
+    expect(new Date(r.from)).toEqual(new Date(2026, 9, 14));
     expect(r.to).toBe(now.getTime());
     expect(new Date(computeRange("this", 1, "months", now).from)).toEqual(new Date(2026, 9, 1));
     expect(new Date(computeRange("this", 1, "years", now).from)).toEqual(new Date(2026, 0, 1));
-    expect(new Date(computeRange("last", 0, "days", now).from)).toEqual(new Date(2026, 9, 20, 15, 0)); // min 1
+    expect(new Date(computeRange("last", 0, "days", now).from)).toEqual(new Date(2026, 9, 20)); // min 1
+    expect(new Date(computeRange("last", 1, "months", now).from)).toEqual(new Date(2026, 8, 21));
   });
 
   it("donne la période précédente de même durée", () => {
@@ -109,6 +111,7 @@ describe("période", () => {
     expect(variation(3, 0)).toBeNull();
     expect(variation(0, 0)).toBe(0);
   });
+
 });
 
 describe("chronologie et répartition horaire", () => {
@@ -154,8 +157,14 @@ describe("points d'attention", () => {
     const texts = buildInsights(current, previous).map((i) => i.text);
     expect(texts.some((t) => t.startsWith("2 alertes de sévérité élevée"))).toBe(true);
     expect(texts.some((t) => t.startsWith("1 alerte ouverte concerne des données sensibles"))).toBe(true);
-    expect(texts.some((t) => t.includes("hausse de 200 %"))).toBe(true);
     expect(texts.some((t) => t.includes("Taux de traitement : 33 %"))).toBe(true);
+  });
+
+  it("ne signale une hausse de volume que sur une base d'au moins 10 alertes", () => {
+    const many = (n: number, p: string) => Array.from({ length: n }, (_, i) => alert(p + i, { status: "CLOSED" }));
+    const hausse = (prev: number) => buildInsights(many(15, "c"), many(prev, "p")).some((i) => i.text.includes("hausse"));
+    expect(hausse(10)).toBe(true);  // 10 -> 15 : +50 %
+    expect(hausse(2)).toBe(false);  // base trop petite
   });
 
   it("ne produit rien sans alerte", () => {
@@ -231,8 +240,8 @@ describe("pilotage SOC", () => {
       alert("2", { generationTime: daysAgo(1) }),
     ];
     const texts = buildInsights(all, [], all, now).map((i) => i.text);
-    expect(texts).toContain("1 alerte élevée est ouverte depuis plus de 7 jours.");
-    expect(texts).toContain("Arriéré : 1 alerte ouverte depuis plus de 30 jours.");
+    expect(texts).toContain("1 alerte élevée est ouverte depuis plus de 7 jours (toutes périodes confondues).");
+    expect(texts).toContain("Arriéré (toutes périodes) : 1 alerte ouverte depuis plus de 30 jours.");
     expect(texts).toContain("1 alerte ouverte touche des ressources taguées (données critiques).");
   });
 });
