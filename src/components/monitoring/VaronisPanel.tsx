@@ -18,7 +18,7 @@ import {
 } from "recharts";
 import {
   summarizeAlerts, normalizeSeverity, formatStatus, alertDate, isOpen,
-  computeRange, previousRange, filterByRange, dataCoverage, variation,
+  computeRange, previousRange, filterByRange, dataCoverage, compareCounts,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
   threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
   SEVERITY_LABELS, type ThreatFamily,
@@ -60,14 +60,16 @@ async function fetchVaronisAlerts(onProgress: (progress: number | null) => void)
 
 // --- Présentation -----------------------------------------------------------
 
-const SEVERITY_ORDER: SeverityLevel[] = ["high", "medium", "low", "unknown"];
+// Mêmes couleurs que la console Varonis
+const SEVERITY_ORDER: SeverityLevel[] = ["high", "medium", "low", "info", "unknown"];
 const SEVERITY_COLORS: Record<SeverityLevel, string> = {
-  high: "#ef4444", medium: "#f97316", low: "#10b981", unknown: "#94a3b8",
+  high: "#ef4444", medium: "#f97316", low: "#eab308", info: "#16a34a", unknown: "#94a3b8",
 };
 const SEVERITY_BADGE: Record<SeverityLevel, string> = {
   high: "bg-red-500/15 text-red-600 border-red-500/30",
   medium: "bg-orange-500/15 text-orange-600 border-orange-500/30",
-  low: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
+  low: "bg-yellow-500/15 text-yellow-600 border-yellow-500/30",
+  info: "bg-green-600/15 text-green-600 border-green-600/30",
   unknown: "bg-muted text-muted-foreground border-border",
 };
 const GRANULARITY_LABEL: Record<Granularity, string> = {
@@ -101,17 +103,22 @@ function formatBucket(t: number, g: Granularity): string {
   return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
 }
 
-/** Évolution vs période précédente : une hausse d'alertes est mauvaise (rouge). */
-function TrendBadge({ value }: { readonly value: number | null }) {
-  if (value === null) return <span className="text-[11px] text-muted-foreground">comparaison indisponible</span>;
-  if (value === 0) {
-    return <span className="inline-flex items-center gap-1 text-[11px] font-bold text-muted-foreground"><Minus className="w-3 h-3" /> stable</span>;
+/**
+ * Évolution vs période précédente : une hausse d'alertes est mauvaise (rouge).
+ * Sous 10 alertes sur la période précédente, l'écart est donné en nombre.
+ */
+function TrendBadge({ current, previous, comparable }: { readonly current: number; readonly previous: number; readonly comparable: boolean }) {
+  if (!comparable) return <span className="text-[11px] text-muted-foreground">comparaison indisponible</span>;
+  const { delta, pct, absolute } = compareCounts(current, previous);
+  if (delta === 0) {
+    return <span className="inline-flex items-center gap-1 text-[11px] font-bold text-muted-foreground"><Minus className="w-3 h-3" /> stable vs période préc.</span>;
   }
-  const up = value > 0;
+  const up = delta > 0;
   const Icon = up ? TrendingUp : TrendingDown;
+  const text = absolute || pct === null ? `${up ? "+" : ""}${delta}` : `${up ? "+" : ""}${pct} %`;
   return (
     <span className={`inline-flex items-center gap-1 text-[11px] font-bold ${up ? "text-red-500" : "text-emerald-500"}`}>
-      <Icon className="w-3 h-3" /> {up ? "+" : ""}{value} % vs période préc.
+      <Icon className="w-3 h-3" /> {text} vs période préc.
     </span>
   );
 }
@@ -151,9 +158,9 @@ export default function VaronisPanel() {
       totalReceived: all.length,
       current,
       summary,
-      volumeTrend: canCompare ? variation(current.length, previous.length) : null,
+      previousCount: previous.length,
       highRaised: countHigh(current),
-      highTrend: canCompare ? variation(countHigh(current), countHigh(previous)) : null,
+      previousHigh: countHigh(previous),
       granularity,
       timeline: buildTimeline(current, range, granularity).map((p) => ({ ...p, label: formatBucket(p.start, granularity) })),
       hourly: hourlyDistribution(current),
@@ -309,7 +316,7 @@ export default function VaronisPanel() {
               </CardHeader>
               <CardContent>
                 <div className="text-3xl font-black text-foreground">{summary.total.toLocaleString("fr-FR")}</div>
-                <div className="mt-1"><TrendBadge value={view.volumeTrend} /></div>
+                <div className="mt-1"><TrendBadge current={summary.total} previous={view.previousCount} comparable={view.canCompare} /></div>
               </CardContent>
             </Card>
 
@@ -334,7 +341,7 @@ export default function VaronisPanel() {
               <CardContent>
                 <div className={`text-3xl font-black ${summary.openHigh > 0 ? "text-red-500" : "text-foreground"}`}>{summary.openHigh}</div>
                 <p className="text-[11px] font-medium text-muted-foreground mt-1">{view.highRaised} levées sur la période</p>
-                <div><TrendBadge value={view.highTrend} /></div>
+                <div><TrendBadge current={view.highRaised} previous={view.previousHigh} comparable={view.canCompare} /></div>
               </CardContent>
             </Card>
 
@@ -370,7 +377,7 @@ export default function VaronisPanel() {
                     <span className="text-xs text-muted-foreground">ouverte{t.open > 1 ? "s" : ""} · {t.total} sur la période</span>
                   </div>
                   <div className="mt-1">
-                    <TrendBadge value={view.canCompare ? variation(t.total, t.previous) : null} />
+                    <TrendBadge current={t.total} previous={t.previous} comparable={view.canCompare} />
                   </div>
                 </div>
               );
@@ -550,7 +557,7 @@ export default function VaronisPanel() {
                     <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
                     <RechartsTooltip {...TOOLTIP_STYLE} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
                     <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                    {SEVERITY_ORDER.filter((s) => s !== "unknown" || view.timeline.some((p) => p.unknown > 0)).map((s) => (
+                    {SEVERITY_ORDER.filter((s) => (s !== "info" && s !== "unknown") || view.timeline.some((p) => p[s] > 0)).map((s) => (
                       <Bar key={s} dataKey={s} name={SEVERITY_LABELS[s]} stackId="sev" fill={SEVERITY_COLORS[s]} radius={s === "high" ? [3, 3, 0, 0] : 0} />
                     ))}
                   </BarChart>
@@ -631,7 +638,7 @@ export default function VaronisPanel() {
                   <Volume2 className="w-4 h-4 text-violet-500" /> Politiques : volume et bruit
                 </CardTitle>
                 <p className="text-[11px] text-muted-foreground">
-                  « Bruit probable » : sévérité faible ou moyenne et au moins 15 % des alertes de la période — réglage à envisager
+                  « Bruit » : sévérité faible, moyenne ou information et au moins 15 % des alertes de la période — réglage à envisager
                 </p>
               </CardHeader>
               <CardContent className="pt-2">
@@ -658,7 +665,7 @@ export default function VaronisPanel() {
                           <TableCell className="text-right">{p.open}</TableCell>
                           <TableCell className="text-right text-muted-foreground whitespace-nowrap">{p.closedPct} %</TableCell>
                           <TableCell>
-                            {p.noisy && <Badge variant="outline" className="bg-violet-500/15 text-violet-600 border-violet-500/30 whitespace-nowrap">Bruit probable</Badge>}
+                            {p.noisy && <Badge variant="outline" title="Bruit probable : réglage de la politique à envisager" className="bg-violet-500/15 text-violet-600 border-violet-500/30 whitespace-nowrap">Bruit</Badge>}
                           </TableCell>
                         </TableRow>
                       ))}

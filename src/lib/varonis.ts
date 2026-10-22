@@ -27,12 +27,14 @@ export interface VaronisProxyResponse {
   alerts?: VaronisAlert[] | null;
 }
 
-export type SeverityLevel = "high" | "medium" | "low" | "unknown";
+// Mêmes niveaux que la console Varonis (High, Medium, Low, Informational)
+export type SeverityLevel = "high" | "medium" | "low" | "info" | "unknown";
 
 export const SEVERITY_LABELS: Record<SeverityLevel, string> = {
   high: "Élevée",
   medium: "Moyenne",
   low: "Faible",
+  info: "Information",
   unknown: "Non renseignée",
 };
 
@@ -41,6 +43,7 @@ export function normalizeSeverity(severity?: string | null): SeverityLevel {
   if (s.includes("crit") || s.includes("high") || s.includes("élev") || s.includes("haut")) return "high";
   if (s.includes("med") || s.includes("moy")) return "medium";
   if (s.includes("low") || s.includes("faib") || s.includes("bas")) return "low";
+  if (s.includes("info")) return "info";
   return "unknown";
 }
 
@@ -91,7 +94,7 @@ export interface VaronisSummary {
 
 export function summarizeAlerts(alerts: VaronisAlert[], latestLimit = 20): VaronisSummary {
   const open = alerts.filter(isOpen);
-  const bySeverity: Record<SeverityLevel, number> = { high: 0, medium: 0, low: 0, unknown: 0 };
+  const bySeverity: Record<SeverityLevel, number> = { high: 0, medium: 0, low: 0, info: 0, unknown: 0 };
   for (const a of open) bySeverity[normalizeSeverity(a.policy?.severity)]++;
 
   const policies = countBy(open, (a) => a.policy?.name || "Politique inconnue");
@@ -130,8 +133,9 @@ export function computeRange(prefix: TimePrefix, value: number, unit: TimeUnit, 
     if (unit === "months") return { from: new Date(y, m, 1).getTime(), to: now.getTime() };
     return { from: new Date(y, 0, 1).getTime(), to: now.getTime() };
   }
+  // Depuis minuit du jour de départ, comme la console Varonis (« from 30 days ago »)
   const n = Math.max(1, Math.floor(value) || 1);
-  const from = new Date(now);
+  const from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (unit === "days") from.setDate(from.getDate() - n);
   else if (unit === "months") from.setMonth(from.getMonth() - n);
   else from.setFullYear(from.getFullYear() - n);
@@ -162,6 +166,14 @@ export function dataCoverage(alerts: VaronisAlert[]): { oldest: Date; newest: Da
 export function variation(current: number, previous: number): number | null {
   if (previous === 0) return current === 0 ? 0 : null;
   return Math.round(((current - previous) / previous) * 100);
+}
+
+/**
+ * Comparaison avec la période précédente. Sous 10 alertes, un pourcentage
+ * trompe (« +200 % » pour 2 -> 6) : on affiche alors l'écart en nombre.
+ */
+export function compareCounts(current: number, previous: number): { delta: number; pct: number | null; absolute: boolean } {
+  return { delta: current - previous, pct: variation(current, previous), absolute: previous < 10 };
 }
 
 export type Granularity = "hour" | "day" | "week" | "month";
@@ -196,13 +208,13 @@ function nextBucket(t: number, g: Granularity): number {
   return d.getTime();
 }
 
-export interface TimelinePoint { start: number; high: number; medium: number; low: number; unknown: number; total: number }
+export interface TimelinePoint { start: number; high: number; medium: number; low: number; info: number; unknown: number; total: number }
 
 /** Alertes par intervalle (heure, jour, semaine ou mois), ventilées par sévérité. */
 export function buildTimeline(alerts: VaronisAlert[], range: TimeRange, g = granularityFor(range)): TimelinePoint[] {
   const points = new Map<number, TimelinePoint>();
   for (let t = bucketStart(range.from, g); t <= range.to; t = nextBucket(t, g)) {
-    points.set(t, { start: t, high: 0, medium: 0, low: 0, unknown: 0, total: 0 });
+    points.set(t, { start: t, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 });
   }
   for (const a of alerts) {
     const t = alertDate(a)?.getTime();
@@ -369,7 +381,7 @@ export function policyNoise(alerts: VaronisAlert[]): PolicyNoise[] {
         open,
         closedPct: Math.round(((list.length - open) / list.length) * 100),
         share,
-        noisy: (severity === "low" || severity === "medium") && share >= 15,
+        noisy: (severity === "low" || severity === "medium" || severity === "info") && share >= 15,
       };
     })
     .sort((a, b) => b.total - a.total);
@@ -398,7 +410,7 @@ export function buildInsights(
   }
   const ages = openAgeBuckets(allAlerts, now);
   if (ages.highGt7 > 0) {
-    insights.push({ level: "critical", text: `${ages.highGt7} ${plural(ages.highGt7, "alerte élevée est ouverte", "alertes élevées sont ouvertes")} depuis plus de 7 jours.` });
+    insights.push({ level: "critical", text: `${ages.highGt7} ${plural(ages.highGt7, "alerte élevée est ouverte", "alertes élevées sont ouvertes")} depuis plus de 7 jours (toutes périodes confondues).` });
   }
   const ransomware = current.filter((a) => threatFamily(a) === "ransomware" && isOpen(a)).length;
   if (ransomware > 0) {
@@ -412,7 +424,7 @@ export function buildInsights(
     insights.push({ level: "warning", text: `${s.sensitive} ${plural(s.sensitive, "alerte ouverte concerne", "alertes ouvertes concernent")} des données sensibles.` });
   }
   if (ages.gt30 > 0) {
-    insights.push({ level: "warning", text: `Arriéré : ${ages.gt30} ${plural(ages.gt30, "alerte ouverte", "alertes ouvertes")} depuis plus de 30 jours.` });
+    insights.push({ level: "warning", text: `Arriéré (toutes périodes) : ${ages.gt30} ${plural(ages.gt30, "alerte ouverte", "alertes ouvertes")} depuis plus de 30 jours.` });
   }
   const evo = variation(current.length, previous.length);
   if (evo !== null && Math.abs(evo) >= 20 && previous.length > 0) {
