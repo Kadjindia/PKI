@@ -13,6 +13,7 @@ import {
   ShieldAlert, AlertOctagon, Database, Bell, RefreshCw, Loader2, AlertTriangle, Inbox,
   Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks,
   Lock, Upload, UserCog, Trash2, Hourglass, Users, Tag, Zap, Volume2,
+  ShieldCheck, Server, UserCheck, ExternalLink,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -23,6 +24,8 @@ import {
   computeRange, previousRange, filterByRange, dataCoverage,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
   threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
+  verdictStats, dataSourceStats, closedByStats, openEscalations, safeAlertUrl,
+  VERDICT_LABELS, ESCALATION_LABELS, type Verdict, type EscalationType,
   SEVERITY_LABELS, type ThreatFamily,
   type SeverityLevel, type VaronisAlert, type VaronisProxyResponse, type TimePrefix, type TimeUnit, type Granularity, type Insight,
 } from "@/lib/varonis";
@@ -82,6 +85,11 @@ const INSIGHT_STYLE: Record<Insight["level"], { icon: typeof Info; className: st
   warning: { icon: AlertTriangle, className: "text-orange-500 bg-orange-500/10 border-orange-500/20" },
   info: { icon: Info, className: "text-sky-500 bg-sky-500/10 border-sky-500/20" },
 };
+const VERDICT_COLORS: Record<Verdict, string> = {
+  truePositive: "bg-red-500", falsePositive: "bg-slate-400", other: "bg-sky-500",
+};
+const ESCALATION_ORDER: EscalationType[] = ["MITIGATION", "VALIDATION", "INFORMATION"];
+
 const THREAT_ICONS: Record<ThreatFamily, typeof Info> = {
   ransomware: Lock, exfiltration: Upload, privileges: UserCog, destruction: Trash2,
 };
@@ -175,6 +183,10 @@ export default function VaronisPanel() {
       spikes: eventSpikes(current),
       noise: policyNoise(current).slice(0, 8),
       taggedOpen: current.filter((a) => isOpen(a) && a.hasTaggedResource).length,
+      verdicts: verdictStats(current),
+      sources: dataSourceStats(current).slice(0, 6),
+      closers: closedByStats(current),
+      escalations: openEscalations(all),
       treatedPct: summary.total ? Math.round(((summary.total - summary.open) / summary.total) * 100) : 0,
     };
   }, [data, timePrefix, timeValue, timeUnit]);
@@ -508,6 +520,17 @@ export default function VaronisPanel() {
                     </div>
                   ));
                 })()}
+                <div className="border-t border-border pt-3">
+                  <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">Escalades Varonis en attente de votre action</p>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    {ESCALATION_ORDER.map((t) => (
+                      <div key={t} className={`rounded-lg border p-2 ${t === "MITIGATION" && view.escalations[t] > 0 ? "border-red-500/40 bg-red-500/5" : "border-border"}`}>
+                        <div className={`text-lg font-black ${t === "MITIGATION" && view.escalations[t] > 0 ? "text-red-500" : "text-foreground"}`}>{view.escalations[t]}</div>
+                        <div className="text-[11px] text-muted-foreground">{ESCALATION_LABELS[t]}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </CardContent>
             </Card>
 
@@ -535,6 +558,113 @@ export default function VaronisPanel() {
                       </li>
                     ))}
                   </ul>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* LIGNE 2 TER : QUALITÉ DE DÉTECTION + SOURCES + CLÔTURE */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-500" /> Verdict des alertes clôturées
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">
+                  D&apos;après le motif de clôture, sur {view.verdicts.classified} alerte{view.verdicts.classified > 1 ? "s" : ""} clôturée{view.verdicts.classified > 1 ? "s" : ""} avec un motif
+                </p>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-3">
+                {view.verdicts.classified === 0 ? (
+                  <p className="text-sm text-muted-foreground">Aucun motif de clôture sur la période.</p>
+                ) : (
+                  <>
+                    <div className="flex h-3 rounded-full overflow-hidden bg-muted">
+                      {(["truePositive", "falsePositive", "other"] as Verdict[]).map((k) => (
+                        <div key={k} className={VERDICT_COLORS[k]} style={{ width: `${(view.verdicts[k] / view.verdicts.classified) * 100}%` }} />
+                      ))}
+                    </div>
+                    <ul className="space-y-1.5">
+                      {(["truePositive", "falsePositive", "other"] as Verdict[]).map((k) => (
+                        <li key={k} className="flex justify-between gap-3 text-sm">
+                          <span className="flex items-center gap-2 text-foreground"><span className={`w-2.5 h-2.5 rounded-full ${VERDICT_COLORS[k]}`} />{VERDICT_LABELS[k]}</span>
+                          <span className="font-bold">{view.verdicts[k]} <span className="text-muted-foreground font-normal">({Math.round((view.verdicts[k] / view.verdicts.classified) * 100)} %)</span></span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="border-t border-border pt-2">
+                      <p className="text-[11px] font-bold uppercase text-muted-foreground mb-1">Motifs les plus fréquents</p>
+                      {view.verdicts.reasons.slice(0, 4).map((r) => (
+                        <div key={r.name} className="flex justify-between gap-3 text-xs">
+                          <span className="truncate text-muted-foreground" title={r.name}>{r.name}</span>
+                          <span className="font-semibold">{r.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Server className="w-4 h-4 text-indigo-500" /> Où se produisent les alertes
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">Par type de source de données, sur la période</p>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-3">
+                {view.sources.map((src) => (
+                  <div key={src.label} className="space-y-1">
+                    <div className="flex justify-between gap-3 text-sm">
+                      <span className="truncate text-foreground" title={src.label}>{src.label}</span>
+                      <span className="font-bold shrink-0">{src.total}{src.open > 0 && <span className="text-amber-500 font-semibold"> · {src.open} ouverte{src.open > 1 ? "s" : ""}</span>}</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div className="h-full bg-indigo-500" style={{ width: `${(src.total / Math.max(1, view.sources[0]?.total ?? 1)) * 100}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 text-violet-500" /> Qui clôture les alertes
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">Alertes clôturées sur la période</p>
+              </CardHeader>
+              <CardContent className="pt-4 space-y-3">
+                {(() => {
+                  const c = view.closers;
+                  const total = Math.max(1, c.varonis + c.internal + c.unknown);
+                  return [
+                    { label: "Équipe interne", value: c.internal, color: "bg-sky-500" },
+                    { label: "Varonis (MDR)", value: c.varonis, color: "bg-violet-500" },
+                    ...(c.unknown > 0 ? [{ label: "Non renseigné", value: c.unknown, color: "bg-slate-400" }] : []),
+                  ].map((r) => (
+                    <div key={r.label} className="space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-foreground">{r.label}</span>
+                        <span className="font-bold">{r.value} <span className="text-muted-foreground font-normal">({Math.round((r.value / total) * 100)} %)</span></span>
+                      </div>
+                      <div className="h-2 rounded-full bg-muted overflow-hidden">
+                        <div className={`h-full ${r.color}`} style={{ width: `${(r.value / total) * 100}%` }} />
+                      </div>
+                    </div>
+                  ));
+                })()}
+                {view.closers.analysts.length > 0 && (
+                  <div className="border-t border-border pt-2">
+                    <p className="text-[11px] font-bold uppercase text-muted-foreground mb-1">Analystes internes</p>
+                    {view.closers.analysts.map((a) => (
+                      <div key={a.name} className="flex justify-between gap-3 text-xs">
+                        <span className="truncate text-muted-foreground" title={a.name}>{a.name}</span>
+                        <span className="font-semibold">{a.count}</span>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -640,7 +770,7 @@ export default function VaronisPanel() {
                   <Volume2 className="w-4 h-4 text-violet-500" /> Politiques : volume et bruit
                 </CardTitle>
                 <p className="text-[11px] text-muted-foreground">
-                  « Bruit » : sévérité faible, moyenne ou information et au moins 15 % des alertes de la période — réglage à envisager
+                  « Bruit » : au moins 15 % des alertes avec une sévérité faible, moyenne ou information, ou une majorité de faux positifs — réglage à envisager
                 </p>
               </CardHeader>
               <CardContent className="pt-2">
@@ -653,7 +783,7 @@ export default function VaronisPanel() {
                         <TableHead className="text-right">Alertes</TableHead>
                         <TableHead className="text-right">Part</TableHead>
                         <TableHead className="text-right">Ouvertes</TableHead>
-                        <TableHead className="text-right">Fermées</TableHead>
+                        <TableHead className="text-right whitespace-nowrap">Faux positifs</TableHead>
                         <TableHead />
                       </TableRow>
                     </TableHeader>
@@ -665,7 +795,9 @@ export default function VaronisPanel() {
                           <TableCell className="text-right font-bold">{p.total}</TableCell>
                           <TableCell className="text-right text-muted-foreground whitespace-nowrap">{p.share} %</TableCell>
                           <TableCell className="text-right">{p.open}</TableCell>
-                          <TableCell className="text-right text-muted-foreground whitespace-nowrap">{p.closedPct} %</TableCell>
+                          <TableCell className={`text-right whitespace-nowrap ${p.falsePositivePct !== null && p.falsePositivePct >= 50 ? "text-violet-600 font-bold" : "text-muted-foreground"}`}>
+                            {p.falsePositivePct === null ? "—" : `${p.falsePositivePct} %`}
+                          </TableCell>
                           <TableCell>
                             {p.noisy && <Badge variant="outline" title="Bruit probable : réglage de la politique à envisager" className="bg-violet-500/15 text-violet-600 border-violet-500/30 whitespace-nowrap">Bruit</Badge>}
                           </TableCell>
@@ -697,6 +829,7 @@ export default function VaronisPanel() {
                       <TableHead>Statut</TableHead>
                       <TableHead className="text-right">Événements</TableHead>
                       <TableHead>Données sensibles</TableHead>
+                      <TableHead />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -718,6 +851,13 @@ export default function VaronisPanel() {
                             {a.hasSensitiveResource
                               ? <Badge variant="outline" className="bg-orange-500/15 text-orange-600 border-orange-500/30">Oui</Badge>
                               : <span className="text-sm text-muted-foreground">Non</span>}
+                          </TableCell>
+                          <TableCell>
+                            {safeAlertUrl(a) && (
+                              <a href={safeAlertUrl(a)!} target="_blank" rel="noopener noreferrer" title="Ouvrir l'alerte dans Varonis" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline whitespace-nowrap">
+                                <ExternalLink className="w-3.5 h-3.5" /> Varonis
+                              </a>
+                            )}
                           </TableCell>
                         </TableRow>
                       );

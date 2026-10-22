@@ -17,6 +17,11 @@ export interface VaronisAlert {
     severity?: string | null;
     category?: string | null;
   } | null;
+  closeReason?: { id?: string | null; name?: string | null } | null;
+  closedBy?: { name?: string | null } | null;
+  dataSource?: { id?: string | null; name?: string | null; type?: string | null }[] | null;
+  escalationType?: string | null;
+  url?: string | null;
 }
 
 export interface VaronisProxyResponse {
@@ -348,6 +353,7 @@ export interface PolicyNoise {
   open: number;
   closedPct: number;
   share: number; // part des alertes de la période, en %
+  falsePositivePct: number | null; // parmi les alertes clôturées avec un motif
   noisy: boolean;
 }
 
@@ -366,6 +372,8 @@ export function policyNoise(alerts: VaronisAlert[]): PolicyNoise[] {
       const open = list.filter(isOpen).length;
       const severity = normalizeSeverity(list[0].policy?.severity);
       const share = Math.round((list.length / alerts.length) * 100);
+      const v = verdictStats(list);
+      const falsePositivePct = v.classified > 0 ? Math.round((v.falsePositive / v.classified) * 100) : null;
       return {
         name,
         severity,
@@ -373,10 +381,144 @@ export function policyNoise(alerts: VaronisAlert[]): PolicyNoise[] {
         open,
         closedPct: Math.round(((list.length - open) / list.length) * 100),
         share,
-        noisy: (severity === "low" || severity === "medium" || severity === "info") && share >= 15,
+        falsePositivePct,
+        // Bruit : beaucoup d'alertes peu graves, ou majorité de faux positifs (sur au moins 5 verdicts)
+        noisy: ((severity === "low" || severity === "medium" || severity === "info") && share >= 15)
+          || (falsePositivePct !== null && falsePositivePct >= 50 && v.classified >= 5),
       };
     })
     .sort((a, b) => b.total - a.total);
+}
+
+// ---------------------------------------------------------------------------
+// Étape 2 : verdicts, sources de données, clôture, escalades
+// ---------------------------------------------------------------------------
+
+export type Verdict = "truePositive" | "falsePositive" | "other";
+
+export const VERDICT_LABELS: Record<Verdict, string> = {
+  truePositive: "Menace avérée",
+  falsePositive: "Faux positif / activité légitime",
+  other: "Autre motif",
+};
+
+// Motifs de clôture Varonis (en partie personnalisables) : classés par mots-clés
+const TRUE_POSITIVE_KEYS = ["true positive", "vrai positif", "malicious", "malveillant", "confirmed", "confirmé", "incident"];
+const FALSE_POSITIVE_KEYS = ["false positive", "faux positif", "benign", "bénin", "légitime", "legitimate", "not relevant", "non pertinent", "authorized", "autorisé", "expected", "attendu"];
+
+export function closeVerdict(alert: VaronisAlert): Verdict | null {
+  const reason = (alert.closeReason?.name ?? "").toLowerCase();
+  if (!reason) return null;
+  if (FALSE_POSITIVE_KEYS.some((k) => reason.includes(k))) return "falsePositive";
+  if (TRUE_POSITIVE_KEYS.some((k) => reason.includes(k))) return "truePositive";
+  return "other";
+}
+
+export interface VerdictStats {
+  closed: number;
+  classified: number; // alertes clôturées avec un motif renseigné
+  truePositive: number;
+  falsePositive: number;
+  other: number;
+  reasons: { name: string; count: number; verdict: Verdict }[];
+}
+
+/** Verdicts des alertes clôturées (motif de clôture). */
+export function verdictStats(alerts: VaronisAlert[]): VerdictStats {
+  const closed = alerts.filter((a) => !isOpen(a));
+  const stats: VerdictStats = { closed: closed.length, classified: 0, truePositive: 0, falsePositive: 0, other: 0, reasons: [] };
+  const reasons = new Map<string, { count: number; verdict: Verdict }>();
+  for (const a of closed) {
+    const v = closeVerdict(a);
+    if (!v) continue;
+    stats.classified++;
+    stats[v]++;
+    const name = a.closeReason?.name ?? "";
+    reasons.set(name, { count: (reasons.get(name)?.count ?? 0) + 1, verdict: v });
+  }
+  stats.reasons = [...reasons.entries()]
+    .map(([name, r]) => ({ name, ...r }))
+    .sort((a, b) => b.count - a.count);
+  return stats;
+}
+
+const DATA_SOURCE_LABELS: Record<string, string> = {
+  windows: "Serveurs de fichiers Windows",
+  sharepointonline: "SharePoint Online",
+  sharepoint: "SharePoint",
+  exchangeonline: "Exchange Online",
+  exchange: "Exchange",
+  onedrive: "OneDrive",
+  activedirectory: "Active Directory",
+  azureactivedirectory: "Entra ID (Azure AD)",
+  entraid: "Entra ID (Azure AD)",
+  teams: "Teams",
+  nas: "NAS",
+  netapp: "NetApp",
+  unix: "Serveurs Unix/Linux",
+};
+
+export function dataSourceLabel(type?: string | null, name?: string | null): string {
+  if (!type) return name || "Source inconnue";
+  return DATA_SOURCE_LABELS[type.toLowerCase().replace(/[^a-z]/g, "")] ?? type;
+}
+
+/** Alertes par type de source de données (une alerte compte une fois par type). */
+export function dataSourceStats(alerts: VaronisAlert[]): { label: string; total: number; open: number }[] {
+  const map = new Map<string, { total: number; open: number }>();
+  for (const a of alerts) {
+    const labels = new Set((a.dataSource ?? []).map((d) => dataSourceLabel(d?.type, d?.name)));
+    if (labels.size === 0) labels.add("Source inconnue");
+    for (const label of labels) {
+      const e = map.get(label) ?? { total: 0, open: 0 };
+      e.total++;
+      if (isOpen(a)) e.open++;
+      map.set(label, e);
+    }
+  }
+  return [...map.entries()]
+    .map(([label, e]) => ({ label, ...e }))
+    .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label));
+}
+
+/** Qui a clôturé les alertes : Varonis (MDR) ou l'équipe interne (par analyste). */
+export function closedByStats(alerts: VaronisAlert[]): { varonis: number; internal: number; unknown: number; analysts: { name: string; count: number }[] } {
+  const r = { varonis: 0, internal: 0, unknown: 0, analysts: [] as { name: string; count: number }[] };
+  const analysts = new Map<string, number>();
+  for (const a of alerts.filter((x) => !isOpen(x))) {
+    const name = (a.closedBy?.name ?? "").trim();
+    if (!name) r.unknown++;
+    else if (name.toLowerCase().includes("varonis")) r.varonis++;
+    else {
+      r.internal++;
+      analysts.set(name, (analysts.get(name) ?? 0) + 1);
+    }
+  }
+  r.analysts = [...analysts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5);
+  return r;
+}
+
+export type EscalationType = "MITIGATION" | "VALIDATION" | "INFORMATION";
+export const ESCALATION_LABELS: Record<EscalationType, string> = {
+  MITIGATION: "Remédiation",
+  VALIDATION: "Validation",
+  INFORMATION: "Information",
+};
+
+/** Alertes ouvertes escaladées par Varonis, par type d'escalade attendu. */
+export function openEscalations(alerts: VaronisAlert[]): Record<EscalationType, number> {
+  const r: Record<EscalationType, number> = { MITIGATION: 0, VALIDATION: 0, INFORMATION: 0 };
+  for (const a of alerts.filter(isOpen)) {
+    const t = (a.escalationType ?? "").toUpperCase() as EscalationType;
+    if (t in r) r[t]++;
+  }
+  return r;
+}
+
+/** URL de l'alerte dans la console Varonis, seulement si http(s). */
+export function safeAlertUrl(alert: VaronisAlert): string | null {
+  const u = alert.url ?? "";
+  return /^https?:\/\//i.test(u) ? u : null;
 }
 
 export interface Insight { level: "critical" | "warning" | "info"; text: string }
@@ -403,6 +545,10 @@ export function buildInsights(
   const ages = openAgeBuckets(allAlerts, now);
   if (ages.highGt7 > 0) {
     insights.push({ level: "critical", text: `${ages.highGt7} ${plural(ages.highGt7, "alerte élevée est ouverte", "alertes élevées sont ouvertes")} depuis plus de 7 jours (toutes périodes confondues).` });
+  }
+  const mitigation = openEscalations(allAlerts).MITIGATION;
+  if (mitigation > 0) {
+    insights.push({ level: "critical", text: `${mitigation} ${plural(mitigation, "alerte escaladée par Varonis attend", "alertes escaladées par Varonis attendent")} une action de remédiation de votre part.` });
   }
   const ransomware = current.filter((a) => threatFamily(a) === "ransomware" && isOpen(a)).length;
   if (ransomware > 0) {
@@ -431,9 +577,16 @@ export function buildInsights(
   if (offPct >= 30) {
     insights.push({ level: "warning", text: `${offPct} % des alertes surviennent hors heures ouvrées (soir, nuit ou week-end).` });
   }
+  const v = verdictStats(current);
+  if (v.classified >= 10) {
+    const fp = Math.round((v.falsePositive / v.classified) * 100);
+    if (fp >= 50) {
+      insights.push({ level: "warning", text: `${fp} % des alertes clôturées sont des faux positifs ou une activité légitime : des politiques sont à régler.` });
+    }
+  }
   const noisy = policyNoise(current).filter((p) => p.noisy);
   if (noisy.length > 0) {
-    insights.push({ level: "info", text: `${noisy.length} ${plural(noisy.length, "politique génère", "politiques génèrent")} beaucoup d'alertes peu graves : réglage à envisager (« ${noisy[0].name} »).` });
+    insights.push({ level: "info", text: `${noisy.length} ${plural(noisy.length, "politique génère", "politiques génèrent")} surtout du bruit (alertes peu graves ou faux positifs) : réglage à envisager (« ${noisy[0].name} »).` });
   }
   const treated = s.total - s.open;
   insights.push({ level: "info", text: `Taux de traitement : ${Math.round((treated / s.total) * 100)} % des alertes de la période sont fermées.` });

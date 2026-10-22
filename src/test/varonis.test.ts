@@ -4,6 +4,7 @@ import {
   computeRange, previousRange, filterByRange, dataCoverage, variation,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
   threatFamily, threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
+  closeVerdict, verdictStats, dataSourceLabel, dataSourceStats, closedByStats, openEscalations, safeAlertUrl,
 } from "@/lib/varonis";
 
 const alert = (id: string, over: Partial<VaronisAlert> = {}): VaronisAlert => ({
@@ -243,5 +244,83 @@ describe("pilotage SOC", () => {
     expect(texts).toContain("1 alerte élevée est ouverte depuis plus de 7 jours (toutes périodes confondues).");
     expect(texts).toContain("Arriéré (toutes périodes) : 1 alerte ouverte depuis plus de 30 jours.");
     expect(texts).toContain("1 alerte ouverte touche des ressources taguées (données critiques).");
+  });
+});
+
+describe("étape 2 : verdicts, sources, clôture, escalades", () => {
+  const closed = (id: string, reason: string | null, over: Partial<VaronisAlert> = {}) =>
+    alert(id, { status: "CLOSED", closeReason: reason ? { name: reason } : null, ...over });
+
+  it("classe les motifs de clôture", () => {
+    expect(closeVerdict(closed("1", "True Positive"))).toBe("truePositive");
+    expect(closeVerdict(closed("2", "False Positive"))).toBe("falsePositive");
+    expect(closeVerdict(closed("3", "Benign Activity"))).toBe("falsePositive");
+    expect(closeVerdict(closed("4", "Not Relevant"))).toBe("falsePositive");
+    expect(closeVerdict(closed("5", "Resolved"))).toBe("other");
+    expect(closeVerdict(closed("6", null))).toBeNull();
+  });
+
+  it("calcule les verdicts des alertes clôturées uniquement", () => {
+    const list = [closed("1", "True Positive"), closed("2", "Benign Activity"), closed("3", "Benign Activity"), closed("4", null), alert("5")];
+    const v = verdictStats(list);
+    expect(v).toMatchObject({ closed: 4, classified: 3, truePositive: 1, falsePositive: 2, other: 0 });
+    expect(v.reasons[0]).toEqual({ name: "Benign Activity", count: 2, verdict: "falsePositive" });
+  });
+
+  it("signale comme bruit une politique majoritairement en faux positifs", () => {
+    const list = Array.from({ length: 6 }, (_, i) => closed("f" + i, i < 4 ? "False Positive" : "True Positive", { policy: { name: "P", severity: "High" } }));
+    const extra = Array.from({ length: 40 }, (_, i) => alert("x" + i, { policy: { name: "Autre", severity: "High" } }));
+    const p = policyNoise([...list, ...extra]).find((r) => r.name === "P");
+    expect(p).toMatchObject({ falsePositivePct: 67, noisy: true });
+  });
+
+  it("libelle et compte les sources de données (une fois par type et par alerte)", () => {
+    expect(dataSourceLabel("SharePointOnline")).toBe("SharePoint Online");
+    expect(dataSourceLabel("Windows")).toBe("Serveurs de fichiers Windows");
+    expect(dataSourceLabel("NouveauType")).toBe("NouveauType");
+    expect(dataSourceLabel(null, "FS01")).toBe("FS01");
+    const list = [
+      alert("1", { dataSource: [{ type: "Windows", name: "FS01" }, { type: "Windows", name: "FS02" }] }),
+      alert("2", { dataSource: [{ type: "ExchangeOnline" }], status: "CLOSED" }),
+      alert("3", { dataSource: null }),
+    ];
+    expect(dataSourceStats(list)).toEqual([
+      { label: "Exchange Online", total: 1, open: 0 },
+      { label: "Serveurs de fichiers Windows", total: 1, open: 1 },
+      { label: "Source inconnue", total: 1, open: 1 },
+    ]);
+  });
+
+  it("répartit les clôtures entre Varonis et les analystes internes", () => {
+    const list = [
+      closed("1", "x", { closedBy: { name: "Varonis" } }),
+      closed("2", "x", { closedBy: { name: "j.dupont" } }),
+      closed("3", "x", { closedBy: { name: "j.dupont" } }),
+      closed("4", "x", { closedBy: null }),
+      alert("5", { closedBy: { name: "ignoré car ouverte" } }),
+    ];
+    expect(closedByStats(list)).toEqual({ varonis: 1, internal: 2, unknown: 1, analysts: [{ name: "j.dupont", count: 2 }] });
+  });
+
+  it("compte les escalades ouvertes par type", () => {
+    const list = [
+      alert("1", { escalationType: "MITIGATION" }),
+      alert("2", { escalationType: "VALIDATION" }),
+      alert("3", { escalationType: "MITIGATION", status: "CLOSED" }),
+      alert("4", { escalationType: null }),
+    ];
+    expect(openEscalations(list)).toEqual({ MITIGATION: 1, VALIDATION: 1, INFORMATION: 0 });
+  });
+
+  it("n'accepte que des liens http(s) vers Varonis", () => {
+    expect(safeAlertUrl(alert("1", { url: "https://tenant.varonis.io/alert/1" }))).toBe("https://tenant.varonis.io/alert/1");
+    expect(safeAlertUrl(alert("2", { url: "javascript:alert(1)" }))).toBeNull();
+    expect(safeAlertUrl(alert("3"))).toBeNull();
+  });
+
+  it("signale les remédiations attendues", () => {
+    const list = [alert("1", { escalationType: "MITIGATION" })];
+    const texts = buildInsights(list, [], list).map((i) => i.text);
+    expect(texts).toContain("1 alerte escaladée par Varonis attend une action de remédiation de votre part.");
   });
 });

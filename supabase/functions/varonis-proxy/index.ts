@@ -32,6 +32,11 @@ const ALERT_RESULT_FIELDS = `
     severity
     category
   }
+  closeReason { id name }
+  closedBy { name }
+  dataSource { id name type }
+  escalationType
+  url
 `;
 
 const corsHeaders = {
