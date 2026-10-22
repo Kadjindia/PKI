@@ -197,7 +197,7 @@ Deno.serve(async (req) => {
     const baseUrl = VARONIS_BASE_URL.trim().replace(/\/$/, "");
 
     // 3. Lancement du job, ou vérification d'un job déjà lancé
-    let body: { jobId?: unknown; action?: unknown; typeName?: unknown } = {};
+    let body: { jobId?: unknown; action?: unknown; typeName?: unknown; typeNames?: unknown } = {};
     try {
       body = (await req.json()) ?? {};
     } catch {
@@ -209,12 +209,19 @@ Deno.serve(async (req) => {
 
     // Mode diagnostic : { action: "schema", typeName: "Alert" }
     if (body.action === "schema") {
-      const typeName = typeof body.typeName === "string" ? body.typeName : "Alert";
-      if (!TYPE_NAME_PATTERN.test(typeName)) {
-        return jsonResponse({ error: "Nom de type invalide" }, 400);
+      // Un type (typeName) ou plusieurs d'un coup (typeNames, 15 au maximum)
+      const names = Array.isArray(body.typeNames)
+        ? body.typeNames
+        : [typeof body.typeName === "string" ? body.typeName : "Alert"];
+      if (names.length === 0 || names.length > 15 || !names.every((n) => typeof n === "string" && TYPE_NAME_PATTERN.test(n))) {
+        return jsonResponse({ error: "Noms de type invalides (15 au maximum)" }, 400);
       }
       const schemaToken = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
-      return jsonResponse({ type: await describeType(baseUrl, schemaToken, typeName) });
+      const types = [];
+      for (const n of names as string[]) {
+        types.push((await describeType(baseUrl, schemaToken, n)) ?? { name: n, missing: true });
+      }
+      return Array.isArray(body.typeNames) ? jsonResponse({ types }) : jsonResponse({ type: types[0] });
     }
 
     const token = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
