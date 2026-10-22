@@ -10,7 +10,7 @@ export const POSTURE_KEYS: PostureKey[] = [
   "expiredEnabled", "staleMemberships", "stalePermissions",
 ];
 
-interface Base { status: "pending" | "done" | "error"; error?: string; jobId?: string; progress?: number | null; partial?: boolean; capped?: boolean; count?: number }
+interface Base { status: "pending" | "done" | "error"; error?: string; code?: "unauthorized" | "filter" | "other"; field?: string; jobId?: string; progress?: number | null; partial?: boolean; capped?: boolean; count?: number }
 
 export interface ExposedFolder {
   name?: string | null; path?: string | null; url?: string | null;
@@ -83,4 +83,17 @@ export function pendingJobs(results: PostureResults): Record<string, string> {
     if (r?.status === "pending" && r.jobId) jobs[key] = r.jobId;
   }
   return jobs;
+}
+
+/** Vrai si toutes les requêtes terminées ont échoué faute de droits sur la clé d'API. */
+export function allUnauthorized(results: PostureResults): boolean {
+  const finished = POSTURE_KEYS.map((k) => results[k]).filter((r) => r && r.status !== "pending");
+  return finished.length > 0 && finished.every((r) => r!.status === "error" && (r!.code === "unauthorized" || r!.code === "filter"));
+}
+
+/** Message court affiché dans un bloc en erreur. */
+export function shortError(r: { code?: string; field?: string; error?: string }): string {
+  if (r.code === "unauthorized") return "Droits Varonis insuffisants";
+  if (r.code === "filter") return `Filtre « ${r.field} » refusé par Varonis`;
+  return r.error ?? "Erreur";
 }

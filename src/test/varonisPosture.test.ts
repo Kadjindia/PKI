@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
+  allUnauthorized, shortError,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -39,5 +40,14 @@ describe("posture Varonis : mise en forme", () => {
     expect(merged.expiredEnabled?.count).toBe(3);
     expect(merged.staleUsers?.count).toBe(7);
     expect(pendingJobs(merged)).toEqual({});
+  });
+
+  it("détecte un refus de droits général et produit des messages courts", () => {
+    const denied = { status: "error" as const, code: "unauthorized" as const };
+    expect(allUnauthorized({ sensitive: denied, privileged: { status: "error", code: "filter", field: "isDisabled" } })).toBe(true);
+    expect(allUnauthorized({ sensitive: denied, staleUsers: { status: "done", count: 2 } })).toBe(false);
+    expect(allUnauthorized({ sensitive: { status: "pending" } })).toBe(false);
+    expect(shortError(denied)).toBe("Droits Varonis insuffisants");
+    expect(shortError({ code: "filter", field: "isStale" })).toBe("Filtre « isStale » refusé par Varonis");
   });
 });

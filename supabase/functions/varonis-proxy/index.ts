@@ -281,6 +281,21 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
   },
 };
 
+/**
+ * Traduit une erreur GraphQL Varonis en cause lisible :
+ * droits insuffisants de la clé d'API, filtre refusé, ou autre.
+ */
+function classifyVaronisError(message: string): { code: string; error: string; field?: string } {
+  if (message.includes("AUTH_NOT_AUTHORIZED") || /not authorized/i.test(message)) {
+    return { code: "unauthorized", error: "La clé d'API Varonis n'a pas le droit de lire ces données." };
+  }
+  const field = message.match(/"path":\["where","(\w+)"\]/)?.[1];
+  if (field) {
+    return { code: "filter", field, error: `Varonis a rejeté le filtre « ${field} » (erreur interne, souvent liée aux droits).` };
+  }
+  return { code: "other", error: message.slice(0, 300) };
+}
+
 async function startPostureJob(baseUrl: string, token: string, q: PostureQuery): Promise<string> {
   const query = `
     query start($where: ${filterTypeOf(q.asyncName)}!) {
@@ -382,7 +397,7 @@ Deno.serve(async (req) => {
             results[key] = { status: "pending", jobId, progress: job.jobProgress ?? null };
           }
         } catch (e) {
-          results[key] = { status: "error", error: (e as Error).message };
+          results[key] = { status: "error", ...classifyVaronisError((e as Error).message) };
         }
       }));
       return jsonResponse({ results });
