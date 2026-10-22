@@ -166,6 +166,151 @@ async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
   return job;
 }
 
+// ---------------------------------------------------------------------------
+// Posture des données (étape 3) : requêtes fixes, lancées en parallèle.
+// Le proxy calcule lui-même les totaux et les tops : le navigateur ne reçoit
+// qu'un résumé. Les champs sont demandés dans la requête *Async ET dans la
+// requête *QueryJob (consigne du support Varonis).
+// ---------------------------------------------------------------------------
+
+/** Plafond de résultats de l'API par requête : au-delà, le total est « au moins ». */
+const RESULT_CAP = 10000;
+
+// deno-lint-ignore no-explicit-any
+type Row = Record<string, any>;
+
+interface PostureQuery {
+  asyncName: string;
+  jobName: string;
+  where: Record<string, unknown>;
+  fields: string;
+  summarize: (rows: Row[]) => Record<string, unknown>;
+}
+
+const yes = { eq: true };
+const no = { eq: false };
+const count = (rows: Row[], pred: (r: Row) => boolean) => rows.filter(pred).length;
+
+const POSTURE_QUERIES: Record<string, PostureQuery> = {
+  // Dossiers sensibles exposés à toute l'organisation (racines d'accès ouvert)
+  sensitiveExposed: {
+    asyncName: "resourcesAsync",
+    jobName: "resourcesQueryJob",
+    where: { isSensitive: yes, isRootOrgWideExposed: yes },
+    fields: "id name path url sizeOfResourceAndNestedResources totalNumberOfNestedObjects hasStaleOwner hasDisabledOwner isStale lastEventDate",
+    summarize: (rows) => ({
+      count: rows.length,
+      withoutValidOwner: count(rows, (r) => r.hasStaleOwner || r.hasDisabledOwner),
+      top: [...rows]
+        .sort((a, b) => (b.totalNumberOfNestedObjects ?? 0) - (a.totalNumberOfNestedObjects ?? 0))
+        .slice(0, 10)
+        .map((r) => ({
+          name: r.name, path: r.path, url: r.url,
+          objects: r.totalNumberOfNestedObjects, sizeBytes: r.sizeOfResourceAndNestedResources,
+          ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner), isStale: Boolean(r.isStale),
+          lastEventDate: r.lastEventDate,
+        })),
+    }),
+  },
+  // Ensemble des ressources sensibles : propriétaire et obsolescence
+  sensitive: {
+    asyncName: "resourcesAsync",
+    jobName: "resourcesQueryJob",
+    where: { isSensitive: yes },
+    fields: "id hasStaleOwner hasDisabledOwner isStale",
+    summarize: (rows) => ({
+      count: rows.length,
+      withoutValidOwner: count(rows, (r) => r.hasStaleOwner || r.hasDisabledOwner),
+      stale: count(rows, (r) => r.isStale),
+    }),
+  },
+  // Comptes privilégiés actifs (admin, service, dirigeant…)
+  privileged: {
+    asyncName: "identitiesAsync",
+    jobName: "identitiesQueryJob",
+    where: { privilegedIdentityType: { hasValue: true }, isDisabled: no },
+    fields: "id name privilegedIdentityType isStale lastLogonTime",
+    summarize: (rows) => {
+      const byType = new Map<string, number>();
+      for (const r of rows) {
+        for (const t of (r.privilegedIdentityType ?? []) as string[]) byType.set(t, (byType.get(t) ?? 0) + 1);
+      }
+      const stale = rows.filter((r) => r.isStale);
+      return {
+        count: rows.length,
+        byType: [...byType.entries()].map(([type, n]) => ({ type, count: n })).sort((a, b) => b.count - a.count),
+        stale: stale.length,
+        staleList: stale
+          .sort((a, b) => String(a.lastLogonTime ?? "").localeCompare(String(b.lastLogonTime ?? "")))
+          .slice(0, 10)
+          .map((r) => ({ name: r.name, types: r.privilegedIdentityType ?? [], lastLogonTime: r.lastLogonTime ?? null })),
+      };
+    },
+  },
+  // Comptes inactifs mais toujours activés
+  staleUsers: {
+    asyncName: "identitiesAsync",
+    jobName: "identitiesQueryJob",
+    where: { isStale: yes, isDisabled: no },
+    fields: "id",
+    summarize: (rows) => ({ count: rows.length }),
+  },
+  // Comptes expirés mais toujours activés
+  expiredEnabled: {
+    asyncName: "identitiesAsync",
+    jobName: "identitiesQueryJob",
+    where: { isEnabledExpired: yes },
+    fields: "id",
+    summarize: (rows) => ({ count: rows.length }),
+  },
+  // Appartenances à des groupes devenues obsolètes
+  staleMemberships: {
+    asyncName: "membershipsAsync",
+    jobName: "membershipsQueryJob",
+    where: { isStaleMembership: yes },
+    fields: "isStaleMembership",
+    summarize: (rows) => ({ count: rows.length }),
+  },
+  // Permissions jamais utilisées (candidates au retrait)
+  stalePermissions: {
+    asyncName: "physicalPermissionsAsync",
+    jobName: "physicalPermissionsQueryJob",
+    where: { isStalePermission: yes },
+    fields: "aceId",
+    summarize: (rows) => ({ count: rows.length }),
+  },
+};
+
+async function startPostureJob(baseUrl: string, token: string, q: PostureQuery): Promise<string> {
+  const query = `
+    query start($where: ${filterTypeOf(q.asyncName)}!) {
+      ${q.asyncName}(where: $where) { jobId jobStatus jobProgress results { ${q.fields} } }
+    }
+  `;
+  const data = await callVaronisGraphQL(baseUrl, token, query, { where: q.where });
+  return data[q.asyncName].jobId;
+}
+
+/** Type GraphQL du filtre de chaque requête (lu sur le schéma du tenant). */
+function filterTypeOf(asyncName: string): string {
+  return {
+    resourcesAsync: "Resource_FilterInput",
+    identitiesAsync: "User_FilterInput",
+    membershipsAsync: "GroupMembership_FilterInput",
+    physicalPermissionsAsync: "PhysicalPermission_FilterInput",
+  }[asyncName]!;
+}
+
+async function checkPostureJob(baseUrl: string, token: string, q: PostureQuery, jobId: string) {
+  const query = `
+    query check($jobId: ID!) {
+      ${q.jobName}(jobId: $jobId) { jobId jobStatus jobProgress results { ${q.fields} } }
+    }
+  `;
+  const data = await callVaronisGraphQL(baseUrl, token, query, { jobId });
+  return data[q.jobName];
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -197,7 +342,7 @@ Deno.serve(async (req) => {
     const baseUrl = VARONIS_BASE_URL.trim().replace(/\/$/, "");
 
     // 3. Lancement du job, ou vérification d'un job déjà lancé
-    let body: { jobId?: unknown; action?: unknown; typeName?: unknown; typeNames?: unknown } = {};
+    let body: { jobId?: unknown; action?: unknown; typeName?: unknown; typeNames?: unknown; jobs?: unknown } = {};
     try {
       body = (await req.json()) ?? {};
     } catch {
@@ -205,6 +350,42 @@ Deno.serve(async (req) => {
     }
     if (body.jobId !== undefined && (typeof body.jobId !== "string" || !JOB_ID_PATTERN.test(body.jobId))) {
       return jsonResponse({ error: "Identifiant de job invalide" }, 400);
+    }
+
+    // Posture des données : { action: "posture" } lance les requêtes ;
+    // { action: "posture", jobs: { clé: jobId } } vérifie celles en cours.
+    if (body.action === "posture") {
+      const postureToken = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
+      const given = (body.jobs && typeof body.jobs === "object") ? body.jobs as Record<string, unknown> : null;
+      const results: Record<string, unknown> = {};
+      await Promise.all(Object.entries(POSTURE_QUERIES).map(async ([key, q]) => {
+        try {
+          let jobId = given ? given[key] : undefined;
+          if (given && jobId === undefined) return; // déjà terminée lors d'un appel précédent
+          if (jobId !== undefined && (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId))) {
+            results[key] = { status: "error", error: "Identifiant de job invalide" };
+            return;
+          }
+          if (jobId === undefined) jobId = await startPostureJob(baseUrl, postureToken, q);
+          const job = await checkPostureJob(baseUrl, postureToken, q, jobId as string);
+          if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
+            const rows = (job.results ?? []) as Row[];
+            results[key] = {
+              status: "done",
+              partial: job.jobStatus === "PARTIAL_RESULTS",
+              capped: rows.length >= RESULT_CAP,
+              ...q.summarize(rows),
+            };
+          } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
+            results[key] = { status: "error", error: `Job Varonis ${job.jobStatus}` };
+          } else {
+            results[key] = { status: "pending", jobId, progress: job.jobProgress ?? null };
+          }
+        } catch (e) {
+          results[key] = { status: "error", error: (e as Error).message };
+        }
+      }));
+      return jsonResponse({ results });
     }
 
     // Mode diagnostic : { action: "schema", typeName: "Alert" }
