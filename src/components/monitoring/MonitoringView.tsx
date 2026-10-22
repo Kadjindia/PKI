@@ -8,7 +8,7 @@ import BitsightPanel from "./BitsightPanel";
 import QradarPanel from "./QradarPanel";
 import QualysPanel from "./QualysPanel";
 import NetskopePanel from "./NetskopePanel";
-import VaronisPanel from "./VaronisPanel";
+import VaronisView from "./VaronisView";
 import CortexPanel from "./CortexPanel";
 import TrendMicroPanel from "./TrendMicroPanel";
 
@@ -47,7 +47,7 @@ export default function MonitoringView() {
         <TabsContent value="qradar" className="mt-4"><QradarPanel /></TabsContent>
         <TabsContent value="qualys" className="mt-4"><QualysPanel /></TabsContent>
         <TabsContent value="netskope" className="mt-4"><NetskopePanel /></TabsContent>
-        <TabsContent value="varonis" className="mt-4"><VaronisPanel /></TabsContent>
+        <TabsContent value="varonis" className="mt-4"><VaronisView /></TabsContent>
         <TabsContent value="cortex" className="mt-4"><CortexPanel /></TabsContent>
         <TabsContent value="trend" className="mt-4"><TrendMicroPanel /></TabsContent>
 
