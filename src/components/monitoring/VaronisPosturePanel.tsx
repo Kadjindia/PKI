@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
+  allUnauthorized, shortError,
   POSTURE_KEYS, type PostureResults, type PostureKey,
 } from "@/lib/varonisPosture";
 
@@ -47,7 +48,7 @@ async function fetchPosture(onProgress: (r: PostureResults) => void): Promise<Po
 const formatDay = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString("fr-FR") : "jamais");
 
 /** État d'une requête : chargement, erreur ou contenu. */
-function Status({ r, children }: { readonly r?: { status: string; error?: string; progress?: number | null }; readonly children: React.ReactNode }) {
+function Status({ r, children }: { readonly r?: { status: string; error?: string; code?: string; field?: string; progress?: number | null }; readonly children: React.ReactNode }) {
   if (!r || r.status === "pending") {
     return (
       <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
@@ -56,14 +57,14 @@ function Status({ r, children }: { readonly r?: { status: string; error?: string
     );
   }
   if (r.status === "error") {
-    return <span className="text-xs text-destructive break-all" title={r.error}>Indisponible : {r.error}</span>;
+    return <span className="text-sm font-medium text-destructive" title={r.error}>{shortError(r)}</span>;
   }
   return <>{children}</>;
 }
 
 function Kpi({ title, icon: Icon, color, r, sub }: {
   readonly title: string; readonly icon: typeof Info; readonly color: string;
-  readonly r?: { status: string; count?: number; capped?: boolean; error?: string; progress?: number | null };
+  readonly r?: { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null };
   readonly sub?: React.ReactNode;
 }) {
   const alarming = r?.status === "done" && (r.count ?? 0) > 0;
@@ -135,6 +136,25 @@ export default function VaronisPosturePanel() {
         <Card className="border-destructive/40 bg-destructive/5">
           <CardContent className="p-4 flex items-center gap-2 text-sm text-destructive">
             <AlertTriangle className="w-4 h-4 shrink-0" /> {(error as Error).message}
+          </CardContent>
+        </Card>
+      )}
+
+      {allUnauthorized(r) && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardContent className="p-5 space-y-2 text-sm">
+            <div className="flex items-center gap-2 font-bold text-amber-600">
+              <AlertTriangle className="w-5 h-5" /> La clé d&apos;API Varonis n&apos;a pas accès aux données de posture
+            </div>
+            <p className="text-foreground">
+              Elle permet de lire les alertes, mais Varonis refuse la lecture des ressources, identités, appartenances et permissions
+              (« AUTH_NOT_AUTHORIZED »). Ce n&apos;est pas un problème de l&apos;application.
+            </p>
+            <p className="text-muted-foreground">
+              À demander à l&apos;administrateur Varonis : étendre le rôle associé à la clé d&apos;API utilisée par le tableau de bord
+              (secret <code>VARONIS_API_KEY</code>) à la <b>lecture</b> des ressources (classification, exposition), des identités,
+              des appartenances aux groupes et des permissions. Aucun droit d&apos;écriture n&apos;est nécessaire.
+            </p>
           </CardContent>
         </Card>
       )}
