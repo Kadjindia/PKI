@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
+import { useLocation } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import VaronisSchemaDiagnostic from "./VaronisSchemaDiagnostic";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -178,6 +180,8 @@ export default function VaronisPanel() {
   }, [data, timePrefix, timeValue, timeUnit]);
 
   const { summary, coverage } = view;
+  // Outil de diagnostic du schéma Varonis, affiché seulement avec ?diag=1
+  const showDiag = new URLSearchParams(useLocation().search).get("diag") === "1";
   const periodStartsBeforeData = coverage !== null && view.range.from < coverage.oldest.getTime();
 
   const header = (
@@ -245,6 +249,7 @@ export default function VaronisPanel() {
     return (
       <div className="space-y-6">
         {header}
+        {showDiag && <VaronisSchemaDiagnostic />}
         <div className="flex flex-col items-center justify-center py-24 space-y-3 text-muted-foreground">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
           <p className="text-sm">
@@ -260,6 +265,7 @@ export default function VaronisPanel() {
     return (
       <div className="space-y-6">
         {header}
+        {showDiag && <VaronisSchemaDiagnostic />}
         <Card className="border-destructive/40 bg-destructive/5">
           <CardContent className="p-6 space-y-3">
             <div className="flex items-center gap-2 font-bold text-destructive">
@@ -285,6 +291,7 @@ export default function VaronisPanel() {
   return (
     <div className="space-y-6">
       {header}
+      {showDiag && <VaronisSchemaDiagnostic />}
 
       {periodStartsBeforeData && coverage && (
         <div className="flex items-start gap-2 p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-500 text-sm">
