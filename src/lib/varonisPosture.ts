@@ -13,7 +13,7 @@ export const POSTURE_KEYS: PostureKey[] = [
 /** Seuil d'inactivité utilisé par le proxy pour les comptes (jours sans connexion). */
 export const INACTIVE_DAYS = 90;
 
-interface Base { status: "pending" | "done" | "error"; error?: string; code?: "unauthorized" | "filter" | "other"; field?: string; jobId?: string; progress?: number | null; partial?: boolean; capped?: boolean; count?: number }
+interface Base { status: "pending" | "done" | "error"; error?: string; code?: "unauthorized" | "filter" | "timeout" | "other"; field?: string; jobId?: string; progress?: number | null; partial?: boolean; capped?: boolean; count?: number }
 
 export interface ExposedFolder {
   name?: string | null; path?: string | null; sharePath?: string | null; url?: string | null;
@@ -112,5 +112,22 @@ export function allUnauthorized(results: PostureResults): boolean {
 export function shortError(r: { code?: string; field?: string; error?: string }): string {
   if (r.code === "unauthorized") return "Droits Varonis insuffisants";
   if (r.code === "filter") return `Filtre « ${r.field} » refusé par Varonis`;
+  if (r.code === "timeout") return "Toujours en cours chez Varonis : réessayez plus tard";
   return r.error ?? "Erreur";
+}
+
+/** Passe en erreur « délai dépassé » les indicateurs encore en cours. */
+export function expirePending(results: PostureResults): PostureResults {
+  const out: PostureResults = { ...results };
+  for (const key of POSTURE_KEYS) {
+    if (out[key]?.status === "pending") out[key] = { status: "error", code: "timeout" };
+  }
+  return out;
+}
+
+/** Durée lisible : « 45 s », « 3 min 05 s ». */
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60), sec = total % 60;
+  return m === 0 ? `${sec} s` : `${m} min ${String(sec).padStart(2, "0")} s`;
 }

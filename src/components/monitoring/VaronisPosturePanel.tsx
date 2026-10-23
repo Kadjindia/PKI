@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
-  allUnauthorized, shortError, sumCounts, displayPath, INACTIVE_DAYS,
+  allUnauthorized, shortError, sumCounts, displayPath, INACTIVE_DAYS, expirePending, formatElapsed,
   POSTURE_KEYS, type PostureResults, type PostureKey,
 } from "@/lib/varonisPosture";
 
@@ -37,11 +37,21 @@ async function fetchPosture(onProgress: (r: PostureResults) => void): Promise<Po
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let results = await callPosture({});
   onProgress(results);
+  let failures = 0;
   while (Object.keys(pendingJobs(results)).length > 0 && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    results = mergePosture(results, await callPosture({ jobs: pendingJobs(results) }));
+    try {
+      results = mergePosture(results, await callPosture({ jobs: pendingJobs(results) }));
+      failures = 0;
+    } catch (e) {
+      // Un échec ponctuel de vérification ne doit pas tout arrêter (3 essais)
+      if (++failures >= 3) throw e;
+    }
     onProgress(results);
   }
+  // Ce qui n'a pas abouti dans le délai est signalé au lieu de tourner indéfiniment
+  results = expirePending(results);
+  onProgress(results);
   return results;
 }
 
@@ -93,6 +103,8 @@ const HYGIENE: { key: PostureKey; label: string; help: string; icon: typeof Info
 
 export default function VaronisPosturePanel() {
   const [live, setLive] = useState<PostureResults>({});
+  const [startedAt, setStartedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const { data, error, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ["varonis-posture"],
     queryFn: () => fetchPosture(setLive),
@@ -100,6 +112,13 @@ export default function VaronisPosturePanel() {
     retry: false,
   });
   const r: PostureResults = data ?? live;
+
+  // Chronomètre affiché pendant l'interrogation de Varonis
+  useEffect(() => {
+    if (!isFetching) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isFetching]);
   const done = POSTURE_KEYS.filter((k) => r[k] && r[k]!.status !== "pending").length;
 
   const exposed = r.sensitiveExposed;
@@ -120,13 +139,13 @@ export default function VaronisPosturePanel() {
           </p>
           <p className="text-xs text-muted-foreground mt-1">
             {isFetching
-              ? `Interrogation de Varonis : ${done} / ${POSTURE_KEYS.length} indicateurs prêts (peut prendre plusieurs minutes)`
+              ? `Interrogation de Varonis depuis ${formatElapsed(now - startedAt)} : ${done} / ${POSTURE_KEYS.length} indicateurs prêts. Les recherches portent sur des millions d'objets et peuvent prendre jusqu'à 10 minutes ; les blocs se remplissent au fur et à mesure.`
               : dataUpdatedAt ? `Données du ${new Date(dataUpdatedAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}` : ""}
           </p>
         </div>
         <button
           type="button"
-          onClick={() => { setLive({}); refetch(); }}
+          onClick={() => { setLive({}); setStartedAt(Date.now()); setNow(Date.now()); refetch(); }}
           disabled={isFetching}
           className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 self-start sm:self-auto"
         >

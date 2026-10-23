@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
-  allUnauthorized, shortError, sumCounts, displayPath,
+  allUnauthorized, shortError, sumCounts, displayPath, expirePending, formatElapsed,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -57,5 +57,14 @@ describe("posture Varonis : mise en forme", () => {
     expect(sumCounts({ status: "done", count: 3 }, { status: "pending" })).toEqual({ count: undefined, capped: false });
     expect(displayPath({ sharePath: "\\\\FS01\\Departments", path: "D:\\Departments" })).toBe("\\\\FS01\\Departments");
     expect(displayPath({ path: "D:\\Users" })).toBe("D:\\Users");
+  });
+
+  it("passe en délai dépassé ce qui reste en cours et affiche la durée", () => {
+    const r = expirePending({ staleUsers: { status: "pending", jobId: "j" }, expiredEnabled: { status: "done", count: 1 } });
+    expect(r.staleUsers).toEqual({ status: "error", code: "timeout" });
+    expect(r.expiredEnabled?.count).toBe(1);
+    expect(shortError({ code: "timeout" })).toContain("Toujours en cours");
+    expect(formatElapsed(45_000)).toBe("45 s");
+    expect(formatElapsed(185_000)).toBe("3 min 05 s");
   });
 });
