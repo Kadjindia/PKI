@@ -3,6 +3,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // --- Secrets configurés côté Supabase (Project Settings > Edge Functions > Secrets) ---
 const VARONIS_BASE_URL = Deno.env.get("VARONIS_BASE_URL"); // ex: https://tenant.varonis.io
 const VARONIS_API_KEY = Deno.env.get("VARONIS_API_KEY");
+// Secret partagé avec la tâche planifiée (pg_cron) qui calcule la posture
+const POSTURE_CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 
 // Confirmé via la doc officielle Varonis (API Reference > Authentication / Alerts)
 const AUTH_ENDPOINT = "/api/authentication/api_keys/token";
@@ -52,6 +54,17 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+/** Erreur Varonis avec le code HTTP, pour reconnaître la limite de requêtes. */
+class VaronisError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
+/** Vrai si Varonis refuse parce que trop de requêtes ont été envoyées. */
+function isRateLimited(e: unknown): boolean {
+  const msg = (e as Error)?.message ?? "";
+  return (e instanceof VaronisError && e.status === 429) || /too many requests|rate.?limit|throttl|quota/i.test(msg);
+}
+
 /** Étape 1 : échange la clé API Varonis contre un bearer token de courte durée. */
 async function getVaronisAccessToken(baseUrl: string, apiKey: string): Promise<string> {
   const res = await fetch(`${baseUrl}${AUTH_ENDPOINT}`, {
@@ -65,7 +78,7 @@ async function getVaronisAccessToken(baseUrl: string, apiKey: string): Promise<s
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Échec authentification Varonis (${res.status}): ${text}`);
+    throw new VaronisError(`Échec authentification Varonis (${res.status}): ${text}`, res.status);
   }
 
   const data = await res.json();
@@ -86,10 +99,10 @@ async function callVaronisGraphQL(baseUrl: string, token: string, query: string,
     body: JSON.stringify({ query, variables }),
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({ errors: [`Réponse HTTP ${res.status} illisible`] }));
 
   if (!res.ok || data.errors) {
-    throw new Error(`Erreur GraphQL Varonis: ${JSON.stringify(data.errors ?? data)}`);
+    throw new VaronisError(`Erreur GraphQL Varonis: ${JSON.stringify(data.errors ?? data)}`, res.status);
   }
 
   return data.data;
@@ -167,7 +180,7 @@ async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Posture des données (étape 3) : requêtes fixes, lancées en parallèle.
+// Posture des données (étape 3) : requêtes fixes, exécutées par étapes (voir plus bas).
 // Le proxy calcule lui-même les totaux et les tops : le navigateur ne reçoit
 // qu'un résumé. Les champs sont demandés dans la requête *Async ET dans la
 // requête *QueryJob (consigne du support Varonis).
@@ -358,12 +371,234 @@ async function checkPostureJob(baseUrl: string, token: string, q: PostureQuery, 
   return data[q.jobName];
 }
 
+// ---------------------------------------------------------------------------
+// Photos de posture : le calcul est fait côté serveur, enregistré dans la table
+// varonis_posture_snapshots, et l'écran lit la dernière photo terminée.
+// Pour ménager la limite de requêtes de Varonis, chaque « étape » ne fait que
+// quelques appels (au plus MAX_RUNNING_JOBS jobs en cours à la fois) et deux
+// étapes sont espacées d'au moins STEP_INTERVAL_MS. Les étapes sont déclenchées
+// par la tâche planifiée (toutes les 2 min) et par l'écran ouvert.
+// ---------------------------------------------------------------------------
+
+const MAX_RUNNING_JOBS = 3;
+const STEP_INTERVAL_MS = 15_000;
+const STEP_LEASE_MS = 120_000; // verrou pendant une étape (évite deux étapes simultanées)
+const RATE_LIMIT_BACKOFF_MS = 120_000; // pause après un refus « trop de requêtes »
+const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
+const RUN_TIMEOUT_MS = 90 * 60 * 1000; // au-delà, ce qui reste est abandonné
+const MANUAL_COOLDOWN_MS = 15 * 60 * 1000; // délai minimal entre deux calculs demandés
+const SNAPSHOT_COLUMNS = "id, status, trigger, results, last_error, started_at, finished_at";
+
+// deno-lint-ignore no-explicit-any
+type Admin = any;
+interface Snapshot {
+  id: string; status: "running" | "done"; trigger: string; results: Record<string, Row>;
+  last_error: string | null; started_at: string; finished_at: string | null;
+}
+
+function adminClient(): Admin {
+  return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
+    auth: { persistSession: false },
+  });
+}
+
+async function latestSnapshots(admin: Admin): Promise<{ latest: Snapshot | null; running: Snapshot | null }> {
+  const [done, running] = await Promise.all([
+    admin.from("varonis_posture_snapshots").select(SNAPSHOT_COLUMNS).eq("status", "done")
+      .order("started_at", { ascending: false }).limit(1).maybeSingle(),
+    admin.from("varonis_posture_snapshots").select(SNAPSHOT_COLUMNS).eq("status", "running")
+      .order("started_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+  if (done.error) throw new Error(done.error.message);
+  if (running.error) throw new Error(running.error.message);
+  return { latest: done.data, running: running.data };
+}
+
+/** Démarre une nouvelle photo (tous les indicateurs en attente). Une seule à la fois. */
+async function createSnapshot(admin: Admin, trigger: "manual" | "schedule", userId: string | null) {
+  const results = Object.fromEntries(Object.keys(POSTURE_QUERIES).map((k) => [k, { status: "queued", attempts: 0 }]));
+  const { error } = await admin.from("varonis_posture_snapshots").insert({ trigger, requested_by: userId, results });
+  // 23505 : une photo est déjà en cours (index unique), rien à faire
+  if (error && error.code !== "23505") throw new Error(error.message);
+}
+
+/** Erreur passagère : on réessaie plus tard ; sinon (droits, filtre) on abandonne l'indicateur. */
+function failOrRetry(entry: Row, e: unknown): Row {
+  const info = classifyVaronisError((e as Error).message);
+  const attempts = (entry.attempts ?? 0) + 1;
+  if (info.code === "other" && attempts < MAX_ATTEMPTS) return { status: "queued", attempts, lastError: info.error };
+  return { status: "error", attempts, ...info };
+}
+
+/** Reprend, pour un indicateur en échec, la dernière valeur connue (avec sa date). */
+async function carryOverFailures(admin: Admin, results: Record<string, Row>) {
+  const failed = Object.keys(results).filter((k) => results[k].status === "error" && results[k].code !== "unauthorized");
+  if (failed.length === 0) return;
+  const { data } = await admin.from("varonis_posture_snapshots").select("results, started_at")
+    .eq("status", "done").order("started_at", { ascending: false }).limit(10);
+  for (const key of failed) {
+    const prev = (data ?? []).find((s: Row) => s.results?.[key]?.status === "done" && !s.results[key].carriedFrom);
+    if (prev) results[key] = { ...prev.results[key], carriedFrom: prev.started_at, lastError: shortReason(results[key]) };
+  }
+}
+
+const shortReason = (r: Row) => r.code === "timeout" ? "Délai dépassé" : (r.error ?? "Erreur");
+
+/**
+ * Fait avancer d'une étape la photo en cours : vérifie les jobs lancés, en lance
+ * de nouveaux dans la limite autorisée, puis enregistre. Ne fait rien si une
+ * autre étape est en cours ou trop récente.
+ */
+async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, snap: Snapshot): Promise<void> {
+  const now = Date.now();
+  const { data: claimed, error: claimError } = await admin.from("varonis_posture_snapshots")
+    .update({ step_lock_until: new Date(now + STEP_LEASE_MS).toISOString() })
+    .eq("id", snap.id).eq("status", "running").lt("step_lock_until", new Date(now).toISOString())
+    .select(SNAPSHOT_COLUMNS).maybeSingle();
+  if (claimError) throw new Error(claimError.message);
+  if (!claimed) return; // étape déjà en cours ailleurs, ou trop tôt
+
+  const results: Record<string, Row> = { ...claimed.results };
+  let lastError: string | null = null;
+  let nextStepIn = STEP_INTERVAL_MS;
+
+  try {
+    const token = await getVaronisAccessToken(baseUrl, apiKey);
+
+    // 1. Jobs déjà lancés
+    for (const [key, entry] of Object.entries(results)) {
+      if (entry.status !== "pending") continue;
+      const q = POSTURE_QUERIES[key];
+      try {
+        const job = await checkPostureJob(baseUrl, token, q, entry.jobId);
+        if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
+          const rows = (job.results ?? []) as Row[];
+          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, ...q.summarize(rows) };
+        } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
+          results[key] = failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
+        } else {
+          results[key] = { ...entry, progress: job.jobProgress ?? null };
+        }
+      } catch (e) {
+        if (isRateLimited(e)) throw e;
+        results[key] = failOrRetry(entry, e);
+      }
+    }
+
+    // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS
+    for (const [key, entry] of Object.entries(results)) {
+      if (Object.values(results).filter((r) => r.status === "pending").length >= MAX_RUNNING_JOBS) break;
+      if (entry.status !== "queued") continue;
+      try {
+        const jobId = await startPostureJob(baseUrl, token, POSTURE_QUERIES[key]);
+        results[key] = { status: "pending", jobId, attempts: entry.attempts ?? 0, progress: null };
+      } catch (e) {
+        if (isRateLimited(e)) throw e;
+        results[key] = failOrRetry(entry, e);
+      }
+    }
+  } catch (e) {
+    if (isRateLimited(e)) {
+      lastError = "Limite de requêtes Varonis atteinte : reprise automatique dans 2 minutes";
+      nextStepIn = RATE_LIMIT_BACKOFF_MS;
+    } else {
+      lastError = classifyVaronisError((e as Error).message).error;
+    }
+  }
+
+  // 3. Calcul trop long : ce qui reste est abandonné
+  if (now - new Date(claimed.started_at).getTime() > RUN_TIMEOUT_MS) {
+    for (const [key, entry] of Object.entries(results)) {
+      if (entry.status === "queued" || entry.status === "pending") results[key] = { status: "error", code: "timeout", attempts: entry.attempts };
+    }
+  }
+
+  const finished = Object.values(results).every((r) => r.status === "done" || r.status === "error");
+  if (finished) await carryOverFailures(admin, results);
+  const { error } = await admin.from("varonis_posture_snapshots").update({
+    results,
+    last_error: lastError,
+    step_lock_until: new Date(Date.now() + nextStepIn).toISOString(),
+    ...(finished ? { status: "done", finished_at: new Date().toISOString() } : {}),
+  }).eq("id", snap.id);
+  if (error) throw new Error(error.message);
+}
+
+/** État renvoyé à l'écran : dernière photo terminée et photo en cours (sans les jobId). */
+function publicState(state: { latest: Snapshot | null; running: Snapshot | null }) {
+  const clean = (s: Snapshot | null) => s && {
+    ...s,
+    results: Object.fromEntries(Object.entries(s.results).map(([k, { jobId: _jobId, ...rest }]) => [k, rest])),
+  };
+  return { latest: clean(state.latest), running: clean(state.running), scheduled: Boolean(POSTURE_CRON_SECRET) };
+}
+
+/** Comparaison en temps constant du secret de la tâche planifiée. */
+function sameSecret(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Actions de posture : posture-status, posture-refresh (utilisateur) et posture-cron (tâche planifiée). */
+async function handlePosture(action: string, body: Row, baseUrl: string, apiKey: string, userId: string | null) {
+  const admin = adminClient();
+  let state = await latestSnapshots(admin);
+
+  if (action === "posture-refresh" && !state.running) {
+    const last = state.latest ? new Date(state.latest.started_at).getTime() : 0;
+    const wait = last + MANUAL_COOLDOWN_MS - Date.now();
+    if (wait > 0) {
+      return jsonResponse({
+        error: `Dernier calcul lancé il y a moins de ${MANUAL_COOLDOWN_MS / 60000} min : nouveau calcul possible dans ${Math.ceil(wait / 60000)} min (limite de requêtes Varonis).`,
+      }, 429);
+    }
+    await createSnapshot(admin, "manual", userId);
+    state = await latestSnapshots(admin);
+  }
+  if (action === "posture-cron" && body.start === true && !state.running) {
+    await createSnapshot(admin, "schedule", null);
+    state = await latestSnapshots(admin);
+  }
+
+  if (state.running) {
+    await advanceSnapshot(admin, baseUrl, apiKey, state.running);
+    state = await latestSnapshots(admin);
+  }
+  if (action === "posture-cron") {
+    return jsonResponse({ running: Boolean(state.running), latest: state.latest?.started_at ?? null });
+  }
+  return jsonResponse(publicState(state));
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    let body: { jobId?: unknown; action?: unknown; typeName?: unknown; typeNames?: unknown; start?: unknown } = {};
+    try {
+      body = (await req.json()) ?? {};
+    } catch {
+      // corps vide : lancement d'un nouveau job d'alertes
+    }
+
+    if (!VARONIS_BASE_URL || !VARONIS_API_KEY) {
+      return jsonResponse({ error: "Varonis non configuré côté serveur (secrets manquants)" }, 500);
+    }
+    const baseUrl = VARONIS_BASE_URL.trim().replace(/\/$/, "");
+
+    // Tâche planifiée : authentifiée par un secret partagé, pas par un utilisateur
+    if (body.action === "posture-cron") {
+      const given = req.headers.get("x-cron-secret") ?? "";
+      if (!POSTURE_CRON_SECRET || !sameSecret(given, POSTURE_CRON_SECRET)) {
+        return jsonResponse({ error: "Non autorisé" }, 401);
+      }
+      return await handlePosture("posture-cron", body, baseUrl, VARONIS_API_KEY, null);
+    }
+
     // 1. Authentification Supabase (JWT de l'utilisateur connecté)
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
@@ -381,58 +616,14 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "Session invalide" }, 401);
     }
 
-    // 2. Vérification des secrets serveur
-    if (!VARONIS_BASE_URL || !VARONIS_API_KEY) {
-      return jsonResponse({ error: "Varonis non configuré côté serveur (secrets manquants)" }, 500);
-    }
-
-    const baseUrl = VARONIS_BASE_URL.trim().replace(/\/$/, "");
-
-    // 3. Lancement du job, ou vérification d'un job déjà lancé
-    let body: { jobId?: unknown; action?: unknown; typeName?: unknown; typeNames?: unknown; jobs?: unknown } = {};
-    try {
-      body = (await req.json()) ?? {};
-    } catch {
-      // corps vide : lancement d'un nouveau job
-    }
+    // 2. Lancement du job d'alertes, ou vérification d'un job déjà lancé
     if (body.jobId !== undefined && (typeof body.jobId !== "string" || !JOB_ID_PATTERN.test(body.jobId))) {
       return jsonResponse({ error: "Identifiant de job invalide" }, 400);
     }
 
-    // Posture des données : { action: "posture" } lance les requêtes ;
-    // { action: "posture", jobs: { clé: jobId } } vérifie celles en cours.
-    if (body.action === "posture") {
-      const postureToken = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
-      const given = (body.jobs && typeof body.jobs === "object") ? body.jobs as Record<string, unknown> : null;
-      const results: Record<string, unknown> = {};
-      await Promise.all(Object.entries(POSTURE_QUERIES).map(async ([key, q]) => {
-        try {
-          let jobId = given ? given[key] : undefined;
-          if (given && jobId === undefined) return; // déjà terminée lors d'un appel précédent
-          if (jobId !== undefined && (typeof jobId !== "string" || !JOB_ID_PATTERN.test(jobId))) {
-            results[key] = { status: "error", error: "Identifiant de job invalide" };
-            return;
-          }
-          if (jobId === undefined) jobId = await startPostureJob(baseUrl, postureToken, q);
-          const job = await checkPostureJob(baseUrl, postureToken, q, jobId as string);
-          if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
-            const rows = (job.results ?? []) as Row[];
-            results[key] = {
-              status: "done",
-              partial: job.jobStatus === "PARTIAL_RESULTS",
-              capped: rows.length >= RESULT_CAP,
-              ...q.summarize(rows),
-            };
-          } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
-            results[key] = { status: "error", error: `Job Varonis ${job.jobStatus}` };
-          } else {
-            results[key] = { status: "pending", jobId, progress: job.jobProgress ?? null };
-          }
-        } catch (e) {
-          results[key] = { status: "error", ...classifyVaronisError((e as Error).message) };
-        }
-      }));
-      return jsonResponse({ results });
+    // Posture des données : lecture de la dernière photo, ou nouveau calcul
+    if (body.action === "posture-status" || body.action === "posture-refresh") {
+      return await handlePosture(body.action, body, baseUrl, VARONIS_API_KEY, user.id);
     }
 
     // Mode diagnostic : { action: "schema", typeName: "Alert" }

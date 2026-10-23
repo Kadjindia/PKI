@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,21 +8,21 @@ import {
 } from "@/components/ui/table";
 import {
   Globe2, UserX, Crown, UserMinus, CalendarX, Users, KeyRound, Archive, FolderOpen,
-  RefreshCw, Loader2, AlertTriangle, ExternalLink, Info,
+  RefreshCw, Loader2, AlertTriangle, ExternalLink, Info, Clock,
 } from "lucide-react";
 import {
-  formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
-  allUnauthorized, shortError, sumCounts, displayPath, INACTIVE_DAYS, expirePending, formatElapsed,
-  POSTURE_KEYS, type PostureResults, type PostureKey,
+  formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
+  allUnauthorized, shortError, sumCounts, displayPath, INACTIVE_DAYS, formatElapsed,
+  POSTURE_KEYS, type PostureResults, type PostureKey, type PostureState,
 } from "@/lib/varonisPosture";
 
-// Les requêtes de posture peuvent prendre plusieurs minutes : on les lance,
-// puis on revérifie les jobs encore en cours toutes les 5 s (10 min au maximum).
-const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+// La posture est calculée côté serveur (tâche planifiée chaque nuit, ou à la
+// demande) et enregistrée : l'écran lit la dernière photo terminée. Pendant un
+// calcul, l'écran revient toutes les 20 s, ce qui fait aussi avancer le calcul.
+const RUNNING_POLL_MS = 20_000;
 
-async function callPosture(body: Record<string, unknown>): Promise<PostureResults> {
-  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action: "posture", ...body } });
+async function callPosture(action: "posture-status" | "posture-refresh"): Promise<PostureState> {
+  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action } });
   if (error) {
     if (error instanceof FunctionsHttpError) {
       const errBody = await error.context.json().catch(() => null);
@@ -30,51 +30,44 @@ async function callPosture(body: Record<string, unknown>): Promise<PostureResult
     }
     throw error;
   }
-  return (data?.results ?? {}) as PostureResults;
+  return data as PostureState;
 }
 
-async function fetchPosture(onProgress: (r: PostureResults) => void): Promise<PostureResults> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let results = await callPosture({});
-  onProgress(results);
-  let failures = 0;
-  while (Object.keys(pendingJobs(results)).length > 0 && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    try {
-      results = mergePosture(results, await callPosture({ jobs: pendingJobs(results) }));
-      failures = 0;
-    } catch (e) {
-      // Un échec ponctuel de vérification ne doit pas tout arrêter (3 essais)
-      if (++failures >= 3) throw e;
-    }
-    onProgress(results);
-  }
-  // Ce qui n'a pas abouti dans le délai est signalé au lieu de tourner indéfiniment
-  results = expirePending(results);
-  onProgress(results);
-  return results;
-}
-
+const formatDateTime = (iso: string) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 const formatDay = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString("fr-FR") : "jamais");
 
 /** État d'une requête : chargement, erreur ou contenu. */
-function Status({ r, children }: { readonly r?: { status: string; error?: string; code?: string; field?: string; progress?: number | null }; readonly children: React.ReactNode }) {
-  if (!r || r.status === "pending") {
+function Status({ r, children }: {
+  readonly r?: { status: string; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
+  readonly children: React.ReactNode;
+}) {
+  if (!r) return <span className="text-sm text-muted-foreground">—</span>;
+  if (r.status === "queued" || r.status === "pending") {
     return (
       <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="w-4 h-4 animate-spin" /> En cours{r?.progress ? ` (${Math.round(r.progress)} %)` : "…"}
+        <Loader2 className="w-4 h-4 animate-spin" />
+        {r.status === "queued" ? "En attente…" : `En cours${r.progress ? ` (${Math.round(r.progress)} %)` : "…"}`}
       </span>
     );
   }
   if (r.status === "error") {
     return <span className="text-sm font-medium text-destructive" title={r.error}>{shortError(r)}</span>;
   }
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      {r.carriedFrom && (
+        <div className="text-[11px] text-amber-600 mt-1" title={r.lastError}>
+          Valeur du {formatDateTime(r.carriedFrom)} : le dernier calcul n&apos;a pas abouti pour cet indicateur
+        </div>
+      )}
+    </>
+  );
 }
 
 function Kpi({ title, icon: Icon, color, r, sub }: {
   readonly title: string; readonly icon: typeof Info; readonly color: string;
-  readonly r?: { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null };
+  readonly r?: { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
   readonly sub?: React.ReactNode;
 }) {
   const alarming = r?.status !== "done" || (r.count ?? 0) > 0;
@@ -102,30 +95,38 @@ const HYGIENE: { key: PostureKey; label: string; help: string; icon: typeof Info
 ];
 
 export default function VaronisPosturePanel() {
-  const [live, setLive] = useState<PostureResults>({});
-  const [startedAt, setStartedAt] = useState(() => Date.now());
-  const [now, setNow] = useState(() => Date.now());
-  const { data, error, isFetching, refetch, dataUpdatedAt } = useQuery({
+  const queryClient = useQueryClient();
+  const { data: state, error, isLoading } = useQuery({
     queryKey: ["varonis-posture"],
-    queryFn: () => fetchPosture(setLive),
-    staleTime: 1000 * 60 * 60, // la posture évolue lentement : 1 h de cache
+    queryFn: () => callPosture("posture-status"),
+    staleTime: 5 * 60 * 1000,
     retry: false,
+    refetchInterval: (q) => (q.state.data?.running ? RUNNING_POLL_MS : false),
   });
-  const r: PostureResults = data ?? live;
+  const refresh = useMutation({
+    mutationFn: () => callPosture("posture-refresh"),
+    onSuccess: (next) => queryClient.setQueryData(["varonis-posture"], next),
+  });
 
-  // Chronomètre affiché pendant l'interrogation de Varonis
+  const latest = state?.latest ?? null;
+  const running = state?.running ?? null;
+  // Sans photo terminée, on montre la photo en cours (les blocs se remplissent au fur et à mesure)
+  const r: PostureResults = latest?.results ?? running?.results ?? {};
+
+  // Horloge pour la durée du calcul en cours
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!isFetching) return;
+    if (!running) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [isFetching]);
-  const done = POSTURE_KEYS.filter((k) => r[k] && r[k]!.status !== "pending").length;
+  }, [running]);
 
   const exposed = r.sensitiveExposed;
   const sensitive = r.sensitive;
   const ownerless = sumCounts(r.sensitiveStaleOwner, r.sensitiveDisabledOwner);
   const ownerStatus = [r.sensitiveStaleOwner, r.sensitiveDisabledOwner].find((x) => !x || x.status !== "done") ?? r.sensitiveStaleOwner;
   const priv = r.privileged;
+  const errorMessage = (refresh.error ?? error) as Error | null;
 
   return (
     <div className="space-y-6">
@@ -135,28 +136,55 @@ export default function VaronisPosturePanel() {
             <FolderOpen className="w-6 h-6 text-primary" /> Posture des données
           </h3>
           <p className="text-sm text-muted-foreground">
-            Où sont les données sensibles, qui peut y accéder, et l&apos;hygiène des comptes et des droits — photo à l&apos;instant T
+            Où sont les données sensibles, qui peut y accéder, et l&apos;hygiène des comptes et des droits
           </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {isFetching
-              ? `Interrogation de Varonis depuis ${formatElapsed(now - startedAt)} : ${done} / ${POSTURE_KEYS.length} indicateurs prêts. Les recherches portent sur des millions d'objets et peuvent prendre jusqu'à 10 minutes ; les blocs se remplissent au fur et à mesure.`
-              : dataUpdatedAt ? `Données du ${new Date(dataUpdatedAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}` : ""}
+          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5" />
+            {latest
+              ? <>Photo du {formatDateTime(latest.started_at)} ({formatAge(latest.finished_at ?? latest.started_at)}) · {latest.trigger === "schedule" ? "calcul automatique de la nuit" : "calcul demandé"}</>
+              : isLoading ? "Chargement…" : "Aucune photo terminée pour l'instant"}
           </p>
         </div>
         <button
           type="button"
-          onClick={() => { setLive({}); setStartedAt(Date.now()); setNow(Date.now()); refetch(); }}
-          disabled={isFetching}
+          onClick={() => refresh.mutate()}
+          disabled={isLoading || refresh.isPending || Boolean(running)}
+          title={running ? "Un calcul est déjà en cours" : "Recalculer la posture maintenant (quelques minutes)"}
           className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 self-start sm:self-auto"
         >
-          <RefreshCw className={`w-4 h-4 ${isFetching ? "animate-spin" : ""}`} /> Actualiser
+          <RefreshCw className={`w-4 h-4 ${refresh.isPending || running ? "animate-spin" : ""}`} /> Recalculer
         </button>
       </div>
 
-      {error && (
+      {running && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="p-4 space-y-1 text-sm">
+            <div className="flex items-center gap-2 font-semibold text-foreground">
+              <Loader2 className="w-4 h-4 animate-spin text-primary" />
+              Calcul en cours depuis {formatElapsed(now - new Date(running.started_at).getTime())} : {snapshotProgress(running.results)} / {POSTURE_KEYS.length} indicateurs prêts
+            </div>
+            <p className="text-muted-foreground">
+              Les recherches Varonis sont lancées quelques-unes à la fois pour ne pas dépasser la limite de requêtes : comptez de quelques minutes à une demi-heure.
+              {latest && ` Les chiffres affichés restent ceux du ${formatDateTime(latest.started_at)} jusqu'à la fin du calcul.`}
+              {state?.scheduled ? " Vous pouvez quitter la page : le calcul continue sur le serveur." : " Gardez la page ouverte pour que le calcul avance."}
+            </p>
+            {running.last_error && <p className="text-amber-600">{running.last_error}</p>}
+          </CardContent>
+        </Card>
+      )}
+
+      {errorMessage && (
         <Card className="border-destructive/40 bg-destructive/5">
           <CardContent className="p-4 flex items-center gap-2 text-sm text-destructive">
-            <AlertTriangle className="w-4 h-4 shrink-0" /> {(error as Error).message}
+            <AlertTriangle className="w-4 h-4 shrink-0" /> {errorMessage.message}
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && !latest && !running && !error && (
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            La posture n&apos;a encore jamais été calculée. Cliquez sur « Recalculer » pour lancer le premier calcul.
           </CardContent>
         </Card>
       )}
@@ -345,7 +373,8 @@ export default function VaronisPosturePanel() {
       <p className="text-[11px] text-muted-foreground flex items-start gap-1.5">
         <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
         Indicateurs calculés par Varonis (classification, exposition, activité). L&apos;API limite le nombre de résultats par requête
-        (10 000 à 15 000) : un total suivi de « ou plus » est un minimum. Comptes inactifs : aucune connexion depuis plus de {INACTIVE_DAYS} jours. L&apos;évolution dans le temps nécessitera d&apos;enregistrer ces chiffres régulièrement.
+        (10 000 à 15 000) : un total suivi de « ou plus » est un minimum. Comptes inactifs : aucune connexion depuis plus de {INACTIVE_DAYS} jours.
+        {state?.scheduled ? " La posture est recalculée automatiquement chaque nuit." : ""} Chaque photo est conservée pour suivre l&apos;évolution dans le temps.
       </p>
     </div>
   );

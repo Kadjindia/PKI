@@ -64,7 +64,7 @@ npm run dev             # http://localhost:8080
 | `qradar-proxy` | `QRADAR_BASE_URL`, `QRADAR_SEC_TOKEN` |
 | `cortex-proxy` | `CORTEX_FQDN` (sans `https://`), `CORTEX_API_KEY_ID` (ID numérique), `CORTEX_API_KEY` (clé **Advanced**) |
 | `bitsight-proxy` | `BITSIGHT_TOKEN`, `BITSIGHT_COMPANY_GUID` |
-| `varonis-proxy` | `VARONIS_BASE_URL`, `VARONIS_API_KEY` |
+| `varonis-proxy` | `VARONIS_BASE_URL`, `VARONIS_API_KEY`, `POSTURE_CRON_SECRET` (secret partagé avec la tâche planifiée, ex. `openssl rand -hex 32`) |
 | toutes | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (fournis automatiquement par Supabase) |
 
 ## Build et image Docker
@@ -108,6 +108,18 @@ supabase functions deploy <nom-fonction> --project-ref <ref-projet>
 ```bash
 docker compose restart functions
 ```
+
+### Posture des données Varonis (calcul planifié)
+
+La posture (10 recherches Varonis sur des millions d'objets) n'est pas calculée à l'ouverture de l'écran : `varonis-proxy` la calcule par petites étapes (3 recherches en parallèle au plus, pause automatique si Varonis signale trop de requêtes) et enregistre chaque photo dans la table `varonis_posture_snapshots`. L'écran affiche la dernière photo terminée ; « Recalculer » lance un nouveau calcul (un seul à la fois, 15 min minimum entre deux).
+
+Mise en place :
+
+1. appliquer la migration `20261023090000_varonis_posture_snapshots.sql` ;
+2. ajouter le secret `POSTURE_CRON_SECRET` et redéployer `varonis-proxy` ;
+3. exécuter une fois `supabase/sql/planification_posture_varonis.sql` (pg_cron + pg_net) après y avoir renseigné l'URL de la fonction, la clé anon et le secret : calcul chaque nuit à 4 h UTC, avancement toutes les 2 minutes.
+
+Sans l'étape 3, le calcul n'avance que lorsque l'écran Posture est ouvert.
 
 ### Liste blanche des proxys
 
