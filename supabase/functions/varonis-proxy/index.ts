@@ -305,8 +305,8 @@ function zoneTotals(rows: Row[]) {
 
 /**
  * Comptes activés sans connexion récente, par tranche d'ancienneté. Chaque tranche
- * est une recherche distincte (sous le plafond) ; la tranche est revérifiée ici
- * sur la date de dernière connexion, quelle que soit l'interprétation des filtres.
+ * est une recherche distincte (sous le plafond) filtrée par « between » ; la tranche
+ * est revérifiée ici sur la date de dernière connexion.
  */
 const INACTIVE_BUCKETS: { key: string; from: number; to: number | null }[] = [
   { key: "inactive90", from: 90, to: 180 },
@@ -315,13 +315,18 @@ const INACTIVE_BUCKETS: { key: string; from: number; to: number | null }[] = [
   { key: "inactive730", from: 730, to: null },
 ];
 
+/** Borne basse de la dernière tranche (« plus de 2 ans ») : 30 ans. */
+const OLDEST_LOGON_DAYS = 30 * 365;
+const daysAgoIso = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+
 function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
   return {
     asyncName: "identitiesAsync",
     jobName: "identitiesQueryJob",
     where: {
       isDisabled: enabledOnly,
-      lastLogonTime: to === null ? { earlierThanDays: from } : { earlierThanDays: from, laterThanDays: to },
+      // Tranche exacte : dernière connexion entre (aujourd'hui - to) et (aujourd'hui - from)
+      lastLogonTime: { between: { from: daysAgoIso(to ?? OLDEST_LOGON_DAYS), to: daysAgoIso(from) } },
     },
     fields: "id isDisabled lastLogonTime",
     summarize: (rows) => {
