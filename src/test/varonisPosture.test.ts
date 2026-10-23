@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
-  allUnauthorized, shortError,
+  allUnauthorized, shortError, sumCounts, displayPath,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -9,6 +9,7 @@ describe("posture Varonis : mise en forme", () => {
     expect(formatCount(1234)).toBe((1234).toLocaleString("fr-FR"));
     expect(formatCount(10000, true)).toBe(`${(10000).toLocaleString("fr-FR")} ou plus`);
     expect(formatCount(undefined)).toBe("—");
+    expect(formatCount(0, true)).toBe("0"); // « 0 ou plus » n'a pas de sens
   });
 
   it("formate les tailles", () => {
@@ -49,5 +50,12 @@ describe("posture Varonis : mise en forme", () => {
     expect(allUnauthorized({ sensitive: { status: "pending" } })).toBe(false);
     expect(shortError(denied)).toBe("Droits Varonis insuffisants");
     expect(shortError({ code: "filter", field: "isStale" })).toBe("Filtre « isStale » refusé par Varonis");
+  });
+
+  it("additionne deux indicateurs et choisit le chemin le plus parlant", () => {
+    expect(sumCounts({ status: "done", count: 3 }, { status: "done", count: 4, capped: true })).toEqual({ count: 7, capped: true });
+    expect(sumCounts({ status: "done", count: 3 }, { status: "pending" })).toEqual({ count: undefined, capped: false });
+    expect(displayPath({ sharePath: "\\\\FS01\\Departments", path: "D:\\Departments" })).toBe("\\\\FS01\\Departments");
+    expect(displayPath({ path: "D:\\Users" })).toBe("D:\\Users");
   });
 });
