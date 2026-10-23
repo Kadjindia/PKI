@@ -3,16 +3,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
-import {
-  Globe2, UserX, Crown, UserMinus, CalendarX, KeyRound, Archive, FolderOpen, Server,
+  Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users,
   RefreshCw, Loader2, AlertTriangle, ExternalLink, Info, Clock,
 } from "lucide-react";
 import {
   formatCount, formatBytes, share, safeUrl, snapshotProgress, formatAge, inactiveTotal,
-  allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, ZONE_DEPTH, formatElapsed,
+  allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
   POSTURE_KEYS, type PostureResults, type PostureState, type ZoneTotals,
 } from "@/lib/varonisPosture";
 
@@ -65,38 +63,82 @@ function Status({ r, children }: {
   );
 }
 
+/** Définition d'un indicateur, au clic sur ⓘ (fonctionne aussi sur tablette). */
+function Help({ children }: { readonly children: React.ReactNode }) {
+  return (
+    <Popover>
+      <PopoverTrigger aria-label="Définition" className="text-muted-foreground hover:text-foreground shrink-0">
+        <Info className="w-4 h-4" />
+      </PopoverTrigger>
+      <PopoverContent className="text-xs leading-relaxed">{children}</PopoverContent>
+    </Popover>
+  );
+}
+
+type KpiValue = { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
+
+/** Chiffre clé : titre court, grand nombre, une ligne de contexte, définition dans ⓘ. */
 function Kpi({ title, help, icon: Icon, color, r, sub }: {
-  readonly title: string; readonly help: string; readonly icon: typeof Info; readonly color: string;
-  readonly r?: { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
-  readonly sub?: React.ReactNode;
+  readonly title: string; readonly help: React.ReactNode; readonly icon: typeof Info; readonly color: string;
+  readonly r?: KpiValue; readonly sub?: React.ReactNode;
 }) {
-  const alarming = r?.status !== "done" || (r.count ?? 0) > 0;
+  const ok = r?.status === "done" && (r.count ?? 0) === 0;
   return (
     <Card className={`border-l-4 ${color}`}>
-      <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">{title}</CardTitle>
-        <Icon className="w-4 h-4 text-muted-foreground shrink-0" />
-      </CardHeader>
-      <p className="px-6 -mt-1 mb-2 text-[11px] text-muted-foreground leading-snug">{help}</p>
-      <CardContent>
+      <CardContent className="p-4 space-y-1">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+            <Icon className="w-4 h-4 shrink-0" /> {title}
+          </div>
+          <Help>{help}</Help>
+        </div>
         <Status r={r}>
-          <div className={`text-3xl font-black ${alarming ? "text-foreground" : "text-emerald-600"}`}>{formatCount(r?.count, r?.capped)}</div>
-          {sub && <div className="text-[11px] text-muted-foreground mt-1">{sub}</div>}
+          <div className={`text-3xl font-black ${ok ? "text-emerald-600" : "text-foreground"}`}>{formatCount(r?.count, r?.capped)}</div>
+          {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
         </Status>
       </CardContent>
     </Card>
   );
 }
 
-/** Indicateur oui/non d'un dossier : orange si problème. */
-function Flag({ on, label }: { readonly on: boolean; readonly label: string }) {
-  return on
-    ? <span className="text-xs font-semibold text-orange-600">{label}</span>
-    : <span className="text-xs text-muted-foreground">Non</span>;
+/** Pastille d'un point à traiter. */
+function Chip({ children, tone = "orange" }: { readonly children: React.ReactNode; readonly tone?: "orange" | "red" }) {
+  const cls = tone === "red" ? "bg-red-500/10 text-red-600" : "bg-orange-500/10 text-orange-600";
+  return <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${cls}`}>{children}</span>;
 }
 
-/** Volume d'un ensemble de dossiers : « 1,2 To · 350 000 fichiers ». */
-const volume = (t?: ZoneTotals) => (t ? `${formatBytes(t.sizeBytes)} · ${t.files.toLocaleString("fr-FR")} fichiers` : "");
+/** Liste courte (5 lignes) avec un bouton pour afficher le reste. */
+function useShowMore<T>(items: T[] | undefined, initial = 5) {
+  const [all, setAll] = useState(false);
+  const list = items ?? [];
+  return {
+    visible: all ? list : list.slice(0, initial),
+    toggle: list.length > initial
+      ? <button type="button" onClick={() => setAll(!all)} className="text-xs font-semibold text-primary hover:underline mt-2">
+          {all ? "Afficher moins" : `Afficher les ${list.length}`}
+        </button>
+      : null,
+  };
+}
+
+/** Ligne « dossier » : nom, chemin, taille et points à traiter. */
+function FolderRow({ name, path, url, size, chips }: {
+  readonly name?: string | null; readonly path: string; readonly url?: string | null; readonly size?: number | null; readonly chips: React.ReactNode;
+}) {
+  const link = safeUrl(url);
+  return (
+    <li className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium truncate" title={name ?? ""}>
+          {link ? <a href={link} target="_blank" rel="noopener noreferrer" className="hover:underline inline-flex items-center gap-1">{name ?? "—"} <ExternalLink className="w-3 h-3" /></a> : (name ?? "—")}
+        </div>
+        <div className="text-[11px] text-muted-foreground font-mono truncate" title={path}>{path}</div>
+      </div>
+      <div className="flex flex-wrap justify-end gap-1 max-w-[50%]">{chips}</div>
+      <div className="text-sm font-semibold text-foreground w-16 text-right shrink-0">{formatBytes(size)}</div>
+    </li>
+  );
+}
 
 export default function VaronisPosturePanel() {
   const queryClient = useQueryClient();
@@ -131,6 +173,12 @@ export default function VaronisPosturePanel() {
   const inactive = inactiveTotal(r);
   const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => !x || x.status !== "done");
   const zonePart = (part?: ZoneTotals) => zones && { ...zones, count: zones.status === "done" ? part?.count : undefined };
+  // Dossiers sensibles : ceux qui cumulent le plus de points à traiter d'abord, puis les plus gros
+  const issues = (z: { isStale: boolean; staleAccess: boolean; ownerIssue: boolean }) => Number(z.isStale) + Number(z.staleAccess) + Number(z.ownerIssue);
+  const priority = [...(zones?.top ?? [])].sort((a, b) => issues(b) - issues(a) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
+  const zoneList = useShowMore(priority);
+  const exposedList = useShowMore(exposed?.top);
+  const [showAdmins, setShowAdmins] = useState(false);
   const errorMessage = (refresh.error ?? error) as Error | null;
 
   return (
@@ -213,271 +261,192 @@ export default function VaronisPosturePanel() {
         </Card>
       )}
 
-      {/* INDICATEURS CLÉS */}
+      {/* CHIFFRES CLÉS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Kpi
           title="Dossiers sensibles ouverts à tous"
-          help="Dossiers contenant des données sensibles que tous les salariés peuvent ouvrir (groupe « Tout le monde », « Utilisateurs du domaine »…)."
+          help={<>Dossiers contenant des données sensibles (personnelles, financières, RH…) que <b>tous les salariés</b> peuvent ouvrir, via « Tout le monde » ou « Utilisateurs du domaine ». C&apos;est le premier risque de fuite.</>}
           icon={Globe2}
           color="border-l-red-500"
           r={exposed}
-          sub={exposed?.status === "done" && <>dont <b className="text-foreground">{formatCount(exposed.withoutValidOwner)}</b> sans responsable actif</>}
+          sub={exposed?.status === "done" && `dont ${formatCount(exposed.withoutValidOwner)} sans responsable`}
         />
         <Kpi
-          title="Données sensibles qui ne servent plus"
-          help="Partages et dossiers personnels contenant des données sensibles que plus personne n'ouvre ni ne modifie."
+          title="Données sensibles inutilisées"
+          help={<>Partages et dossiers personnels contenant des données sensibles que <b>plus personne n&apos;ouvre ni ne modifie</b> (durée réglée dans Varonis). À archiver ou supprimer : moins de données, moins de risque.</>}
           icon={Archive}
           color="border-l-amber-500"
           r={zonePart(zones?.stale)}
-          sub={zones?.status === "done" && <>
-            dossiers sur {formatCount(zones.count)} contenant des données sensibles ({share(zones.stale?.count, zones.count) ?? 0} %) · {volume(zones.stale)} : à archiver ou supprimer
-          </>}
+          sub={zones?.status === "done" && `dossiers · ${formatBytes(zones.stale?.sizeBytes)} à archiver`}
         />
         <Kpi
-          title="Droits inutilisés sur des données sensibles"
-          help="Partages et dossiers personnels sensibles où des personnes ont un droit d'accès dont elles ne se servent jamais."
+          title="Droits inutilisés"
+          help={<>Partages et dossiers personnels sensibles où des personnes ont <b>un droit d&apos;accès dont elles ne se servent jamais</b> (ancien poste, projet terminé…). À retirer : si l&apos;un de ces comptes est piraté, les données sont exposées.</>}
           icon={KeyRound}
           color="border-l-orange-500"
           r={zonePart(zones?.staleAccess)}
-          sub={zones?.status === "done" && <>dossiers sur {formatCount(zones.count)} ({share(zones.staleAccess?.count, zones.count) ?? 0} %) : droits à retirer pour réduire le risque de fuite</>}
+          sub={zones?.status === "done" && `dossiers sensibles sur ${formatCount(zones.count)} (${share(zones.staleAccess?.count, zones.count) ?? 0} %)`}
         />
         <Kpi
-          title="Administrateurs actifs"
-          help="Comptes administrateurs encore activés : ceux qui ne se connectent plus sont des cibles faciles."
+          title="Administrateurs inactifs"
+          help={<>Comptes administrateurs <b>encore activés</b> mais sans connexion depuis plus de {INACTIVE_DAYS} jours. Personne ne les surveille : ce sont des cibles de choix. À désactiver ou justifier.</>}
           icon={Crown}
           color="border-l-violet-500"
-          r={priv && { ...priv, count: priv.status === "done" ? priv.admins : undefined }}
-          sub={priv?.status === "done" && <>dont <b className={priv.stale ? "text-red-500" : "text-foreground"}>{formatCount(priv.stale)}</b> sans connexion depuis {INACTIVE_DAYS} j</>}
+          r={priv && { ...priv, count: priv.status === "done" ? priv.stale : undefined }}
+          sub={priv?.status === "done" && `sur ${formatCount(priv.admins)} administrateurs`}
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* ZONES SENSIBLES */}
+        {/* DOSSIERS SENSIBLES À TRAITER */}
         <Card className="lg:col-span-2">
-          <CardHeader className="pb-2 border-b border-border/50">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-              <FolderOpen className="w-4 h-4 text-primary" /> Partages et dossiers personnels contenant des données sensibles
+          <CardHeader className="pb-1">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <FolderOpen className="w-4 h-4 text-primary" /> Dossiers sensibles à traiter en priorité
             </CardTitle>
-            <p className="text-[11px] text-muted-foreground">
-              Ex. D:\Shares\Partage_Finance, D:\Users\ALEX — les 15 plus volumineux
-              {zones?.status === "done" && <> sur {formatCount(zones.count)} · {volume(zones as ZoneTotals)} au total</>}
+            <p className="text-xs text-muted-foreground">
+              Partages et dossiers personnels contenant des données sensibles
+              {zones?.status === "done" && <> : {formatCount(zones.count)} au total, dont {formatCount(zones.ownerIssue?.count)} sans responsable</>}
             </p>
           </CardHeader>
-          <CardContent className="pt-2">
+          <CardContent>
             <Status r={zones}>
-              {(zones?.top?.length ?? 0) === 0 ? (
-                <p className="text-sm text-emerald-600 py-4">Aucun partage ni dossier personnel contenant des données sensibles.</p>
+              {priority.length === 0 ? (
+                <p className="text-sm text-emerald-600 py-2">Aucun dossier contenant des données sensibles.</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Dossier</TableHead>
-                        <TableHead className="text-right">Taille</TableHead>
-                        <TableHead className="text-right">Fichiers</TableHead>
-                        <TableHead title="Contient des données que plus personne n'ouvre ni ne modifie">Données qui ne servent plus</TableHead>
-                        <TableHead title="Des personnes ont un droit d'accès dont elles ne se servent jamais">Droits inutilisés</TableHead>
-                        <TableHead title="Responsable du dossier (propriétaire) encore actif">Responsable</TableHead>
-                        <TableHead />
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {zones!.top!.map((z, i) => (
-                        <TableRow key={`${displayPath(z)}-${i}`}>
-                          <TableCell className="max-w-[280px]">
-                            <div className="font-medium truncate" title={z.name ?? ""}>{z.name ?? "—"}</div>
-                            <div className="text-[11px] text-muted-foreground font-mono truncate" title={z.path ?? ""}>{displayPath(z)}</div>
-                          </TableCell>
-                          <TableCell className="text-right text-sm whitespace-nowrap">{formatBytes(z.sizeBytes)}</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{(z.files ?? 0).toLocaleString("fr-FR")}</TableCell>
-                          <TableCell><Flag on={z.isStale} label="Oui" /></TableCell>
-                          <TableCell><Flag on={z.staleAccess} label="Oui" /></TableCell>
-                          <TableCell>{z.ownerIssue ? <span className="text-xs font-semibold text-orange-600">À désigner</span> : <span className="text-xs text-muted-foreground">OK</span>}</TableCell>
-                          <TableCell>
-                            {safeUrl(z.url) && (
-                              <a href={safeUrl(z.url)!} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
-                                <ExternalLink className="w-3.5 h-3.5" /> Ouvrir
-                              </a>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </Status>
-          </CardContent>
-        </Card>
-
-        {/* COMPTES PRIVILÉGIÉS */}
-        <Card>
-          <CardHeader className="pb-2 border-b border-border/50">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-              <Crown className="w-4 h-4 text-violet-500" /> Comptes à privilèges (activés)
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4 space-y-4">
-            <Status r={priv}>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3 rounded-xl border border-border">
-                  <div className="text-[11px] font-bold uppercase text-muted-foreground flex items-center gap-1.5"><Crown className="w-3.5 h-3.5" /> Administrateurs</div>
-                  <div className="text-2xl font-black text-foreground">{formatCount(priv?.admins)}</div>
-                  <div className="text-[11px] text-muted-foreground">dont {formatCount(priv?.stale)} inactifs</div>
-                </div>
-                <div className="p-3 rounded-xl border border-border">
-                  <div className="text-[11px] font-bold uppercase text-muted-foreground flex items-center gap-1.5"><Server className="w-3.5 h-3.5" /> Comptes de service</div>
-                  <div className="text-2xl font-black text-foreground">{formatCount(priv?.services)}</div>
-                  <div className="text-[11px] text-muted-foreground">dont {formatCount(priv?.servicesStale)} sans connexion depuis {INACTIVE_DAYS} j</div>
-                </div>
-              </div>
-              <div className="border-t border-border pt-3">
-                <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">
-                  Administrateurs sans connexion depuis plus de {INACTIVE_DAYS} jours — à désactiver ou justifier
-                </p>
-                {(priv?.staleList ?? []).length === 0 ? (
-                  <p className="text-sm text-emerald-600">Aucun administrateur inactif.</p>
-                ) : (
-                  <ul className="space-y-1">
-                    {priv!.staleList!.map((u, i) => (
-                      <li key={`${u.name}-${i}`} className="flex justify-between gap-3 text-xs">
-                        <span className="font-mono truncate text-foreground" title={u.name ?? ""}>{u.name}</span>
-                        <span className="text-muted-foreground shrink-0">dernière connexion : {formatDay(u.lastLogonTime)}</span>
-                      </li>
+                <>
+                  <ul>
+                    {zoneList.visible.map((z, i) => (
+                      <FolderRow
+                        key={`${displayPath(z)}-${i}`}
+                        name={z.name} path={displayPath(z)} url={z.url} size={z.sizeBytes}
+                        chips={issues(z) === 0
+                          ? <span className="text-[11px] text-muted-foreground">Rien à signaler</span>
+                          : <>
+                              {z.isStale && <Chip>Données inutilisées</Chip>}
+                              {z.staleAccess && <Chip>Droits inutilisés</Chip>}
+                              {z.ownerIssue && <Chip tone="red">Sans responsable</Chip>}
+                            </>}
+                      />
                     ))}
                   </ul>
-                )}
-                {(priv?.stale ?? 0) > (priv?.staleList?.length ?? 0) && (
-                  <p className="text-[11px] text-muted-foreground mt-1">… et {formatCount((priv!.stale ?? 0) - priv!.staleList!.length)} autres</p>
-                )}
-              </div>
-            </Status>
-          </CardContent>
-        </Card>
-      </div>
-
-        {/* DOSSIERS SENSIBLES EXPOSÉS */}
-        <Card>
-          <CardHeader className="pb-2 border-b border-border/50">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-              <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à tous les salariés
-            </CardTitle>
-            <p className="text-[11px] text-muted-foreground">Les 10 plus volumineux : retirer l&apos;accès « tout le monde » en priorité</p>
-          </CardHeader>
-          <CardContent className="pt-2">
-            <Status r={exposed}>
-              {(exposed?.top?.length ?? 0) === 0 ? (
-                <p className="text-sm text-emerald-600 py-4">Aucun dossier sensible ouvert à toute l&apos;organisation.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Dossier</TableHead>
-                        <TableHead className="text-right">Fichiers et dossiers</TableHead>
-                        <TableHead className="text-right">Taille</TableHead>
-                        <TableHead>Responsable</TableHead>
-                        <TableHead>Ne sert plus</TableHead>
-                        <TableHead />
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {exposed!.top!.map((f, i) => (
-                        <TableRow key={`${displayPath(f)}-${i}`}>
-                          <TableCell className="max-w-[320px]">
-                            <div className="font-medium truncate" title={f.name ?? ""}>{f.name ?? "—"}</div>
-                            <div className="text-[11px] text-muted-foreground font-mono truncate" title={f.path ?? ""}>{displayPath(f)}</div>
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-sm">{(f.objects ?? 0).toLocaleString("fr-FR")}</TableCell>
-                          <TableCell className="text-right text-sm whitespace-nowrap">{formatBytes(f.sizeBytes)}</TableCell>
-                          <TableCell className="text-sm">{f.ownerIssue ? <span className="text-orange-600 font-semibold">À désigner</span> : "OK"}</TableCell>
-                          <TableCell className="text-sm">{f.isStale ? "Oui" : "Non"}</TableCell>
-                          <TableCell>
-                            {safeUrl(f.url) && (
-                              <a href={safeUrl(f.url)!} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
-                                <ExternalLink className="w-3.5 h-3.5" /> Ouvrir
-                              </a>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                  {zoneList.toggle}
+                </>
               )}
             </Status>
           </CardContent>
         </Card>
 
-
-      {/* HYGIÈNE DES COMPTES */}
-      <Card>
-        <CardHeader className="pb-2 border-b border-border/50">
-          <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-            <UserMinus className="w-4 h-4 text-sky-500" /> Hygiène des comptes et des propriétaires
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="p-4 rounded-xl border border-border lg:col-span-2">
-            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-              <UserMinus className="w-4 h-4" /> Comptes activés sans connexion depuis plus de {INACTIVE_DAYS} jours
-            </div>
-            <div className="mt-2">
+        {/* COMPTES */}
+        <Card>
+          <CardHeader className="pb-1">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <Users className="w-4 h-4 text-sky-500" /> Comptes
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                  <UserMinus className="w-4 h-4" /> Comptes activés inactifs
+                </span>
+                <Help>Comptes <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, par ancienneté. À désactiver en commençant par les plus anciens.</Help>
+              </div>
               <Status r={inactiveStatus ?? { status: "done" }}>
-                <span className="text-2xl font-black text-foreground">{formatCount(inactive.count, inactive.capped)}</span>
-                <div className="mt-3 space-y-2">
+                <div className="text-2xl font-black text-foreground">{formatCount(inactive.count, inactive.capped)}</div>
+                <div className="mt-2 space-y-1.5">
                   {INACTIVE_BUCKETS.map(({ key, label }) => {
                     const n = r[key]?.count ?? 0;
                     return (
-                      <div key={key} className="space-y-1">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-foreground">{label}</span>
-                          <span className="font-bold">{formatCount(n, r[key]?.capped)}</span>
-                        </div>
-                        <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div key={key} className="grid grid-cols-[112px_1fr_56px] items-center gap-2 text-xs">
+                        <span className="text-muted-foreground">{label}</span>
+                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                           <div className="h-full bg-sky-500" style={{ width: `${(n / Math.max(1, inactive.count ?? 1)) * 100}%` }} />
                         </div>
+                        <span className="text-right font-semibold">{formatCount(n, r[key]?.capped)}</span>
                       </div>
                     );
                   })}
                 </div>
               </Status>
             </div>
-            <p className="text-[11px] text-muted-foreground mt-2">Comptes toujours activés : à désactiver en priorité à partir des plus anciens</p>
-          </div>
-          <div className="space-y-4">
-            <div className="p-4 rounded-xl border border-border">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                <CalendarX className="w-4 h-4" /> Comptes expirés encore actifs
+
+            <dl className="border-t border-border pt-3 space-y-2 text-sm">
+              <div className="flex justify-between gap-2">
+                <dt className="text-muted-foreground">Administrateurs</dt>
+                <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.admins)}</Status></dd>
               </div>
-              <div className="mt-2">
-                <Status r={r.expiredEnabled}>
-                  <span className="text-2xl font-black text-foreground">{formatCount(r.expiredEnabled?.count, r.expiredEnabled?.capped)}</span>
-                </Status>
+              <div className="flex justify-between gap-2">
+                <dt className="text-muted-foreground">Comptes de service</dt>
+                <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.services)}</Status></dd>
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1">Date d&apos;expiration passée, compte toujours activé</p>
-            </div>
-            <div className="p-4 rounded-xl border border-border">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                <UserX className="w-4 h-4" /> Dossiers sensibles sans responsable actif
+              <div className="flex justify-between gap-2">
+                <dt className="text-muted-foreground">Comptes expirés encore actifs</dt>
+                <dd className="font-semibold"><Status r={r.expiredEnabled}>{formatCount(r.expiredEnabled?.count)}</Status></dd>
               </div>
-              <div className="mt-2">
-                <Status r={zonePart(zones?.ownerIssue)}>
-                  <span className="text-2xl font-black text-foreground">{formatCount(zones?.ownerIssue?.count)}</span>
-                </Status>
+            </dl>
+
+            {(priv?.staleList?.length ?? 0) > 0 && (
+              <div>
+                <button type="button" onClick={() => setShowAdmins(!showAdmins)} className="text-xs font-semibold text-primary hover:underline">
+                  {showAdmins ? "Masquer" : "Voir"} les administrateurs inactifs
+                </button>
+                {showAdmins && (
+                  <ul className="mt-2 space-y-1">
+                    {priv!.staleList!.map((u, i) => (
+                      <li key={`${u.name}-${i}`} className="flex justify-between gap-3 text-xs">
+                        <span className="font-mono truncate text-foreground" title={u.name ?? ""}>{u.name}</span>
+                        <span className="text-muted-foreground shrink-0">{formatDay(u.lastLogonTime)}</span>
+                      </li>
+                    ))}
+                    {(priv!.stale ?? 0) > priv!.staleList!.length && (
+                      <li className="text-[11px] text-muted-foreground">… et {formatCount((priv!.stale ?? 0) - priv!.staleList!.length)} autres</li>
+                    )}
+                  </ul>
+                )}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1">Partages et dossiers personnels sensibles dont le propriétaire a quitté l&apos;entreprise ou ne se connecte plus : personne pour valider qui y a accès</p>
-            </div>
-          </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* DOSSIERS OUVERTS À TOUS */}
+      <Card>
+        <CardHeader className="pb-1">
+          <CardTitle className="text-sm font-bold flex items-center gap-2">
+            <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à tous : les plus volumineux
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">Retirer l&apos;accès « tout le monde » en commençant par ceux-ci</p>
+        </CardHeader>
+        <CardContent>
+          <Status r={exposed}>
+            {(exposed?.top?.length ?? 0) === 0 ? (
+              <p className="text-sm text-emerald-600 py-2">Aucun dossier sensible ouvert à tous.</p>
+            ) : (
+              <>
+                <ul>
+                  {exposedList.visible.map((f, i) => (
+                    <FolderRow
+                      key={`${displayPath(f)}-${i}`}
+                      name={f.name} path={displayPath(f)} url={f.url} size={f.sizeBytes}
+                      chips={<>
+                        {f.ownerIssue && <Chip tone="red">Sans responsable</Chip>}
+                        {f.isStale && <Chip>Données inutilisées</Chip>}
+                      </>}
+                    />
+                  ))}
+                </ul>
+                {exposedList.toggle}
+              </>
+            )}
+          </Status>
         </CardContent>
       </Card>
 
-      <p className="text-[11px] text-muted-foreground flex items-start gap-1.5">
-        <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-        Chiffres exacts calculés par Varonis. « Données sensibles » : contenu repéré par la classification Varonis (données personnelles, financières, RH…).
-        Les dossiers comptés sont les partages métier et les dossiers personnels (niveau {ZONE_DEPTH} : D:\Shares\…, D:\Users\…), pas chacun de leurs sous-dossiers.
-        « Ne servent plus » et « droits inutilisés » suivent la durée d&apos;inactivité configurée dans Varonis. Comptes inactifs : comptes activés sans connexion depuis plus de {INACTIVE_DAYS} jours.
-        {state?.scheduled ? " La posture est recalculée automatiquement chaque nuit." : ""} Chaque photo est conservée pour suivre l&apos;évolution dans le temps.
+      <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+        <Info className="w-3.5 h-3.5 shrink-0" />
+        Chiffres exacts calculés par Varonis. Cliquez sur ⓘ pour la définition de chaque indicateur.
+        {state?.scheduled ? " Mise à jour automatique chaque nuit." : ""}
       </p>
     </div>
   );
