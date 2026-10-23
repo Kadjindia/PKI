@@ -35,6 +35,7 @@ interface Base {
 
 export interface ExposedFolder {
   name?: string | null; path?: string | null; sharePath?: string | null; url?: string | null;
+  source?: string | null; sourceName?: string | null;
   objects?: number | null; sizeBytes?: number | null;
   ownerIssue: boolean; isStale: boolean; lastEventDate?: string | null;
 }
@@ -44,6 +45,7 @@ export interface ZoneTotals { count: number; sizeBytes: number; files: number }
 
 export interface Zone {
   name?: string | null; path?: string | null; sharePath?: string | null; url?: string | null;
+  source?: string | null; sourceName?: string | null;
   sizeBytes?: number | null; files?: number | null;
   isStale: boolean; staleAccess: boolean; ownerIssue: boolean;
 }
@@ -168,4 +170,16 @@ export function formatAge(iso: string, now = Date.now()): string {
   if (min < 60) return `il y a ${min} min`;
   if (min < 48 * 60) return `il y a ${Math.floor(min / 60)} h`;
   return `il y a ${Math.floor(min / 1440)} j`;
+}
+
+/** Libellé lisible du type de source Varonis (SharePoint, OneDrive, partage de fichiers…). */
+export function sourceLabel(type?: string | null): string | null {
+  if (!type) return null;
+  const t = type.toLowerCase();
+  if (t.includes("onedrive")) return "OneDrive";
+  if (t.includes("sharepoint") || t === "spo") return "SharePoint";
+  if (t.includes("exchange") || t.includes("mail")) return "Messagerie";
+  if (t.includes("teams")) return "Teams";
+  if (t.includes("windows") || t.includes("cifs") || t.includes("smb") || t.includes("nas") || t.includes("file")) return "Partage de fichiers";
+  return type;
 }

@@ -6,10 +6,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users,
-  RefreshCw, Loader2, AlertTriangle, ExternalLink, Info, Clock,
+  RefreshCw, Loader2, AlertTriangle, Info, Clock,
 } from "lucide-react";
 import {
-  formatCount, formatBytes, share, safeUrl, snapshotProgress, formatAge, inactiveTotal,
+  formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal,
   allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
   POSTURE_KEYS, type PostureResults, type PostureState, type ZoneTotals,
 } from "@/lib/varonisPosture";
@@ -121,16 +121,17 @@ function useShowMore<T>(items: T[] | undefined, initial = 5) {
   };
 }
 
-/** Ligne « dossier » : nom, chemin, taille et points à traiter. */
-function FolderRow({ name, path, url, size, chips }: {
-  readonly name?: string | null; readonly path: string; readonly url?: string | null; readonly size?: number | null; readonly chips: React.ReactNode;
+/** Ligne « dossier » : nom, source, chemin, taille et points à traiter. */
+function FolderRow({ name, path, source, size, chips }: {
+  readonly name?: string | null; readonly path: string; readonly source?: string | null; readonly size?: number | null; readonly chips: React.ReactNode;
 }) {
-  const link = safeUrl(url);
+  const label = sourceLabel(source);
   return (
     <li className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0">
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium truncate" title={name ?? ""}>
-          {link ? <a href={link} target="_blank" rel="noopener noreferrer" className="hover:underline inline-flex items-center gap-1">{name ?? "—"} <ExternalLink className="w-3 h-3" /></a> : (name ?? "—")}
+        <div className="text-sm font-medium truncate flex items-center gap-2" title={name ?? ""}>
+          <span className="truncate">{name ?? "—"}</span>
+          {label && <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{label}</span>}
         </div>
         <div className="text-[11px] text-muted-foreground font-mono truncate" title={path}>{path}</div>
       </div>
@@ -171,6 +172,8 @@ export default function VaronisPosturePanel() {
   const zones = r.zones;
   const priv = r.privileged;
   const inactive = inactiveTotal(r);
+  // Une tranche plafonnée par Varonis ne donne pas un chiffre fiable : on ne l'affiche pas
+  const inactiveUnreliable = INACTIVE_BUCKETS.some((b) => b.key !== "neverLogged" && r[b.key]?.status === "done" && r[b.key]?.capped);
   const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => !x || x.status !== "done");
   const zonePart = (part?: ZoneTotals) => zones && { ...zones, count: zones.status === "done" ? part?.count : undefined };
   // Dossiers sensibles : ceux qui cumulent le plus de points à traiter d'abord, puis les plus gros
@@ -265,7 +268,12 @@ export default function VaronisPosturePanel() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Kpi
           title="Dossiers sensibles ouverts à tous"
-          help={<>Dossiers contenant des données sensibles (personnelles, financières, RH…) que <b>tous les salariés</b> peuvent ouvrir, via « Tout le monde » ou « Utilisateurs du domaine ». C&apos;est le premier risque de fuite.</>}
+          help={<>
+            Dossiers contenant des données sensibles (personnelles, financières, RH…) accessibles à <b>tous les salariés</b> :
+            soit par un droit « Tout le monde » / « Utilisateurs du domaine », soit, sur SharePoint et OneDrive, par un
+            <b> lien de partage « toute personne de l&apos;organisation »</b>. Dans ce cas, quiconque reçoit le lien ouvre le
+            document, même si l&apos;adresse du site lui reste fermée. C&apos;est le premier risque de fuite.
+          </>}
           icon={Globe2}
           color="border-l-red-500"
           r={exposed}
@@ -319,7 +327,7 @@ export default function VaronisPosturePanel() {
                     {zoneList.visible.map((z, i) => (
                       <FolderRow
                         key={`${displayPath(z)}-${i}`}
-                        name={z.name} path={displayPath(z)} url={z.url} size={z.sizeBytes}
+                        name={z.name} path={displayPath(z)} source={z.source} size={z.sizeBytes}
                         chips={issues(z) === 0
                           ? <span className="text-[11px] text-muted-foreground">Rien à signaler</span>
                           : <>
@@ -352,6 +360,11 @@ export default function VaronisPosturePanel() {
                 </span>
                 <Help>Comptes <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, par ancienneté. À désactiver en commençant par les plus anciens.</Help>
               </div>
+              {inactiveUnreliable ? (
+                <p className="text-sm text-amber-600 mt-1">
+                  Chiffre non fiable : Varonis a plafonné la recherche. Correction en cours.
+                </p>
+              ) : (
               <Status r={inactiveStatus ?? { status: "done" }}>
                 <div className="text-2xl font-black text-foreground">{formatCount(inactive.count, inactive.capped)}</div>
                 <div className="mt-2 space-y-1.5">
@@ -369,6 +382,7 @@ export default function VaronisPosturePanel() {
                   })}
                 </div>
               </Status>
+              )}
             </div>
 
             <dl className="border-t border-border pt-3 space-y-2 text-sm">
@@ -428,7 +442,7 @@ export default function VaronisPosturePanel() {
                   {exposedList.visible.map((f, i) => (
                     <FolderRow
                       key={`${displayPath(f)}-${i}`}
-                      name={f.name} path={displayPath(f)} url={f.url} size={f.sizeBytes}
+                      name={f.name} path={displayPath(f)} source={f.source} size={f.sizeBytes}
                       chips={<>
                         {f.ownerIssue && <Chip tone="red">Sans responsable</Chip>}
                         {f.isStale && <Chip>Données inutilisées</Chip>}

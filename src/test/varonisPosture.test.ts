@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
-  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed,
+  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -68,5 +68,12 @@ describe("posture Varonis : mise en forme", () => {
     expect(formatAge("2026-10-23T11:55:00Z", now)).toBe("il y a 5 min");
     expect(formatAge("2026-10-23T08:00:00Z", now)).toBe("il y a 4 h");
     expect(formatAge("2026-10-20T12:00:00Z", now)).toBe("il y a 3 j");
+  });
+
+  it("traduit le type de source", () => {
+    expect(sourceLabel("SharePoint Online")).toBe("SharePoint");
+    expect(sourceLabel("OneDrive")).toBe("OneDrive");
+    expect(sourceLabel("Windows")).toBe("Partage de fichiers");
+    expect(sourceLabel(null)).toBeNull();
   });
 });

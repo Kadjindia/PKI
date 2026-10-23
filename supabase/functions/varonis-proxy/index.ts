@@ -326,12 +326,25 @@ function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
     fields: "id isDisabled lastLogonTime",
     summarize: (rows) => {
       const now = Date.now();
+      const ageOf = (r: Row) => (now - new Date(r.lastLogonTime).getTime()) / DAY;
+      const dated = rows.filter((r) => r.lastLogonTime);
+      const ages = dated.map(ageOf).sort((a, b) => a - b);
       return {
         count: count(rows, (r) => {
           if (r.isDisabled || !r.lastLogonTime) return false;
-          const days = (now - new Date(r.lastLogonTime).getTime()) / DAY;
+          const days = ageOf(r);
           return days > from && (to === null || days <= to);
         }),
+        // Diagnostic : ce que Varonis a réellement renvoyé pour cette tranche
+        diag: {
+          received: rows.length,
+          noLogonDate: rows.length - dated.length,
+          disabled: count(rows, (r) => r.isDisabled),
+          newerThanRange: ages.filter((d) => d <= from).length,
+          olderThanRange: to === null ? 0 : ages.filter((d) => d > to).length,
+          youngestDays: ages.length ? Math.round(ages[0]) : null,
+          oldestDays: ages.length ? Math.round(ages[ages.length - 1]) : null,
+        },
       };
     },
   };
@@ -343,7 +356,7 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
     where: { isSensitive: yes, isRootOrgWideExposed: yes },
-    fields: "id name path sharePaths url sizeOfResourceAndNestedResources totalNumberOfNestedObjects hasStaleOwner hasDisabledOwner isStale lastEventDate",
+    fields: "id name path sharePaths url sizeOfResourceAndNestedResources totalNumberOfNestedObjects hasStaleOwner hasDisabledOwner isStale lastEventDate dataSource { name type }",
     summarize: (rows) => ({
       count: rows.length,
       withoutValidOwner: count(rows, (r) => r.hasStaleOwner || r.hasDisabledOwner),
@@ -352,6 +365,7 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
         .slice(0, 10)
         .map((r) => ({
           name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
+          source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
           objects: r.totalNumberOfNestedObjects, sizeBytes: r.sizeOfResourceAndNestedResources,
           ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner), isStale: Boolean(r.isStale),
           lastEventDate: r.lastEventDate,
@@ -363,7 +377,7 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
     where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH } },
-    fields: "id name path sharePaths url sizeOfResourceAndNestedResources numberOfNestedFiles isStaleIncludingSubfolders hasStaleAccess hasStaleOwner hasDisabledOwner",
+    fields: "id name path sharePaths url sizeOfResourceAndNestedResources numberOfNestedFiles isStaleIncludingSubfolders hasStaleAccess hasStaleOwner hasDisabledOwner dataSource { name type }",
     summarize: (all) => {
       const rows = uniqueById(all);
       const stale = rows.filter((r) => r.isStaleIncludingSubfolders);
@@ -379,6 +393,7 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
           .slice(0, 15)
           .map((r) => ({
             name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
+            source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
             sizeBytes: r.sizeOfResourceAndNestedResources, files: r.numberOfNestedFiles,
             isStale: Boolean(r.isStaleIncludingSubfolders), staleAccess: Boolean(r.hasStaleAccess),
             ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner),
