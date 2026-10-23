@@ -49,11 +49,13 @@ export default function VaronisSchemaDiagnostic() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [scheduled, setScheduled] = useState<string | null>(null);
 
   const run = async () => {
     setLoading(true);
     setError(null);
     setResult(null);
+    setScheduled(null);
     const names = typeNames.split(/[,\s]+/).map((n) => n.trim()).filter(Boolean);
     const { data, error: err } = await supabase.functions.invoke("varonis-proxy", {
       body: { action: "schema", typeNames: names },
@@ -67,9 +69,27 @@ export default function VaronisSchemaDiagnostic() {
     setLoading(false);
   };
 
+  // Recherches planifiées : dernière exécution et nombre de lignes de chaque résultat
+  const runScheduled = async () => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setScheduled(null);
+    const { data, error: err } = await supabase.functions.invoke("varonis-proxy", { body: { action: "scheduledSearches" } });
+    if (err) {
+      const body = err instanceof FunctionsHttpError ? await err.context.json().catch(() => null) : null;
+      setError(body?.error ?? err.message);
+    } else {
+      setScheduled(JSON.stringify(data?.scheduledSearches ?? [], null, 2));
+    }
+    setLoading(false);
+  };
+
+  const output = scheduled ?? (result ? toCompactText(result) : null);
+
   const copy = async () => {
-    if (!result) return;
-    await navigator.clipboard.writeText(toCompactText(result));
+    if (!output) return;
+    await navigator.clipboard.writeText(output);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -98,7 +118,15 @@ export default function VaronisSchemaDiagnostic() {
           >
             {loading && <Loader2 className="w-4 h-4 animate-spin" />} Lire le schéma
           </button>
-          {result && (
+          <button
+            type="button"
+            onClick={runScheduled}
+            disabled={loading}
+            className="flex items-center gap-2 text-sm font-semibold px-4 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50"
+          >
+            Lire les recherches planifiées
+          </button>
+          {output && (
             <button
               type="button"
               onClick={copy}
@@ -111,9 +139,9 @@ export default function VaronisSchemaDiagnostic() {
 
         {error && <p className="font-mono text-xs text-destructive break-all">{error}</p>}
 
-        {result && (
+        {output && (
           <pre className="max-h-[480px] overflow-auto border border-border rounded-lg p-3 text-xs font-mono whitespace-pre-wrap text-foreground bg-muted/30">
-            {toCompactText(result)}
+            {output}
           </pre>
         )}
       </CardContent>
