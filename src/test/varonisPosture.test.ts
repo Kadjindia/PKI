@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
-  allUnauthorized, shortError, sumCounts, displayPath, formatElapsed,
+  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -33,25 +33,28 @@ describe("posture Varonis : mise en forme", () => {
 
   it("compte les indicateurs terminés d'une photo", () => {
     expect(snapshotProgress({
-      staleUsers: { status: "done", count: 7 },
+      inactive90: { status: "done", count: 7 },
       expiredEnabled: { status: "error", code: "timeout" },
-      sensitive: { status: "pending" },
+      zones: { status: "pending" },
       privileged: { status: "queued" },
     })).toBe(2);
   });
 
   it("détecte un refus de droits général et produit des messages courts", () => {
     const denied = { status: "error" as const, code: "unauthorized" as const };
-    expect(allUnauthorized({ sensitive: denied, privileged: { status: "error", code: "filter", field: "isDisabled" } })).toBe(true);
-    expect(allUnauthorized({ sensitive: denied, staleUsers: { status: "done", count: 2 } })).toBe(false);
-    expect(allUnauthorized({ sensitive: { status: "pending" } })).toBe(false);
+    expect(allUnauthorized({ zones: denied, privileged: { status: "error", code: "filter", field: "isDisabled" } })).toBe(true);
+    expect(allUnauthorized({ zones: denied, inactive90: { status: "done", count: 2 } })).toBe(false);
+    expect(allUnauthorized({ zones: { status: "pending" } })).toBe(false);
     expect(shortError(denied)).toBe("Droits Varonis insuffisants");
     expect(shortError({ code: "filter", field: "isStale" })).toBe("Filtre « isStale » refusé par Varonis");
   });
 
-  it("additionne deux indicateurs et choisit le chemin le plus parlant", () => {
-    expect(sumCounts({ status: "done", count: 3 }, { status: "done", count: 4, capped: true })).toEqual({ count: 7, capped: true });
-    expect(sumCounts({ status: "done", count: 3 }, { status: "pending" })).toEqual({ count: undefined, capped: false });
+  it("additionne les tranches de comptes inactifs et choisit le chemin le plus parlant", () => {
+    const done = (count: number, capped = false) => ({ status: "done" as const, count, capped });
+    expect(inactiveTotal({
+      inactive90: done(3), inactive180: done(4), inactive365: done(5), inactive730: done(6, true), neverLogged: done(1),
+    })).toEqual({ count: 19, capped: true });
+    expect(inactiveTotal({ inactive90: done(3), inactive180: { status: "pending" } })).toEqual({ count: undefined, capped: false });
     expect(displayPath({ sharePath: "\\\\FS01\\Departments", path: "D:\\Departments" })).toBe("\\\\FS01\\Departments");
     expect(displayPath({ path: "D:\\Users" })).toBe("D:\\Users");
   });
