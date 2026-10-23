@@ -187,7 +187,39 @@ async function listScheduledSearches(baseUrl: string, token: string) {
     }
   `;
   const data = await callVaronisGraphQL(baseUrl, token, query, {});
-  return data.scheduledSearches ?? [];
+  const searches: Row[] = data.scheduledSearches ?? [];
+
+  // Détail des exécutions (les résultats ne sont pas toujours fournis par lastExecution)
+  const ids = searches.map((s) => String(s.id)).filter((id) => /^[\w-]{1,64}$/.test(id));
+  let executions: unknown = null;
+  if (ids.length > 0) {
+    try {
+      const execQuery = `
+        query executions {
+          scheduledSearchExecutions(scheduledSearchIds: ${JSON.stringify(ids)}) {
+            id
+            status
+            time
+            scheduledSearch { id name }
+            results {
+              id
+              name
+              status
+              rowCount
+              size
+              containsData
+              time
+              linkedSavedSearch { id name }
+            }
+          }
+        }
+      `;
+      executions = (await callVaronisGraphQL(baseUrl, token, execQuery, {})).scheduledSearchExecutions;
+    } catch (e) {
+      executions = { error: (e as Error).message.slice(0, 500) };
+    }
+  }
+  return { searches, executions };
 }
 
 /** Étape 3 : interroge une fois l'état du job (sans attendre). */
