@@ -155,6 +155,41 @@ async function describeType(baseUrl: string, token: string, typeName: string) {
   return data.__type;
 }
 
+/**
+ * Mode diagnostic (lecture seule) : recherches planifiées Varonis et résultat
+ * de leur dernière exécution (nombre de lignes exact). Le lien de
+ * téléchargement (dataUrl, utilisable sans jeton) n'est volontairement pas lu.
+ */
+async function listScheduledSearches(baseUrl: string, token: string) {
+  const query = `
+    query scheduled {
+      scheduledSearches {
+        id
+        name
+        enabled
+        nextExecutionTime
+        lastExecution {
+          id
+          status
+          time
+          results {
+            id
+            name
+            status
+            rowCount
+            size
+            containsData
+            time
+            linkedSavedSearch { id name }
+          }
+        }
+      }
+    }
+  `;
+  const data = await callVaronisGraphQL(baseUrl, token, query, {});
+  return data.scheduledSearches ?? [];
+}
+
 /** Étape 3 : interroge une fois l'état du job (sans attendre). */
 async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
   const query = `
@@ -624,6 +659,12 @@ Deno.serve(async (req) => {
     // Posture des données : lecture de la dernière photo, ou nouveau calcul
     if (body.action === "posture-status" || body.action === "posture-refresh") {
       return await handlePosture(body.action, body, baseUrl, VARONIS_API_KEY, user.id);
+    }
+
+    // Mode diagnostic : { action: "scheduledSearches" }
+    if (body.action === "scheduledSearches") {
+      const scheduledToken = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
+      return jsonResponse({ scheduledSearches: await listScheduledSearches(baseUrl, scheduledToken) });
     }
 
     // Mode diagnostic : { action: "schema", typeName: "Alert" }
