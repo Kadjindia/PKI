@@ -7,13 +7,13 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Globe2, UserX, Crown, UserMinus, CalendarX, Users, KeyRound, Archive, FolderOpen,
+  Globe2, UserX, Crown, UserMinus, CalendarX, KeyRound, Archive, FolderOpen, Server,
   RefreshCw, Loader2, AlertTriangle, ExternalLink, Info, Clock,
 } from "lucide-react";
 import {
-  formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
-  allUnauthorized, shortError, sumCounts, displayPath, INACTIVE_DAYS, formatElapsed,
-  POSTURE_KEYS, type PostureResults, type PostureKey, type PostureState,
+  formatCount, formatBytes, share, safeUrl, snapshotProgress, formatAge, inactiveTotal,
+  allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, ZONE_DEPTH, formatElapsed,
+  POSTURE_KEYS, type PostureResults, type PostureState, type ZoneTotals,
 } from "@/lib/varonisPosture";
 
 // La posture est calculée côté serveur (tâche planifiée chaque nuit, ou à la
@@ -87,12 +87,15 @@ function Kpi({ title, icon: Icon, color, r, sub }: {
   );
 }
 
-const HYGIENE: { key: PostureKey; label: string; help: string; icon: typeof Info }[] = [
-  { key: "staleUsers", label: "Comptes inactifs encore activés", help: `Aucune connexion depuis plus de ${INACTIVE_DAYS} jours, compte toujours activé`, icon: UserMinus },
-  { key: "expiredEnabled", label: "Comptes expirés encore actifs", help: "Date d'expiration passée, compte toujours activé", icon: CalendarX },
-  { key: "staleMemberships", label: "Appartenances obsolètes", help: "Membres de groupes qui n'utilisent plus cet accès", icon: Users },
-  { key: "stalePermissions", label: "Permissions inutilisées", help: "Droits jamais utilisés : candidats au retrait", icon: KeyRound },
-];
+/** Indicateur oui/non d'une zone : rouge si problème. */
+function Flag({ on, label }: { readonly on: boolean; readonly label: string }) {
+  return on
+    ? <span className="text-xs font-semibold text-orange-600">{label}</span>
+    : <span className="text-xs text-muted-foreground">Non</span>;
+}
+
+/** Volume d'un ensemble de zones : « 1,2 To · 350 000 fichiers ». */
+const volume = (t?: ZoneTotals) => (t ? `${formatBytes(t.sizeBytes)} · ${t.files.toLocaleString("fr-FR")} fichiers` : "");
 
 export default function VaronisPosturePanel() {
   const queryClient = useQueryClient();
@@ -122,10 +125,11 @@ export default function VaronisPosturePanel() {
   }, [running]);
 
   const exposed = r.sensitiveExposed;
-  const sensitive = r.sensitive;
-  const ownerless = sumCounts(r.sensitiveStaleOwner, r.sensitiveDisabledOwner);
-  const ownerStatus = [r.sensitiveStaleOwner, r.sensitiveDisabledOwner].find((x) => !x || x.status !== "done") ?? r.sensitiveStaleOwner;
+  const zones = r.zones;
   const priv = r.privileged;
+  const inactive = inactiveTotal(r);
+  const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => !x || x.status !== "done");
+  const zonePart = (part?: ZoneTotals) => zones && { ...zones, count: zones.status === "done" ? part?.count : undefined };
   const errorMessage = (refresh.error ?? error) as Error | null;
 
   return (
@@ -218,36 +222,137 @@ export default function VaronisPosturePanel() {
           sub={exposed?.status === "done" && <>dont <b className="text-foreground">{formatCount(exposed.withoutValidOwner)}</b> sans propriétaire valide</>}
         />
         <Kpi
-          title="Ressources sensibles sans propriétaire valide"
-          icon={UserX}
-          color="border-l-orange-500"
-          r={ownerStatus && { ...ownerStatus, status: ownerless.count === undefined ? ownerStatus.status : "done", count: ownerless.count, capped: ownerless.capped }}
-          sub={ownerless.count !== undefined && <>
-            propriétaire inactif : {formatCount(r.sensitiveStaleOwner?.count, r.sensitiveStaleOwner?.capped)} · désactivé : {formatCount(r.sensitiveDisabledOwner?.count, r.sensitiveDisabledOwner?.capped)}
-          </>}
-        />
-        <Kpi
-          title="Données sensibles obsolètes"
+          title="Zones sensibles contenant des données obsolètes"
           icon={Archive}
           color="border-l-amber-500"
-          r={r.sensitiveStale}
-          sub={r.sensitiveStale?.status === "done" && <>
-            non consultées depuis longtemps : à archiver ou supprimer
-            {sensitive?.status === "done" && !sensitive.capped && !r.sensitiveStale.capped && ` (${share(r.sensitiveStale.count, sensitive.count) ?? 0} % des ${formatCount(sensitive.count)} ressources sensibles)`}
+          r={zonePart(zones?.stale)}
+          sub={zones?.status === "done" && <>
+            sur {formatCount(zones.count)} zones sensibles ({share(zones.stale?.count, zones.count) ?? 0} %) · {volume(zones.stale)} : à archiver ou supprimer
           </>}
         />
         <Kpi
-          title="Comptes privilégiés actifs"
+          title="Zones sensibles avec des accès obsolètes"
+          icon={KeyRound}
+          color="border-l-orange-500"
+          r={zonePart(zones?.staleAccess)}
+          sub={zones?.status === "done" && <>droits jamais utilisés à retirer ({share(zones.staleAccess?.count, zones.count) ?? 0} % des zones sensibles)</>}
+        />
+        <Kpi
+          title="Administrateurs actifs"
           icon={Crown}
           color="border-l-violet-500"
-          r={priv}
+          r={priv && { ...priv, count: priv.status === "done" ? priv.admins : undefined }}
           sub={priv?.status === "done" && <>dont <b className={priv.stale ? "text-red-500" : "text-foreground"}>{formatCount(priv.stale)}</b> sans connexion depuis {INACTIVE_DAYS} j</>}
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* DOSSIERS SENSIBLES EXPOSÉS */}
+        {/* ZONES SENSIBLES */}
         <Card className="lg:col-span-2">
+          <CardHeader className="pb-2 border-b border-border/50">
+            <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+              <FolderOpen className="w-4 h-4 text-primary" /> Zones contenant des données sensibles
+            </CardTitle>
+            <p className="text-[11px] text-muted-foreground">
+              Partages et dossiers personnels (niveau {ZONE_DEPTH}, ex. D:\Shares\Partage_Finance) — les 15 plus volumineux
+              {zones?.status === "done" && <> sur {formatCount(zones.count)} · {volume(zones as ZoneTotals)} au total</>}
+            </p>
+          </CardHeader>
+          <CardContent className="pt-2">
+            <Status r={zones}>
+              {(zones?.top?.length ?? 0) === 0 ? (
+                <p className="text-sm text-emerald-600 py-4">Aucune zone contenant des données sensibles.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Zone</TableHead>
+                        <TableHead className="text-right">Taille</TableHead>
+                        <TableHead className="text-right">Fichiers</TableHead>
+                        <TableHead>Données obsolètes</TableHead>
+                        <TableHead>Accès obsolètes</TableHead>
+                        <TableHead>Propriétaire</TableHead>
+                        <TableHead />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {zones!.top!.map((z, i) => (
+                        <TableRow key={`${displayPath(z)}-${i}`}>
+                          <TableCell className="max-w-[280px]">
+                            <div className="font-medium truncate" title={z.name ?? ""}>{z.name ?? "—"}</div>
+                            <div className="text-[11px] text-muted-foreground font-mono truncate" title={z.path ?? ""}>{displayPath(z)}</div>
+                          </TableCell>
+                          <TableCell className="text-right text-sm whitespace-nowrap">{formatBytes(z.sizeBytes)}</TableCell>
+                          <TableCell className="text-right font-mono text-sm">{(z.files ?? 0).toLocaleString("fr-FR")}</TableCell>
+                          <TableCell><Flag on={z.isStale} label="Oui" /></TableCell>
+                          <TableCell><Flag on={z.staleAccess} label="Oui" /></TableCell>
+                          <TableCell>{z.ownerIssue ? <span className="text-xs font-semibold text-orange-600">À désigner</span> : <span className="text-xs text-muted-foreground">OK</span>}</TableCell>
+                          <TableCell>
+                            {safeUrl(z.url) && (
+                              <a href={safeUrl(z.url)!} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
+                                <ExternalLink className="w-3.5 h-3.5" /> Ouvrir
+                              </a>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </Status>
+          </CardContent>
+        </Card>
+
+        {/* COMPTES PRIVILÉGIÉS */}
+        <Card>
+          <CardHeader className="pb-2 border-b border-border/50">
+            <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+              <Crown className="w-4 h-4 text-violet-500" /> Comptes à privilèges (activés)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 space-y-4">
+            <Status r={priv}>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 rounded-xl border border-border">
+                  <div className="text-[11px] font-bold uppercase text-muted-foreground flex items-center gap-1.5"><Crown className="w-3.5 h-3.5" /> Administrateurs</div>
+                  <div className="text-2xl font-black text-foreground">{formatCount(priv?.admins)}</div>
+                  <div className="text-[11px] text-muted-foreground">dont {formatCount(priv?.stale)} inactifs</div>
+                </div>
+                <div className="p-3 rounded-xl border border-border">
+                  <div className="text-[11px] font-bold uppercase text-muted-foreground flex items-center gap-1.5"><Server className="w-3.5 h-3.5" /> Comptes de service</div>
+                  <div className="text-2xl font-black text-foreground">{formatCount(priv?.services)}</div>
+                  <div className="text-[11px] text-muted-foreground">dont {formatCount(priv?.servicesStale)} sans connexion depuis {INACTIVE_DAYS} j</div>
+                </div>
+              </div>
+              <div className="border-t border-border pt-3">
+                <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">
+                  Administrateurs sans connexion depuis plus de {INACTIVE_DAYS} jours — à désactiver ou justifier
+                </p>
+                {(priv?.staleList ?? []).length === 0 ? (
+                  <p className="text-sm text-emerald-600">Aucun administrateur inactif.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {priv!.staleList!.map((u, i) => (
+                      <li key={`${u.name}-${i}`} className="flex justify-between gap-3 text-xs">
+                        <span className="font-mono truncate text-foreground" title={u.name ?? ""}>{u.name}</span>
+                        <span className="text-muted-foreground shrink-0">dernière connexion : {formatDay(u.lastLogonTime)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {(priv?.stale ?? 0) > (priv?.staleList?.length ?? 0) && (
+                  <p className="text-[11px] text-muted-foreground mt-1">… et {formatCount((priv!.stale ?? 0) - priv!.staleList!.length)} autres</p>
+                )}
+              </div>
+            </Status>
+          </CardContent>
+        </Card>
+      </div>
+
+        {/* DOSSIERS SENSIBLES EXPOSÉS */}
+        <Card>
           <CardHeader className="pb-2 border-b border-border/50">
             <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
               <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à toute l&apos;organisation
@@ -299,81 +404,74 @@ export default function VaronisPosturePanel() {
           </CardContent>
         </Card>
 
-        {/* COMPTES PRIVILÉGIÉS */}
-        <Card>
-          <CardHeader className="pb-2 border-b border-border/50">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-              <Crown className="w-4 h-4 text-violet-500" /> Comptes privilégiés actifs
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4 space-y-4">
-            <Status r={priv}>
-              <div className="space-y-2">
-                {(priv?.byType ?? []).map((t) => (
-                  <div key={t.type} className="space-y-1">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-foreground">{privilegedLabel(t.type)}</span>
-                      <span className="font-bold">{t.count.toLocaleString("fr-FR")}</span>
-                    </div>
-                    <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div className="h-full bg-violet-500" style={{ width: `${(t.count / Math.max(1, priv?.byType?.[0]?.count ?? 1)) * 100}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="border-t border-border pt-3">
-                <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">
-                  Sans connexion depuis plus de {INACTIVE_DAYS} jours ({formatCount(priv?.stale)}) — à désactiver ou justifier
-                </p>
-                {(priv?.staleList ?? []).length === 0 ? (
-                  <p className="text-sm text-emerald-600">Aucun compte privilégié inactif.</p>
-                ) : (
-                  <ul className="space-y-1">
-                    {priv!.staleList!.map((u, i) => (
-                      <li key={`${u.name}-${i}`} className="flex justify-between gap-3 text-xs">
-                        <span className="font-mono truncate text-foreground" title={u.name ?? ""}>{u.name}</span>
-                        <span className="text-muted-foreground shrink-0">dernière connexion : {formatDay(u.lastLogonTime)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </Status>
-          </CardContent>
-        </Card>
-      </div>
 
-      {/* HYGIÈNE DES ACCÈS */}
+      {/* HYGIÈNE DES COMPTES */}
       <Card>
         <CardHeader className="pb-2 border-b border-border/50">
           <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-            <KeyRound className="w-4 h-4 text-sky-500" /> Hygiène des comptes et des droits (moindre privilège)
+            <UserMinus className="w-4 h-4 text-sky-500" /> Hygiène des comptes et des propriétaires
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {HYGIENE.map(({ key, label, help, icon: Icon }) => {
-            const item = r[key];
-            return (
-              <div key={key} className="p-4 rounded-xl border border-border">
-                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                  <Icon className="w-4 h-4" /> {label}
+        <CardContent className="pt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="p-4 rounded-xl border border-border lg:col-span-2">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+              <UserMinus className="w-4 h-4" /> Comptes activés sans connexion depuis plus de {INACTIVE_DAYS} jours
+            </div>
+            <div className="mt-2">
+              <Status r={inactiveStatus ?? { status: "done" }}>
+                <span className="text-2xl font-black text-foreground">{formatCount(inactive.count, inactive.capped)}</span>
+                <div className="mt-3 space-y-2">
+                  {INACTIVE_BUCKETS.map(({ key, label }) => {
+                    const n = r[key]?.count ?? 0;
+                    return (
+                      <div key={key} className="space-y-1">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-foreground">{label}</span>
+                          <span className="font-bold">{formatCount(n, r[key]?.capped)}</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-muted overflow-hidden">
+                          <div className="h-full bg-sky-500" style={{ width: `${(n / Math.max(1, inactive.count ?? 1)) * 100}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="mt-2">
-                  <Status r={item}>
-                    <span className="text-2xl font-black text-foreground">{formatCount(item?.count, item?.capped)}</span>
-                  </Status>
-                </div>
-                <p className="text-[11px] text-muted-foreground mt-1">{help}</p>
+              </Status>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-2">Comptes toujours activés : à désactiver en priorité à partir des plus anciens</p>
+          </div>
+          <div className="space-y-4">
+            <div className="p-4 rounded-xl border border-border">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                <CalendarX className="w-4 h-4" /> Comptes expirés encore actifs
               </div>
-            );
-          })}
+              <div className="mt-2">
+                <Status r={r.expiredEnabled}>
+                  <span className="text-2xl font-black text-foreground">{formatCount(r.expiredEnabled?.count, r.expiredEnabled?.capped)}</span>
+                </Status>
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">Date d&apos;expiration passée, compte toujours activé</p>
+            </div>
+            <div className="p-4 rounded-xl border border-border">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                <UserX className="w-4 h-4" /> Zones sensibles sans propriétaire valide
+              </div>
+              <div className="mt-2">
+                <Status r={zonePart(zones?.ownerIssue)}>
+                  <span className="text-2xl font-black text-foreground">{formatCount(zones?.ownerIssue?.count)}</span>
+                </Status>
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">Propriétaire inactif ou désactivé : personne pour valider les accès</p>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
       <p className="text-[11px] text-muted-foreground flex items-start gap-1.5">
         <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-        Indicateurs calculés par Varonis (classification, exposition, activité). L&apos;API limite le nombre de résultats par requête
-        (10 000 à 15 000) : un total suivi de « ou plus » est un minimum. Comptes inactifs : aucune connexion depuis plus de {INACTIVE_DAYS} jours.
+        Indicateurs calculés par Varonis, chiffres exacts. Zone : dossier de niveau {ZONE_DEPTH} (partage métier ou dossier personnel) contenant des données sensibles.
+        « Données obsolètes » : la zone contient des dossiers plus utilisés (au sens de Varonis). « Accès obsolètes » : des droits accordés ne sont plus utilisés.
+        Comptes inactifs : comptes activés sans connexion depuis plus de {INACTIVE_DAYS} jours.
         {state?.scheduled ? " La posture est recalculée automatiquement chaque nuit." : ""} Chaque photo est conservée pour suivre l&apos;évolution dans le temps.
       </p>
     </div>

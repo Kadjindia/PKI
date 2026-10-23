@@ -1,14 +1,26 @@
 // Posture des données Varonis (étape 3) : types des résumés renvoyés par
 // varonis-proxy ({ action: "posture" }) et mise en forme pour l'affichage.
 
-export type PostureKey =
-  | "sensitiveExposed" | "sensitive" | "sensitiveStaleOwner" | "sensitiveDisabledOwner" | "sensitiveStale"
-  | "privileged" | "staleUsers" | "expiredEnabled" | "staleMemberships" | "stalePermissions";
+export type InactiveKey = "inactive90" | "inactive180" | "inactive365" | "inactive730" | "neverLogged";
+
+export type PostureKey = "sensitiveExposed" | "zones" | "privileged" | InactiveKey | "expiredEnabled";
 
 export const POSTURE_KEYS: PostureKey[] = [
-  "sensitiveExposed", "sensitive", "sensitiveStaleOwner", "sensitiveDisabledOwner", "sensitiveStale",
-  "privileged", "staleUsers", "expiredEnabled", "staleMemberships", "stalePermissions",
+  "sensitiveExposed", "zones", "privileged",
+  "inactive90", "inactive180", "inactive365", "inactive730", "neverLogged", "expiredEnabled",
 ];
+
+/** Tranches d'ancienneté des comptes activés sans connexion récente. */
+export const INACTIVE_BUCKETS: { key: InactiveKey; label: string }[] = [
+  { key: "inactive90", label: "3 à 6 mois" },
+  { key: "inactive180", label: "6 à 12 mois" },
+  { key: "inactive365", label: "1 à 2 ans" },
+  { key: "inactive730", label: "Plus de 2 ans" },
+  { key: "neverLogged", label: "Jamais connectés" },
+];
+
+/** Profondeur des zones (dossiers de niveau 3 : partages métier, dossiers personnels). */
+export const ZONE_DEPTH = 3;
 
 /** Seuil d'inactivité utilisé par le proxy pour les comptes (jours sans connexion). */
 export const INACTIVE_DAYS = 90;
@@ -27,33 +39,45 @@ export interface ExposedFolder {
   ownerIssue: boolean; isStale: boolean; lastEventDate?: string | null;
 }
 
+/** Total d'un ensemble de zones. */
+export interface ZoneTotals { count: number; sizeBytes: number; files: number }
+
+export interface Zone {
+  name?: string | null; path?: string | null; sharePath?: string | null; url?: string | null;
+  sizeBytes?: number | null; files?: number | null;
+  isStale: boolean; staleAccess: boolean; ownerIssue: boolean;
+}
+
 export interface PostureResults {
   sensitiveExposed?: Base & { withoutValidOwner?: number; top?: ExposedFolder[] };
-  sensitive?: Base;
-  sensitiveStaleOwner?: Base;
-  sensitiveDisabledOwner?: Base;
-  sensitiveStale?: Base;
+  zones?: Base & Partial<ZoneTotals> & { stale?: ZoneTotals; staleAccess?: ZoneTotals; ownerIssue?: ZoneTotals; top?: Zone[] };
   privileged?: Base & {
     byType?: { type: string; count: number }[];
+    admins?: number;
     stale?: number;
+    services?: number;
+    servicesStale?: number;
     staleList?: { name?: string | null; types: string[]; lastLogonTime?: string | null }[];
   };
-  staleUsers?: Base;
+  inactive90?: Base;
+  inactive180?: Base;
+  inactive365?: Base;
+  inactive730?: Base;
+  neverLogged?: Base;
   expiredEnabled?: Base;
-  staleMemberships?: Base;
-  stalePermissions?: Base;
+}
+
+/** Total des comptes inactifs encore activés (toutes tranches), si toutes sont terminées. */
+export function inactiveTotal(r: PostureResults): { count?: number; capped: boolean } {
+  const parts = INACTIVE_BUCKETS.map((b) => r[b.key]);
+  if (parts.some((p) => p?.status !== "done")) return { count: undefined, capped: false };
+  return { count: parts.reduce((t, p) => t + (p!.count ?? 0), 0), capped: parts.some((p) => p!.capped) };
 }
 
 /** Nombre affiché : « 15 000 ou plus » quand l'API a plafonné les résultats. */
 export function formatCount(n: number | undefined, capped?: boolean): string {
   if (n === undefined) return "—";
   return `${n.toLocaleString("fr-FR")}${capped && n > 0 ? " ou plus" : ""}`;
-}
-
-/** Somme de deux indicateurs (plafonnée si l'un l'est). */
-export function sumCounts(a?: Base, b?: Base): { count?: number; capped: boolean } {
-  if (a?.status !== "done" || b?.status !== "done") return { count: undefined, capped: false };
-  return { count: (a.count ?? 0) + (b.count ?? 0), capped: Boolean(a.capped || b.capped) };
 }
 
 /** Chemin le plus parlant d'un dossier : partage réseau (\\SERVEUR\partage) ou chemin local. */

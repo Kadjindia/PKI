@@ -271,7 +271,7 @@ interface PostureQuery {
 }
 
 const yes = { eq: true };
-const no = { eq: false };
+const enabledOnly = { in: [false] }; // filtre isDisabled : s'écrit avec « in », pas « eq »
 const count = (rows: Row[], pred: (r: Row) => boolean) => rows.filter(pred).length;
 
 /** Seuil d'inactivité des comptes (jours sans connexion). */
@@ -280,9 +280,63 @@ const DAY = 24 * 3600 * 1000;
 const inactiveSince = (lastLogon?: string | null) =>
   !lastLogon || Date.now() - new Date(lastLogon).getTime() > INACTIVE_DAYS * DAY;
 
-// Note : sur le tenant, les filtres isDisabled et isStale des identités sont
-// rejetés par Varonis (INTERNAL_ERROR). L'état « désactivé » est donc lu comme
-// champ et filtré ici, et l'inactivité est déduite de la dernière connexion.
+/**
+ * Profondeur des « zones » : dossiers de niveau 3, c'est-à-dire les partages
+ * métier et les dossiers personnels (ex. D:\Shares\Partage_Finance, D:\Users\ALEX).
+ * À cette maille, les volumes restent loin du plafond de l'API : chiffres exacts.
+ */
+const ZONE_DEPTH = 3;
+
+/** Dédoublonne par identifiant (une même ressource peut remonter par plusieurs chemins). */
+function uniqueById(rows: Row[]): Row[] {
+  const seen = new Map<string, Row>();
+  for (const r of rows) if (!seen.has(String(r.id))) seen.set(String(r.id), r);
+  return [...seen.values()];
+}
+
+/** Total d'un ensemble de zones : nombre, taille et nombre de fichiers. */
+function zoneTotals(rows: Row[]) {
+  return {
+    count: rows.length,
+    sizeBytes: rows.reduce((t, r) => t + (r.sizeOfResourceAndNestedResources ?? 0), 0),
+    files: rows.reduce((t, r) => t + (r.numberOfNestedFiles ?? 0), 0),
+  };
+}
+
+/**
+ * Comptes activés sans connexion récente, par tranche d'ancienneté. Chaque tranche
+ * est une recherche distincte (sous le plafond) ; la tranche est revérifiée ici
+ * sur la date de dernière connexion, quelle que soit l'interprétation des filtres.
+ */
+const INACTIVE_BUCKETS: { key: string; from: number; to: number | null }[] = [
+  { key: "inactive90", from: 90, to: 180 },
+  { key: "inactive180", from: 180, to: 365 },
+  { key: "inactive365", from: 365, to: 730 },
+  { key: "inactive730", from: 730, to: null },
+];
+
+function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
+  return {
+    asyncName: "identitiesAsync",
+    jobName: "identitiesQueryJob",
+    where: {
+      isDisabled: enabledOnly,
+      lastLogonTime: to === null ? { earlierThanDays: from } : { earlierThanDays: from, laterThanDays: to },
+    },
+    fields: "id isDisabled lastLogonTime",
+    summarize: (rows) => {
+      const now = Date.now();
+      return {
+        count: count(rows, (r) => {
+          if (r.isDisabled || !r.lastLogonTime) return false;
+          const days = (now - new Date(r.lastLogonTime).getTime()) / DAY;
+          return days > from && (to === null || days <= to);
+        }),
+      };
+    },
+  };
+}
+
 const POSTURE_QUERIES: Record<string, PostureQuery> = {
   // Dossiers sensibles exposés à toute l'organisation (racines d'accès ouvert)
   sensitiveExposed: {
@@ -304,66 +358,69 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
         })),
     }),
   },
-  // Volume total de ressources sensibles (référence des pourcentages)
-  sensitive: {
+  // Zones (dossiers de niveau 3) contenant des données sensibles
+  zones: {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
-    where: { isSensitive: yes },
-    fields: "id",
-    summarize: (rows) => ({ count: rows.length }),
-  },
-  // Ressources sensibles dont le propriétaire est inactif / désactivé
-  sensitiveStaleOwner: {
-    asyncName: "resourcesAsync",
-    jobName: "resourcesQueryJob",
-    where: { isSensitive: yes, hasStaleOwner: yes },
-    fields: "id",
-    summarize: (rows) => ({ count: rows.length }),
-  },
-  sensitiveDisabledOwner: {
-    asyncName: "resourcesAsync",
-    jobName: "resourcesQueryJob",
-    where: { isSensitive: yes, hasDisabledOwner: yes },
-    fields: "id",
-    summarize: (rows) => ({ count: rows.length }),
-  },
-  // Ressources sensibles obsolètes
-  sensitiveStale: {
-    asyncName: "resourcesAsync",
-    jobName: "resourcesQueryJob",
-    where: { isSensitive: yes, isStale: yes },
-    fields: "id",
-    summarize: (rows) => ({ count: rows.length }),
-  },
-  // Comptes privilégiés actifs (admin, service, dirigeant…)
-  privileged: {
-    asyncName: "identitiesAsync",
-    jobName: "identitiesQueryJob",
-    where: { privilegedIdentityType: { hasValue: true } },
-    fields: "id name privilegedIdentityType isDisabled lastLogonTime",
+    where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH } },
+    fields: "id name path sharePaths url sizeOfResourceAndNestedResources numberOfNestedFiles isStaleIncludingSubfolders hasStaleAccess hasStaleOwner hasDisabledOwner",
     summarize: (all) => {
-      const rows = all.filter((r) => !r.isDisabled);
-      const byType = new Map<string, number>();
-      for (const r of rows) {
-        for (const t of (r.privilegedIdentityType ?? []) as string[]) byType.set(t, (byType.get(t) ?? 0) + 1);
-      }
-      const inactive = rows.filter((r) => inactiveSince(r.lastLogonTime));
+      const rows = uniqueById(all);
+      const stale = rows.filter((r) => r.isStaleIncludingSubfolders);
+      const staleAccess = rows.filter((r) => r.hasStaleAccess);
+      const ownerIssue = rows.filter((r) => r.hasStaleOwner || r.hasDisabledOwner);
       return {
-        count: rows.length,
-        byType: [...byType.entries()].map(([type, n]) => ({ type, count: n })).sort((a, b) => b.count - a.count),
-        stale: inactive.length,
-        staleList: inactive
-          .sort((a, b) => String(a.lastLogonTime ?? "").localeCompare(String(b.lastLogonTime ?? "")))
-          .slice(0, 10)
-          .map((r) => ({ name: r.name, types: r.privilegedIdentityType ?? [], lastLogonTime: r.lastLogonTime ?? null })),
+        ...zoneTotals(rows),
+        stale: zoneTotals(stale),
+        staleAccess: zoneTotals(staleAccess),
+        ownerIssue: zoneTotals(ownerIssue),
+        top: [...rows]
+          .sort((a, b) => (b.sizeOfResourceAndNestedResources ?? 0) - (a.sizeOfResourceAndNestedResources ?? 0))
+          .slice(0, 15)
+          .map((r) => ({
+            name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
+            sizeBytes: r.sizeOfResourceAndNestedResources, files: r.numberOfNestedFiles,
+            isStale: Boolean(r.isStaleIncludingSubfolders), staleAccess: Boolean(r.hasStaleAccess),
+            ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner),
+          })),
       };
     },
   },
-  // Comptes encore activés sans connexion depuis 90 jours
-  staleUsers: {
+  // Comptes privilégiés activés : administrateurs et comptes de service, séparés
+  privileged: {
     asyncName: "identitiesAsync",
     jobName: "identitiesQueryJob",
-    where: { lastLogonTime: { earlierThanDays: INACTIVE_DAYS } },
+    where: { privilegedIdentityType: { hasValue: true }, isDisabled: enabledOnly },
+    fields: "id name privilegedIdentityType isDisabled lastLogonTime",
+    summarize: (all) => {
+      const rows = all.filter((r) => !r.isDisabled);
+      const types = (r: Row) => (r.privilegedIdentityType ?? []) as string[];
+      const byType = new Map<string, number>();
+      for (const r of rows) for (const t of types(r)) byType.set(t, (byType.get(t) ?? 0) + 1);
+      const admins = rows.filter((r) => types(r).includes("ADMIN"));
+      const services = rows.filter((r) => types(r).includes("SERVICE") && !types(r).includes("ADMIN"));
+      const inactiveAdmins = admins.filter((r) => inactiveSince(r.lastLogonTime));
+      return {
+        count: rows.length,
+        byType: [...byType.entries()].map(([type, n]) => ({ type, count: n })).sort((a, b) => b.count - a.count),
+        admins: admins.length,
+        stale: inactiveAdmins.length,
+        services: services.length,
+        servicesStale: count(services, (r) => inactiveSince(r.lastLogonTime)),
+        staleList: inactiveAdmins
+          .sort((a, b) => String(a.lastLogonTime ?? "").localeCompare(String(b.lastLogonTime ?? "")))
+          .slice(0, 10)
+          .map((r) => ({ name: r.name, types: types(r), lastLogonTime: r.lastLogonTime ?? null })),
+      };
+    },
+  },
+  // Comptes activés sans connexion récente, par ancienneté
+  ...Object.fromEntries(INACTIVE_BUCKETS.map((b) => [b.key, inactiveBucketQuery(b.from, b.to)])),
+  // Comptes activés qui ne se sont jamais connectés
+  neverLogged: {
+    asyncName: "identitiesAsync",
+    jobName: "identitiesQueryJob",
+    where: { isDisabled: enabledOnly, lastLogonTime: { hasValue: false } },
     fields: "id isDisabled",
     summarize: (rows) => ({ count: count(rows, (r) => !r.isDisabled) }),
   },
@@ -373,22 +430,6 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
     jobName: "identitiesQueryJob",
     where: { isEnabledExpired: yes },
     fields: "id",
-    summarize: (rows) => ({ count: rows.length }),
-  },
-  // Appartenances à des groupes devenues obsolètes
-  staleMemberships: {
-    asyncName: "membershipsAsync",
-    jobName: "membershipsQueryJob",
-    where: { isStaleMembership: yes },
-    fields: "isStaleMembership",
-    summarize: (rows) => ({ count: rows.length }),
-  },
-  // Permissions jamais utilisées (candidates au retrait)
-  stalePermissions: {
-    asyncName: "physicalPermissionsAsync",
-    jobName: "physicalPermissionsQueryJob",
-    where: { isStalePermission: yes },
-    fields: "aceId",
     summarize: (rows) => ({ count: rows.length }),
   },
 };
