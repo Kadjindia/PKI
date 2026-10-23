@@ -13,7 +13,13 @@ export const POSTURE_KEYS: PostureKey[] = [
 /** Seuil d'inactivité utilisé par le proxy pour les comptes (jours sans connexion). */
 export const INACTIVE_DAYS = 90;
 
-interface Base { status: "pending" | "done" | "error"; error?: string; code?: "unauthorized" | "filter" | "timeout" | "other"; field?: string; jobId?: string; progress?: number | null; partial?: boolean; capped?: boolean; count?: number }
+interface Base {
+  status: "queued" | "pending" | "done" | "error";
+  error?: string; code?: "unauthorized" | "filter" | "timeout" | "other"; field?: string;
+  progress?: number | null; partial?: boolean; capped?: boolean; count?: number;
+  /** Valeur reprise d'une photo précédente (date de celle-ci) faute de résultat cette fois. */
+  carriedFrom?: string; lastError?: string;
+}
 
 export interface ExposedFolder {
   name?: string | null; path?: string | null; sharePath?: string | null; url?: string | null;
@@ -87,24 +93,32 @@ export function safeUrl(u?: string | null): string | null {
   return u && /^https?:\/\//i.test(u) ? u : null;
 }
 
-/** Fusionne une réponse de vérification dans les résultats déjà obtenus. */
-export function mergePosture(prev: PostureResults, next: PostureResults): PostureResults {
-  return { ...prev, ...next };
+/** Photo de posture enregistrée côté serveur (table varonis_posture_snapshots). */
+export interface PostureSnapshot {
+  id: string;
+  status: "running" | "done";
+  trigger: "manual" | "schedule";
+  results: PostureResults;
+  last_error: string | null;
+  started_at: string;
+  finished_at: string | null;
 }
 
-/** Jobs encore en cours, à revérifier : { clé: jobId }. */
-export function pendingJobs(results: PostureResults): Record<string, string> {
-  const jobs: Record<string, string> = {};
-  for (const key of POSTURE_KEYS) {
-    const r = results[key];
-    if (r?.status === "pending" && r.jobId) jobs[key] = r.jobId;
-  }
-  return jobs;
+export interface PostureState {
+  latest: PostureSnapshot | null;
+  running: PostureSnapshot | null;
+  /** Vrai si la tâche planifiée est configurée (le calcul continue sans l'écran). */
+  scheduled: boolean;
+}
+
+/** Nombre d'indicateurs terminés (ou en échec) d'une photo. */
+export function snapshotProgress(results: PostureResults): number {
+  return POSTURE_KEYS.filter((k) => results[k]?.status === "done" || results[k]?.status === "error").length;
 }
 
 /** Vrai si toutes les requêtes terminées ont échoué faute de droits sur la clé d'API. */
 export function allUnauthorized(results: PostureResults): boolean {
-  const finished = POSTURE_KEYS.map((k) => results[k]).filter((r) => r && r.status !== "pending");
+  const finished = POSTURE_KEYS.map((k) => results[k]).filter((r) => r && (r.status === "done" || r.status === "error"));
   return finished.length > 0 && finished.every((r) => r!.status === "error" && (r!.code === "unauthorized" || r!.code === "filter"));
 }
 
@@ -112,17 +126,8 @@ export function allUnauthorized(results: PostureResults): boolean {
 export function shortError(r: { code?: string; field?: string; error?: string }): string {
   if (r.code === "unauthorized") return "Droits Varonis insuffisants";
   if (r.code === "filter") return `Filtre « ${r.field} » refusé par Varonis`;
-  if (r.code === "timeout") return "Toujours en cours chez Varonis : réessayez plus tard";
+  if (r.code === "timeout") return "Varonis n'a pas répondu à temps";
   return r.error ?? "Erreur";
-}
-
-/** Passe en erreur « délai dépassé » les indicateurs encore en cours. */
-export function expirePending(results: PostureResults): PostureResults {
-  const out: PostureResults = { ...results };
-  for (const key of POSTURE_KEYS) {
-    if (out[key]?.status === "pending") out[key] = { status: "error", code: "timeout" };
-  }
-  return out;
 }
 
 /** Durée lisible : « 45 s », « 3 min 05 s ». */
@@ -130,4 +135,13 @@ export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(total / 60), sec = total % 60;
   return m === 0 ? `${sec} s` : `${m} min ${String(sec).padStart(2, "0")} s`;
+}
+
+/** Ancienneté lisible : « il y a 5 min », « il y a 3 h », « il y a 2 j ». */
+export function formatAge(iso: string, now = Date.now()): string {
+  const min = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 60000));
+  if (min < 1) return "à l'instant";
+  if (min < 60) return `il y a ${min} min`;
+  if (min < 48 * 60) return `il y a ${Math.floor(min / 60)} h`;
+  return `il y a ${Math.floor(min / 1440)} j`;
 }

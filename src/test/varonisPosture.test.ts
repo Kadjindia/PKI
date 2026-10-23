@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
-  allUnauthorized, shortError, sumCounts, displayPath, expirePending, formatElapsed,
+  formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
+  allUnauthorized, shortError, sumCounts, displayPath, formatElapsed,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -31,16 +31,13 @@ describe("posture Varonis : mise en forme", () => {
     expect(safeUrl("javascript:alert(1)")).toBeNull();
   });
 
-  it("garde les résultats terminés et liste les jobs encore en cours", () => {
-    const first = {
-      staleUsers: { status: "pending" as const, jobId: "j1" },
-      expiredEnabled: { status: "done" as const, count: 3 },
-    };
-    expect(pendingJobs(first)).toEqual({ staleUsers: "j1" });
-    const merged = mergePosture(first, { staleUsers: { status: "done", count: 7 } });
-    expect(merged.expiredEnabled?.count).toBe(3);
-    expect(merged.staleUsers?.count).toBe(7);
-    expect(pendingJobs(merged)).toEqual({});
+  it("compte les indicateurs terminés d'une photo", () => {
+    expect(snapshotProgress({
+      staleUsers: { status: "done", count: 7 },
+      expiredEnabled: { status: "error", code: "timeout" },
+      sensitive: { status: "pending" },
+      privileged: { status: "queued" },
+    })).toBe(2);
   });
 
   it("détecte un refus de droits général et produit des messages courts", () => {
@@ -59,12 +56,14 @@ describe("posture Varonis : mise en forme", () => {
     expect(displayPath({ path: "D:\\Users" })).toBe("D:\\Users");
   });
 
-  it("passe en délai dépassé ce qui reste en cours et affiche la durée", () => {
-    const r = expirePending({ staleUsers: { status: "pending", jobId: "j" }, expiredEnabled: { status: "done", count: 1 } });
-    expect(r.staleUsers).toEqual({ status: "error", code: "timeout" });
-    expect(r.expiredEnabled?.count).toBe(1);
-    expect(shortError({ code: "timeout" })).toContain("Toujours en cours");
+  it("affiche les durées et l'ancienneté d'une photo", () => {
+    expect(shortError({ code: "timeout" })).toBe("Varonis n'a pas répondu à temps");
     expect(formatElapsed(45_000)).toBe("45 s");
     expect(formatElapsed(185_000)).toBe("3 min 05 s");
+    const now = Date.parse("2026-10-23T12:00:00Z");
+    expect(formatAge("2026-10-23T11:59:30Z", now)).toBe("à l'instant");
+    expect(formatAge("2026-10-23T11:55:00Z", now)).toBe("il y a 5 min");
+    expect(formatAge("2026-10-23T08:00:00Z", now)).toBe("il y a 4 h");
+    expect(formatAge("2026-10-20T12:00:00Z", now)).toBe("il y a 3 j");
   });
 });
