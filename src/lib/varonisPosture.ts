@@ -2,25 +2,31 @@
 // varonis-proxy ({ action: "posture" }) et mise en forme pour l'affichage.
 
 export type PostureKey =
-  | "sensitiveExposed" | "sensitive" | "privileged" | "staleUsers"
-  | "expiredEnabled" | "staleMemberships" | "stalePermissions";
+  | "sensitiveExposed" | "sensitive" | "sensitiveStaleOwner" | "sensitiveDisabledOwner" | "sensitiveStale"
+  | "privileged" | "staleUsers" | "expiredEnabled" | "staleMemberships" | "stalePermissions";
 
 export const POSTURE_KEYS: PostureKey[] = [
-  "sensitiveExposed", "sensitive", "privileged", "staleUsers",
-  "expiredEnabled", "staleMemberships", "stalePermissions",
+  "sensitiveExposed", "sensitive", "sensitiveStaleOwner", "sensitiveDisabledOwner", "sensitiveStale",
+  "privileged", "staleUsers", "expiredEnabled", "staleMemberships", "stalePermissions",
 ];
+
+/** Seuil d'inactivité utilisé par le proxy pour les comptes (jours sans connexion). */
+export const INACTIVE_DAYS = 90;
 
 interface Base { status: "pending" | "done" | "error"; error?: string; code?: "unauthorized" | "filter" | "other"; field?: string; jobId?: string; progress?: number | null; partial?: boolean; capped?: boolean; count?: number }
 
 export interface ExposedFolder {
-  name?: string | null; path?: string | null; url?: string | null;
+  name?: string | null; path?: string | null; sharePath?: string | null; url?: string | null;
   objects?: number | null; sizeBytes?: number | null;
   ownerIssue: boolean; isStale: boolean; lastEventDate?: string | null;
 }
 
 export interface PostureResults {
   sensitiveExposed?: Base & { withoutValidOwner?: number; top?: ExposedFolder[] };
-  sensitive?: Base & { withoutValidOwner?: number; stale?: number };
+  sensitive?: Base;
+  sensitiveStaleOwner?: Base;
+  sensitiveDisabledOwner?: Base;
+  sensitiveStale?: Base;
   privileged?: Base & {
     byType?: { type: string; count: number }[];
     stale?: number;
@@ -32,10 +38,21 @@ export interface PostureResults {
   stalePermissions?: Base;
 }
 
-/** Nombre affiché : « 10 000 ou plus » quand l'API a plafonné les résultats. */
+/** Nombre affiché : « 15 000 ou plus » quand l'API a plafonné les résultats. */
 export function formatCount(n: number | undefined, capped?: boolean): string {
   if (n === undefined) return "—";
-  return `${n.toLocaleString("fr-FR")}${capped ? " ou plus" : ""}`;
+  return `${n.toLocaleString("fr-FR")}${capped && n > 0 ? " ou plus" : ""}`;
+}
+
+/** Somme de deux indicateurs (plafonnée si l'un l'est). */
+export function sumCounts(a?: Base, b?: Base): { count?: number; capped: boolean } {
+  if (a?.status !== "done" || b?.status !== "done") return { count: undefined, capped: false };
+  return { count: (a.count ?? 0) + (b.count ?? 0), capped: Boolean(a.capped || b.capped) };
+}
+
+/** Chemin le plus parlant d'un dossier : partage réseau (\\SERVEUR\partage) ou chemin local. */
+export function displayPath(f: { sharePath?: string | null; path?: string | null }): string {
+  return f.sharePath || f.path || "";
 }
 
 export function formatBytes(bytes?: number | null): string {

@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, mergePosture, pendingJobs,
-  allUnauthorized, shortError,
+  allUnauthorized, shortError, sumCounts, displayPath, INACTIVE_DAYS,
   POSTURE_KEYS, type PostureResults, type PostureKey,
 } from "@/lib/varonisPosture";
 
@@ -67,7 +67,7 @@ function Kpi({ title, icon: Icon, color, r, sub }: {
   readonly r?: { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null };
   readonly sub?: React.ReactNode;
 }) {
-  const alarming = r?.status === "done" && (r.count ?? 0) > 0;
+  const alarming = r?.status !== "done" || (r.count ?? 0) > 0;
   return (
     <Card className={`border-l-4 ${color}`}>
       <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
@@ -85,7 +85,7 @@ function Kpi({ title, icon: Icon, color, r, sub }: {
 }
 
 const HYGIENE: { key: PostureKey; label: string; help: string; icon: typeof Info }[] = [
-  { key: "staleUsers", label: "Comptes inactifs encore activés", help: "Comptes sans activité récente mais non désactivés", icon: UserMinus },
+  { key: "staleUsers", label: "Comptes inactifs encore activés", help: `Aucune connexion depuis plus de ${INACTIVE_DAYS} jours, compte toujours activé`, icon: UserMinus },
   { key: "expiredEnabled", label: "Comptes expirés encore actifs", help: "Date d'expiration passée, compte toujours activé", icon: CalendarX },
   { key: "staleMemberships", label: "Appartenances obsolètes", help: "Membres de groupes qui n'utilisent plus cet accès", icon: Users },
   { key: "stalePermissions", label: "Permissions inutilisées", help: "Droits jamais utilisés : candidats au retrait", icon: KeyRound },
@@ -104,6 +104,8 @@ export default function VaronisPosturePanel() {
 
   const exposed = r.sensitiveExposed;
   const sensitive = r.sensitive;
+  const ownerless = sumCounts(r.sensitiveStaleOwner, r.sensitiveDisabledOwner);
+  const ownerStatus = [r.sensitiveStaleOwner, r.sensitiveDisabledOwner].find((x) => !x || x.status !== "done") ?? r.sensitiveStaleOwner;
   const priv = r.privileged;
 
   return (
@@ -172,22 +174,27 @@ export default function VaronisPosturePanel() {
           title="Ressources sensibles sans propriétaire valide"
           icon={UserX}
           color="border-l-orange-500"
-          r={sensitive && { ...sensitive, count: sensitive.withoutValidOwner }}
-          sub={sensitive?.status === "done" && <>sur {formatCount(sensitive.count, sensitive.capped)} ressources sensibles ({share(sensitive.withoutValidOwner, sensitive.count) ?? 0} %)</>}
+          r={ownerStatus && { ...ownerStatus, status: ownerless.count === undefined ? ownerStatus.status : "done", count: ownerless.count, capped: ownerless.capped }}
+          sub={ownerless.count !== undefined && <>
+            propriétaire inactif : {formatCount(r.sensitiveStaleOwner?.count, r.sensitiveStaleOwner?.capped)} · désactivé : {formatCount(r.sensitiveDisabledOwner?.count, r.sensitiveDisabledOwner?.capped)}
+          </>}
         />
         <Kpi
           title="Données sensibles obsolètes"
           icon={Archive}
           color="border-l-amber-500"
-          r={sensitive && { ...sensitive, count: sensitive.stale }}
-          sub={sensitive?.status === "done" && <>non consultées depuis longtemps : à archiver ou supprimer ({share(sensitive.stale, sensitive.count) ?? 0} %)</>}
+          r={r.sensitiveStale}
+          sub={r.sensitiveStale?.status === "done" && <>
+            non consultées depuis longtemps : à archiver ou supprimer
+            {sensitive?.status === "done" && !sensitive.capped && !r.sensitiveStale.capped && ` (${share(r.sensitiveStale.count, sensitive.count) ?? 0} % des ${formatCount(sensitive.count)} ressources sensibles)`}
+          </>}
         />
         <Kpi
           title="Comptes privilégiés actifs"
           icon={Crown}
           color="border-l-violet-500"
           r={priv}
-          sub={priv?.status === "done" && <>dont <b className={priv.stale ? "text-red-500" : "text-foreground"}>{formatCount(priv.stale)}</b> inactifs</>}
+          sub={priv?.status === "done" && <>dont <b className={priv.stale ? "text-red-500" : "text-foreground"}>{formatCount(priv.stale)}</b> sans connexion depuis {INACTIVE_DAYS} j</>}
         />
       </div>
 
@@ -219,10 +226,10 @@ export default function VaronisPosturePanel() {
                     </TableHeader>
                     <TableBody>
                       {exposed!.top!.map((f, i) => (
-                        <TableRow key={`${f.path}-${i}`}>
+                        <TableRow key={`${displayPath(f)}-${i}`}>
                           <TableCell className="max-w-[320px]">
                             <div className="font-medium truncate" title={f.name ?? ""}>{f.name ?? "—"}</div>
-                            <div className="text-[11px] text-muted-foreground font-mono truncate" title={f.path ?? ""}>{f.path}</div>
+                            <div className="text-[11px] text-muted-foreground font-mono truncate" title={f.path ?? ""}>{displayPath(f)}</div>
                           </TableCell>
                           <TableCell className="text-right font-mono text-sm">{(f.objects ?? 0).toLocaleString("fr-FR")}</TableCell>
                           <TableCell className="text-right text-sm whitespace-nowrap">{formatBytes(f.sizeBytes)}</TableCell>
@@ -269,7 +276,7 @@ export default function VaronisPosturePanel() {
               </div>
               <div className="border-t border-border pt-3">
                 <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">
-                  Inactifs mais toujours actifs ({formatCount(priv?.stale)}) — à désactiver ou justifier
+                  Sans connexion depuis plus de {INACTIVE_DAYS} jours ({formatCount(priv?.stale)}) — à désactiver ou justifier
                 </p>
                 {(priv?.staleList ?? []).length === 0 ? (
                   <p className="text-sm text-emerald-600">Aucun compte privilégié inactif.</p>
@@ -318,8 +325,8 @@ export default function VaronisPosturePanel() {
 
       <p className="text-[11px] text-muted-foreground flex items-start gap-1.5">
         <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-        Indicateurs calculés par Varonis (classification, exposition, activité). L&apos;API renvoie au plus 10 000 résultats par requête :
-        au-delà, le total est affiché « ou plus ». L&apos;évolution dans le temps nécessitera d&apos;enregistrer ces chiffres régulièrement.
+        Indicateurs calculés par Varonis (classification, exposition, activité). L&apos;API limite le nombre de résultats par requête
+        (10 000 à 15 000) : un total suivi de « ou plus » est un minimum. Comptes inactifs : aucune connexion depuis plus de {INACTIVE_DAYS} jours. L&apos;évolution dans le temps nécessitera d&apos;enregistrer ces chiffres régulièrement.
       </p>
     </div>
   );
