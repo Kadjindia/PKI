@@ -65,8 +65,8 @@ function Status({ r, children }: {
   );
 }
 
-function Kpi({ title, icon: Icon, color, r, sub }: {
-  readonly title: string; readonly icon: typeof Info; readonly color: string;
+function Kpi({ title, help, icon: Icon, color, r, sub }: {
+  readonly title: string; readonly help: string; readonly icon: typeof Info; readonly color: string;
   readonly r?: { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
   readonly sub?: React.ReactNode;
 }) {
@@ -75,8 +75,9 @@ function Kpi({ title, icon: Icon, color, r, sub }: {
     <Card className={`border-l-4 ${color}`}>
       <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
         <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">{title}</CardTitle>
-        <Icon className="w-4 h-4 text-muted-foreground" />
+        <Icon className="w-4 h-4 text-muted-foreground shrink-0" />
       </CardHeader>
+      <p className="px-6 -mt-1 mb-2 text-[11px] text-muted-foreground leading-snug">{help}</p>
       <CardContent>
         <Status r={r}>
           <div className={`text-3xl font-black ${alarming ? "text-foreground" : "text-emerald-600"}`}>{formatCount(r?.count, r?.capped)}</div>
@@ -87,14 +88,14 @@ function Kpi({ title, icon: Icon, color, r, sub }: {
   );
 }
 
-/** Indicateur oui/non d'une zone : rouge si problème. */
+/** Indicateur oui/non d'un dossier : orange si problème. */
 function Flag({ on, label }: { readonly on: boolean; readonly label: string }) {
   return on
     ? <span className="text-xs font-semibold text-orange-600">{label}</span>
     : <span className="text-xs text-muted-foreground">Non</span>;
 }
 
-/** Volume d'un ensemble de zones : « 1,2 To · 350 000 fichiers ». */
+/** Volume d'un ensemble de dossiers : « 1,2 To · 350 000 fichiers ». */
 const volume = (t?: ZoneTotals) => (t ? `${formatBytes(t.sizeBytes)} · ${t.files.toLocaleString("fr-FR")} fichiers` : "");
 
 export default function VaronisPosturePanel() {
@@ -215,30 +216,34 @@ export default function VaronisPosturePanel() {
       {/* INDICATEURS CLÉS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Kpi
-          title="Dossiers sensibles ouverts à toute l'organisation"
+          title="Dossiers sensibles ouverts à tous"
+          help="Dossiers contenant des données sensibles que tous les salariés peuvent ouvrir (groupe « Tout le monde », « Utilisateurs du domaine »…)."
           icon={Globe2}
           color="border-l-red-500"
           r={exposed}
-          sub={exposed?.status === "done" && <>dont <b className="text-foreground">{formatCount(exposed.withoutValidOwner)}</b> sans propriétaire valide</>}
+          sub={exposed?.status === "done" && <>dont <b className="text-foreground">{formatCount(exposed.withoutValidOwner)}</b> sans responsable actif</>}
         />
         <Kpi
-          title="Zones sensibles contenant des données obsolètes"
+          title="Données sensibles qui ne servent plus"
+          help="Partages et dossiers personnels contenant des données sensibles que plus personne n'ouvre ni ne modifie."
           icon={Archive}
           color="border-l-amber-500"
           r={zonePart(zones?.stale)}
           sub={zones?.status === "done" && <>
-            sur {formatCount(zones.count)} zones sensibles ({share(zones.stale?.count, zones.count) ?? 0} %) · {volume(zones.stale)} : à archiver ou supprimer
+            dossiers sur {formatCount(zones.count)} contenant des données sensibles ({share(zones.stale?.count, zones.count) ?? 0} %) · {volume(zones.stale)} : à archiver ou supprimer
           </>}
         />
         <Kpi
-          title="Zones sensibles avec des accès obsolètes"
+          title="Droits inutilisés sur des données sensibles"
+          help="Partages et dossiers personnels sensibles où des personnes ont un droit d'accès dont elles ne se servent jamais."
           icon={KeyRound}
           color="border-l-orange-500"
           r={zonePart(zones?.staleAccess)}
-          sub={zones?.status === "done" && <>droits jamais utilisés à retirer ({share(zones.staleAccess?.count, zones.count) ?? 0} % des zones sensibles)</>}
+          sub={zones?.status === "done" && <>dossiers sur {formatCount(zones.count)} ({share(zones.staleAccess?.count, zones.count) ?? 0} %) : droits à retirer pour réduire le risque de fuite</>}
         />
         <Kpi
           title="Administrateurs actifs"
+          help="Comptes administrateurs encore activés : ceux qui ne se connectent plus sont des cibles faciles."
           icon={Crown}
           color="border-l-violet-500"
           r={priv && { ...priv, count: priv.status === "done" ? priv.admins : undefined }}
@@ -251,28 +256,28 @@ export default function VaronisPosturePanel() {
         <Card className="lg:col-span-2">
           <CardHeader className="pb-2 border-b border-border/50">
             <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-              <FolderOpen className="w-4 h-4 text-primary" /> Zones contenant des données sensibles
+              <FolderOpen className="w-4 h-4 text-primary" /> Partages et dossiers personnels contenant des données sensibles
             </CardTitle>
             <p className="text-[11px] text-muted-foreground">
-              Partages et dossiers personnels (niveau {ZONE_DEPTH}, ex. D:\Shares\Partage_Finance) — les 15 plus volumineux
+              Ex. D:\Shares\Partage_Finance, D:\Users\ALEX — les 15 plus volumineux
               {zones?.status === "done" && <> sur {formatCount(zones.count)} · {volume(zones as ZoneTotals)} au total</>}
             </p>
           </CardHeader>
           <CardContent className="pt-2">
             <Status r={zones}>
               {(zones?.top?.length ?? 0) === 0 ? (
-                <p className="text-sm text-emerald-600 py-4">Aucune zone contenant des données sensibles.</p>
+                <p className="text-sm text-emerald-600 py-4">Aucun partage ni dossier personnel contenant des données sensibles.</p>
               ) : (
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Zone</TableHead>
+                        <TableHead>Dossier</TableHead>
                         <TableHead className="text-right">Taille</TableHead>
                         <TableHead className="text-right">Fichiers</TableHead>
-                        <TableHead>Données obsolètes</TableHead>
-                        <TableHead>Accès obsolètes</TableHead>
-                        <TableHead>Propriétaire</TableHead>
+                        <TableHead title="Contient des données que plus personne n'ouvre ni ne modifie">Données qui ne servent plus</TableHead>
+                        <TableHead title="Des personnes ont un droit d'accès dont elles ne se servent jamais">Droits inutilisés</TableHead>
+                        <TableHead title="Responsable du dossier (propriétaire) encore actif">Responsable</TableHead>
                         <TableHead />
                       </TableRow>
                     </TableHeader>
@@ -355,9 +360,9 @@ export default function VaronisPosturePanel() {
         <Card>
           <CardHeader className="pb-2 border-b border-border/50">
             <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-              <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à toute l&apos;organisation
+              <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à tous les salariés
             </CardTitle>
-            <p className="text-[11px] text-muted-foreground">Les 10 plus volumineux — à restreindre en priorité</p>
+            <p className="text-[11px] text-muted-foreground">Les 10 plus volumineux : retirer l&apos;accès « tout le monde » en priorité</p>
           </CardHeader>
           <CardContent className="pt-2">
             <Status r={exposed}>
@@ -369,10 +374,10 @@ export default function VaronisPosturePanel() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Dossier</TableHead>
-                        <TableHead className="text-right">Objets</TableHead>
+                        <TableHead className="text-right">Fichiers et dossiers</TableHead>
                         <TableHead className="text-right">Taille</TableHead>
-                        <TableHead>Propriétaire</TableHead>
-                        <TableHead>Obsolète</TableHead>
+                        <TableHead>Responsable</TableHead>
+                        <TableHead>Ne sert plus</TableHead>
                         <TableHead />
                       </TableRow>
                     </TableHeader>
@@ -454,14 +459,14 @@ export default function VaronisPosturePanel() {
             </div>
             <div className="p-4 rounded-xl border border-border">
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                <UserX className="w-4 h-4" /> Zones sensibles sans propriétaire valide
+                <UserX className="w-4 h-4" /> Dossiers sensibles sans responsable actif
               </div>
               <div className="mt-2">
                 <Status r={zonePart(zones?.ownerIssue)}>
                   <span className="text-2xl font-black text-foreground">{formatCount(zones?.ownerIssue?.count)}</span>
                 </Status>
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1">Propriétaire inactif ou désactivé : personne pour valider les accès</p>
+              <p className="text-[11px] text-muted-foreground mt-1">Partages et dossiers personnels sensibles dont le propriétaire a quitté l&apos;entreprise ou ne se connecte plus : personne pour valider qui y a accès</p>
             </div>
           </div>
         </CardContent>
@@ -469,9 +474,9 @@ export default function VaronisPosturePanel() {
 
       <p className="text-[11px] text-muted-foreground flex items-start gap-1.5">
         <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-        Indicateurs calculés par Varonis, chiffres exacts. Zone : dossier de niveau {ZONE_DEPTH} (partage métier ou dossier personnel) contenant des données sensibles.
-        « Données obsolètes » : la zone contient des dossiers plus utilisés (au sens de Varonis). « Accès obsolètes » : des droits accordés ne sont plus utilisés.
-        Comptes inactifs : comptes activés sans connexion depuis plus de {INACTIVE_DAYS} jours.
+        Chiffres exacts calculés par Varonis. « Données sensibles » : contenu repéré par la classification Varonis (données personnelles, financières, RH…).
+        Les dossiers comptés sont les partages métier et les dossiers personnels (niveau {ZONE_DEPTH} : D:\Shares\…, D:\Users\…), pas chacun de leurs sous-dossiers.
+        « Ne servent plus » et « droits inutilisés » suivent la durée d&apos;inactivité configurée dans Varonis. Comptes inactifs : comptes activés sans connexion depuis plus de {INACTIVE_DAYS} jours.
         {state?.scheduled ? " La posture est recalculée automatiquement chaque nuit." : ""} Chaque photo est conservée pour suivre l&apos;évolution dans le temps.
       </p>
     </div>
