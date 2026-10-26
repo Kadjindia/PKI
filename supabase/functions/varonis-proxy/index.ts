@@ -466,7 +466,7 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
   zonesStaleAccess: zoneIssueQuery({ hasStaleAccess: yes }),
   // Propriétaire du dossier (compte du système de fichiers) inactif ou désactivé,
   // comme « Stale / Disabled account (Resource owner) » dans la console
-  zonesStaleOwner: zoneIssueQuery({ resourceOwner: { isStale: { in: [true] } } }),
+  zonesStaleOwner: zoneIssueQuery({ resourceOwner: { isStale: yes } }), // « eq » ici, « in » pour isDisabled
   zonesDisabledOwner: zoneIssueQuery({ resourceOwner: { isDisabled: { in: [true] } } }),
   // Liste des sources de données : sert à découper le total des dossiers
   // sensibles (trop de lignes pour une seule recherche), voir zonesTotalQuery
