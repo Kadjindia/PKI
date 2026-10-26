@@ -13,7 +13,7 @@ import {
   ShieldAlert, AlertOctagon, Database, Bell, RefreshCw, Loader2, AlertTriangle, Inbox,
   Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks,
   Lock, Upload, UserCog, Trash2, Hourglass, Users, Tag, Zap, Volume2,
-  ShieldCheck, Server, UserCheck, ExternalLink,
+  ShieldCheck, Server, UserCheck, ExternalLink, ChevronDown, ChevronUp,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -139,6 +139,8 @@ export default function VaronisPanel() {
   const [timePrefix, setTimePrefix] = useState<TimePrefix>("last");
   const [timeValue, setTimeValue] = useState<number>(30);
   const [timeUnit, setTimeUnit] = useState<TimeUnit>("days");
+  const [showDetails, setShowDetails] = useState(false);
+  const [showAllLatest, setShowAllLatest] = useState(false);
 
   const { data, error, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ["varonis-alerts"],
@@ -379,56 +381,26 @@ export default function VaronisPanel() {
             </Card>
           </div>
 
-          {/* LIGNE 1 BIS : MENACES CRITIQUES */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {view.threats.map((t) => {
-              const Icon = THREAT_ICONS[t.key];
-              const active = t.open > 0;
-              return (
-                <div key={t.key} className={`p-4 rounded-xl border ${active ? "border-red-500/40 bg-red-500/5" : "border-border bg-card"}`}>
-                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                    <Icon className={`w-4 h-4 ${active ? "text-red-500" : "text-muted-foreground"}`} /> {t.label}
-                  </div>
-                  <div className="flex items-baseline gap-2 mt-2">
-                    <span className={`text-2xl font-black ${active ? "text-red-500" : "text-foreground"}`}>{t.open}</span>
-                    <span className="text-xs text-muted-foreground">ouverte{t.open > 1 ? "s" : ""} · {t.total} sur la période</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          {/* MENACES CRITIQUES : bandeau compact */}
+          <Card>
+            <CardContent className="p-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+              <span className="text-xs font-semibold text-muted-foreground">Menaces critiques ouvertes</span>
+              {view.threats.map((t) => {
+                const Icon = THREAT_ICONS[t.key];
+                const active = t.open > 0;
+                return (
+                  <span key={t.key} className="inline-flex items-center gap-1.5 text-sm" title={`${t.total} sur la période`}>
+                    <Icon className={`w-4 h-4 ${active ? "text-red-500" : "text-muted-foreground"}`} />
+                    <span className="text-foreground">{t.label}</span>
+                    <b className={active ? "text-red-500" : "text-foreground"}>{t.open}</b>
+                  </span>
+                );
+              })}
+            </CardContent>
+          </Card>
 
-          {/* LIGNE 2 : SÉVÉRITÉ + POINTS D'ATTENTION */}
+          {/* À RETENIR + ARRIÉRÉ */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <Card className="flex flex-col">
-              <CardHeader className="pb-0">
-                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-orange-500" /> Alertes ouvertes par sévérité
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-2 flex-grow flex items-center justify-center min-h-[260px]">
-                {severityData.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Aucune alerte ouverte sur la période.</p>
-                ) : (
-                  <div className="relative w-full h-[240px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={severityData} dataKey="value" nameKey="name" innerRadius={65} outerRadius={95} paddingAngle={3} stroke="none">
-                          {severityData.map((d) => <Cell key={d.key} fill={SEVERITY_COLORS[d.key]} />)}
-                        </Pie>
-                        <RechartsTooltip {...TOOLTIP_STYLE} />
-                        <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    <div className="absolute inset-0 bottom-8 flex flex-col items-center justify-center pointer-events-none">
-                      <span className="text-3xl font-black text-foreground">{summary.open}</span>
-                      <span className="text-[10px] font-bold uppercase text-muted-foreground">ouvertes</span>
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
             <Card className="lg:col-span-2 flex flex-col">
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -436,7 +408,7 @@ export default function VaronisPanel() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="pt-4 space-y-2">
-                {view.insights.map((ins) => {
+                {view.insights.slice(0, 4).map((ins) => {
                   const { icon: Icon, className } = INSIGHT_STYLE[ins.level];
                   return (
                     <div key={ins.text} className={`flex items-start gap-3 p-3 rounded-lg border ${className}`}>
@@ -447,14 +419,10 @@ export default function VaronisPanel() {
                 })}
               </CardContent>
             </Card>
-          </div>
-
-          {/* LIGNE 2 BIS : ARRIÉRÉ + PRISE EN CHARGE + PICS D'ACTIVITÉ */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <Hourglass className="w-4 h-4 text-amber-500" /> Ancienneté des alertes ouvertes
+                  <Hourglass className="w-4 h-4 text-amber-500" /> Alertes ouvertes à traiter
                 </CardTitle>
                 <p className="text-[11px] text-muted-foreground">Toutes périodes confondues (arriéré actuel)</p>
               </CardHeader>
@@ -491,9 +459,174 @@ export default function VaronisPanel() {
                     </>
                   );
                 })()}
+                <div className="border-t border-border pt-3">
+                  <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">Escalades Varonis en attente de votre action</p>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    {ESCALATION_ORDER.map((t) => (
+                      <div key={t} className={`rounded-lg border p-2 ${t === "MITIGATION" && view.escalations[t] > 0 ? "border-red-500/40 bg-red-500/5" : "border-border"}`}>
+                        <div className={`text-lg font-black ${t === "MITIGATION" && view.escalations[t] > 0 ? "text-red-500" : "text-foreground"}`}>{view.escalations[t]}</div>
+                        <div className="text-[11px] text-muted-foreground">{ESCALATION_LABELS[t]}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </CardContent>
             </Card>
+          </div>
 
+          {/* ÉVOLUTION + POLITIQUES LES PLUS ACTIVES */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card className="lg:col-span-2 flex flex-col">
+              <CardHeader className="pb-0 flex flex-row items-center justify-between">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-primary" /> Évolution des alertes par sévérité
+                </CardTitle>
+                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-1 rounded-md border border-primary/20">
+                  {GRANULARITY_LABEL[view.granularity]}
+                </span>
+              </CardHeader>
+              <CardContent className="pt-4 h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={view.timeline} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis dataKey="label" tick={AXIS_TICK} tickLine={false} axisLine={false} minTickGap={12} />
+                    <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
+                    <RechartsTooltip {...TOOLTIP_STYLE} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                    {SEVERITY_ORDER.filter((s) => (s !== "info" && s !== "unknown") || view.timeline.some((p) => p[s] > 0)).map((s) => (
+                      <Bar key={s} dataKey={s} name={SEVERITY_LABELS[s]} stackId="sev" fill={SEVERITY_COLORS[s]} radius={s === "high" ? [3, 3, 0, 0] : 0} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2 border-b border-border/50">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-violet-500" /> Politiques les plus actives
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground">« Bruit » : réglage de la politique à envisager</p>
+              </CardHeader>
+              <CardContent className="pt-2">
+                <ul>
+                  {view.noise.slice(0, 5).map((p) => (
+                    <li key={p.name} className="flex items-center justify-between gap-3 py-1.5 border-b border-border/50 last:border-0 text-sm">
+                      <span className="truncate text-foreground" title={p.name}>{p.name}</span>
+                      <span className="flex items-center gap-2 shrink-0">
+                        {p.noisy && <Badge variant="outline" className="bg-violet-500/15 text-violet-600 border-violet-500/30">Bruit</Badge>}
+                        <b>{p.total}</b>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* DERNIÈRES ALERTES */}
+          <Card>
+            <CardHeader className="pb-2 border-b border-border/50">
+              <CardTitle className="text-xs font-bold text-muted-foreground uppercase">
+                Dernières alertes de la période
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Menace (politique)</TableHead>
+                      <TableHead>Catégorie</TableHead>
+                      <TableHead>Sévérité</TableHead>
+                      <TableHead>Statut</TableHead>
+                      <TableHead className="text-right">Événements</TableHead>
+                      <TableHead>Données sensibles</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.latest.slice(0, showAllLatest ? undefined : 5).map((a) => {
+                      const sev = normalizeSeverity(a.policy?.severity);
+                      return (
+                        <TableRow key={a.id} className={isOpen(a) ? "" : "opacity-60"}>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(alertDate(a))}</TableCell>
+                          <TableCell className="font-medium">{a.policy?.name ?? "—"}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{a.policy?.category ?? "—"}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={SEVERITY_BADGE[sev]}>
+                              {a.policy?.severity ?? SEVERITY_LABELS.unknown}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm">{formatStatus(a.status)}</TableCell>
+                          <TableCell className="text-right font-mono text-sm">{a.eventsCount ?? "—"}</TableCell>
+                          <TableCell>
+                            {a.hasSensitiveResource
+                              ? <Badge variant="outline" className="bg-orange-500/15 text-orange-600 border-orange-500/30">Oui</Badge>
+                              : <span className="text-sm text-muted-foreground">Non</span>}
+                          </TableCell>
+                          <TableCell>
+                            {safeAlertUrl(a) && (
+                              <a href={safeAlertUrl(a)!} target="_blank" rel="noopener noreferrer" title="Ouvrir l'alerte dans Varonis" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline whitespace-nowrap">
+                                <ExternalLink className="w-3.5 h-3.5" /> Varonis
+                              </a>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+              {summary.latest.length > 5 && (
+                <button type="button" onClick={() => setShowAllLatest(!showAllLatest)} className="text-xs font-semibold text-primary hover:underline mt-2">
+                  {showAllLatest ? "Afficher moins" : `Afficher les ${summary.latest.length}`}
+                </button>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ANALYSE DÉTAILLÉE : repliée par défaut */}
+          <button
+            type="button"
+            onClick={() => setShowDetails(!showDetails)}
+            className="w-full flex items-center justify-center gap-2 text-sm font-semibold py-2.5 rounded-xl border border-border text-primary hover:bg-primary/5"
+          >
+            {showDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            {showDetails ? "Masquer l'analyse détaillée" : "Analyse détaillée : sévérités, prise en charge, verdicts, sources, horaires, politiques"}
+          </button>
+
+          {showDetails && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card className="flex flex-col">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-500" /> Alertes ouvertes par sévérité
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-2 flex-grow flex items-center justify-center min-h-[260px]">
+                {severityData.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Aucune alerte ouverte sur la période.</p>
+                ) : (
+                  <div className="relative w-full h-[240px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={severityData} dataKey="value" nameKey="name" innerRadius={65} outerRadius={95} paddingAngle={3} stroke="none">
+                          {severityData.map((d) => <Cell key={d.key} fill={SEVERITY_COLORS[d.key]} />)}
+                        </Pie>
+                        <RechartsTooltip {...TOOLTIP_STYLE} />
+                        <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="absolute inset-0 bottom-8 flex flex-col items-center justify-center pointer-events-none">
+                      <span className="text-3xl font-black text-foreground">{summary.open}</span>
+                      <span className="text-[10px] font-bold uppercase text-muted-foreground">ouvertes</span>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -520,20 +653,8 @@ export default function VaronisPanel() {
                     </div>
                   ));
                 })()}
-                <div className="border-t border-border pt-3">
-                  <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">Escalades Varonis en attente de votre action</p>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    {ESCALATION_ORDER.map((t) => (
-                      <div key={t} className={`rounded-lg border p-2 ${t === "MITIGATION" && view.escalations[t] > 0 ? "border-red-500/40 bg-red-500/5" : "border-border"}`}>
-                        <div className={`text-lg font-black ${t === "MITIGATION" && view.escalations[t] > 0 ? "text-red-500" : "text-foreground"}`}>{view.escalations[t]}</div>
-                        <div className="text-[11px] text-muted-foreground">{ESCALATION_LABELS[t]}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </CardContent>
             </Card>
-
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -561,10 +682,8 @@ export default function VaronisPanel() {
                 )}
               </CardContent>
             </Card>
-          </div>
-
-          {/* LIGNE 2 TER : QUALITÉ DE DÉTECTION + SOURCES + CLÔTURE */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -605,7 +724,6 @@ export default function VaronisPanel() {
                 )}
               </CardContent>
             </Card>
-
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -627,7 +745,6 @@ export default function VaronisPanel() {
                 ))}
               </CardContent>
             </Card>
-
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -668,64 +785,8 @@ export default function VaronisPanel() {
                 )}
               </CardContent>
             </Card>
-          </div>
-
-          {/* LIGNE 3 : ÉVOLUTION + RÉPARTITION HORAIRE */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <Card className="lg:col-span-2 flex flex-col">
-              <CardHeader className="pb-0 flex flex-row items-center justify-between">
-                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-primary" /> Évolution des alertes par sévérité
-                </CardTitle>
-                <span className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-1 rounded-md border border-primary/20">
-                  {GRANULARITY_LABEL[view.granularity]}
-                </span>
-              </CardHeader>
-              <CardContent className="pt-4 h-[280px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={view.timeline} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                    <XAxis dataKey="label" tick={AXIS_TICK} tickLine={false} axisLine={false} minTickGap={12} />
-                    <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
-                    <RechartsTooltip {...TOOLTIP_STYLE} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
-                    <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                    {SEVERITY_ORDER.filter((s) => (s !== "info" && s !== "unknown") || view.timeline.some((p) => p[s] > 0)).map((s) => (
-                      <Bar key={s} dataKey={s} name={SEVERITY_LABELS[s]} stackId="sev" fill={SEVERITY_COLORS[s]} radius={s === "high" ? [3, 3, 0, 0] : 0} />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            <Card className="flex flex-col">
-              <CardHeader className="pb-0">
-                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire
-                </CardTitle>
-                <p className="text-[11px] text-muted-foreground pt-1">
-                  <span className="font-bold text-violet-500">{view.offHoursPct} %</span> hors heures ouvrées (avant 8 h, après 19 h, week-end)
-                </p>
-              </CardHeader>
-              <CardContent className="pt-4 h-[280px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={view.hourly} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                    <XAxis dataKey="hour" tick={AXIS_TICK} tickLine={false} axisLine={false} tickFormatter={(h) => `${h}h`} interval={3} />
-                    <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
-                    <RechartsTooltip {...TOOLTIP_STYLE} labelFormatter={(h) => `${h}h – ${Number(h) + 1}h`} formatter={(v) => [v, "Alertes"]} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
-                    <Bar dataKey="count" radius={[3, 3, 0, 0]}>
-                      {view.hourly.map((h) => (
-                        <Cell key={h.hour} fill={h.hour < 8 || h.hour >= 19 ? "#8b5cf6" : "#0ea5e9"} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* LIGNE 4 : TRAITEMENT + POLITIQUES (VOLUME ET BRUIT) */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -763,8 +824,33 @@ export default function VaronisPanel() {
                 )}
               </CardContent>
             </Card>
-
-            <Card className="lg:col-span-2">
+            <Card className="flex flex-col">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire
+                </CardTitle>
+                <p className="text-[11px] text-muted-foreground pt-1">
+                  <span className="font-bold text-violet-500">{view.offHoursPct} %</span> hors heures ouvrées (avant 8 h, après 19 h, week-end)
+                </p>
+              </CardHeader>
+              <CardContent className="pt-4 h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={view.hourly} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis dataKey="hour" tick={AXIS_TICK} tickLine={false} axisLine={false} tickFormatter={(h) => `${h}h`} interval={3} />
+                    <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
+                    <RechartsTooltip {...TOOLTIP_STYLE} labelFormatter={(h) => `${h}h – ${Number(h) + 1}h`} formatter={(v) => [v, "Alertes"]} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
+                    <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                      {view.hourly.map((h) => (
+                        <Cell key={h.hour} fill={h.hour < 8 || h.hour >= 19 ? "#8b5cf6" : "#0ea5e9"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+              </div>
+            <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
                   <Volume2 className="w-4 h-4 text-violet-500" /> Politiques : volume et bruit
@@ -808,65 +894,8 @@ export default function VaronisPanel() {
                 </div>
               </CardContent>
             </Card>
-          </div>
-
-          {/* LIGNE 5 : DERNIÈRES ALERTES */}
-          <Card>
-            <CardHeader className="pb-2 border-b border-border/50">
-              <CardTitle className="text-xs font-bold text-muted-foreground uppercase">
-                Dernières alertes de la période
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-2">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Menace (politique)</TableHead>
-                      <TableHead>Catégorie</TableHead>
-                      <TableHead>Sévérité</TableHead>
-                      <TableHead>Statut</TableHead>
-                      <TableHead className="text-right">Événements</TableHead>
-                      <TableHead>Données sensibles</TableHead>
-                      <TableHead />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {summary.latest.map((a) => {
-                      const sev = normalizeSeverity(a.policy?.severity);
-                      return (
-                        <TableRow key={a.id} className={isOpen(a) ? "" : "opacity-60"}>
-                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(alertDate(a))}</TableCell>
-                          <TableCell className="font-medium">{a.policy?.name ?? "—"}</TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{a.policy?.category ?? "—"}</TableCell>
-                          <TableCell>
-                            <Badge variant="outline" className={SEVERITY_BADGE[sev]}>
-                              {a.policy?.severity ?? SEVERITY_LABELS.unknown}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-sm">{formatStatus(a.status)}</TableCell>
-                          <TableCell className="text-right font-mono text-sm">{a.eventsCount ?? "—"}</TableCell>
-                          <TableCell>
-                            {a.hasSensitiveResource
-                              ? <Badge variant="outline" className="bg-orange-500/15 text-orange-600 border-orange-500/30">Oui</Badge>
-                              : <span className="text-sm text-muted-foreground">Non</span>}
-                          </TableCell>
-                          <TableCell>
-                            {safeAlertUrl(a) && (
-                              <a href={safeAlertUrl(a)!} target="_blank" rel="noopener noreferrer" title="Ouvrir l'alerte dans Varonis" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline whitespace-nowrap">
-                                <ExternalLink className="w-3.5 h-3.5" /> Varonis
-                              </a>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
+            </div>
+          )}
         </>
       )}
     </div>
