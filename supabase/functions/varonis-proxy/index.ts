@@ -386,14 +386,32 @@ const ZONE_FIELDS = "id name path sharePaths url dataSource { id name type } siz
 const ownerStale = (r: Row) => Boolean(r.resourceOwner?.isStale);
 const ownerDisabled = (r: Row) => Boolean(r.resourceOwner?.isDisabled);
 
-/** Dossiers sensibles de niveau 3 présentant un point à traiter : nombre unique et volume. */
+/** Les plus volumineux d'une liste de dossiers, au format affiché par l'écran. */
+function topZones(rows: Row[], size = 15) {
+  return [...rows]
+    .sort((a, b) => (b.sizeOfResourceAndNestedResources ?? 0) - (a.sizeOfResourceAndNestedResources ?? 0))
+    .slice(0, size)
+    .map((r) => ({
+      name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
+      source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
+      sizeBytes: r.sizeOfResourceAndNestedResources, files: r.numberOfNestedFiles,
+      isStale: Boolean(r.isStaleIncludingSubfolders), staleAccess: Boolean(r.hasStaleAccess),
+      staleOwner: ownerStale(r), disabledOwner: ownerDisabled(r),
+      ownerIssue: ownerStale(r) || ownerDisabled(r),
+    }));
+}
+
+/** Dossiers sensibles de niveau 3 présentant un point à traiter : nombre, volume et les plus gros. */
 function zoneIssueQuery(extra: Record<string, unknown>): PostureQuery {
   return {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
     where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH }, ...extra },
-    fields: "id path dataSource { id } sizeOfResourceAndNestedResources numberOfNestedFiles",
-    summarize: (rows) => ({ ...zoneTotals(uniqueResources(rows)), lines: rows.length }),
+    fields: ZONE_FIELDS,
+    summarize: (all) => {
+      const rows = uniqueResources(all);
+      return { ...zoneTotals(rows), lines: all.length, top: topZones(rows) };
+    },
   };
 }
 
@@ -436,17 +454,7 @@ function zonesTotalQuery(sourceId: number, lo = SIZE_MIN, hi = SIZE_MAX, sized =
       return {
         ...zoneTotals(rows),
         lines: all.length,
-        top: [...rows]
-          .sort((a, b) => (b.sizeOfResourceAndNestedResources ?? 0) - (a.sizeOfResourceAndNestedResources ?? 0))
-          .slice(0, 15)
-          .map((r) => ({
-            name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
-            source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
-            sizeBytes: r.sizeOfResourceAndNestedResources, files: r.numberOfNestedFiles,
-            isStale: Boolean(r.isStaleIncludingSubfolders), staleAccess: Boolean(r.hasStaleAccess),
-            staleOwner: ownerStale(r), disabledOwner: ownerDisabled(r),
-            ownerIssue: ownerStale(r) || ownerDisabled(r),
-          })),
+        top: topZones(rows),
       };
     },
   };

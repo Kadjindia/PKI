@@ -1,17 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
-  Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users,
+  Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users, X,
   RefreshCw, Loader2, AlertTriangle, Info, Clock,
 } from "lucide-react";
 import {
   formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal, zoneTotal,
   allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
-  type PostureResults, type PostureState,
+  type PostureResults, type PostureState, type ZoneIssueKey, type ZoneResult,
 } from "@/lib/varonisPosture";
 
 // La posture est calculée côté serveur (tâche planifiée chaque nuit, ou à la
@@ -67,7 +67,7 @@ function Status({ r, children }: {
 function Help({ children }: { readonly children: React.ReactNode }) {
   return (
     <Popover>
-      <PopoverTrigger aria-label="Définition" className="text-muted-foreground hover:text-foreground shrink-0">
+      <PopoverTrigger aria-label="Définition" onClick={(e) => e.stopPropagation()} className="text-muted-foreground hover:text-foreground shrink-0">
         <Info className="w-4 h-4" />
       </PopoverTrigger>
       <PopoverContent className="text-xs leading-relaxed">{children}</PopoverContent>
@@ -78,13 +78,17 @@ function Help({ children }: { readonly children: React.ReactNode }) {
 type KpiValue = { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
 
 /** Chiffre clé : titre court, grand nombre, une ligne de contexte, définition dans ⓘ. */
-function Kpi({ title, help, icon: Icon, color, r, sub }: {
+function Kpi({ title, help, icon: Icon, color, r, sub, onClick, active }: {
   readonly title: string; readonly help: React.ReactNode; readonly icon: typeof Info; readonly color: string;
-  readonly r?: KpiValue; readonly sub?: React.ReactNode;
+  readonly r?: KpiValue; readonly sub?: React.ReactNode; readonly onClick?: () => void; readonly active?: boolean;
 }) {
   const ok = r?.status === "done" && (r.count ?? 0) === 0;
   return (
-    <Card className={`border-l-4 ${color}`}>
+    <Card
+      className={`border-l-4 ${color} ${onClick ? "cursor-pointer hover:shadow-md transition-shadow" : ""} ${active ? "ring-2 ring-primary/60" : ""}`}
+      onClick={onClick}
+      title={onClick ? "Cliquer pour afficher le détail" : undefined}
+    >
       <CardContent className="p-4 space-y-1">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
@@ -101,11 +105,24 @@ function Kpi({ title, help, icon: Icon, color, r, sub }: {
   );
 }
 
-/** Pastille d'un point à traiter. */
-function Chip({ children, tone = "orange" }: { readonly children: React.ReactNode; readonly tone?: "orange" | "red" }) {
+/** Pastille d'un point à traiter ; cliquable pour afficher les dossiers concernés. */
+function Chip({ children, tone = "orange", onClick }: { readonly children: React.ReactNode; readonly tone?: "orange" | "red"; readonly onClick?: () => void }) {
   const cls = tone === "red" ? "bg-red-500/10 text-red-600" : "bg-orange-500/10 text-orange-600";
-  return <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${cls}`}>{children}</span>;
+  return (
+    <button type="button" onClick={onClick} disabled={!onClick} title={onClick ? "Afficher tous les dossiers dans ce cas" : undefined}
+      className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${cls} ${onClick ? "hover:brightness-90 cursor-pointer" : ""}`}>
+      {children}
+    </button>
+  );
 }
+
+/** Vues de la liste des dossiers sensibles (filtre par point à traiter). */
+const ZONE_VIEWS: Record<ZoneIssueKey, string> = {
+  zonesStale: "Données sensibles inutilisées",
+  zonesStaleAccess: "Droits inutilisés",
+  zonesStaleOwner: "Propriétaire inactif",
+  zonesDisabledOwner: "Propriétaire désactivé",
+};
 
 /** Liste courte (5 lignes) avec un bouton pour afficher le reste. */
 function useShowMore<T>(items: T[] | undefined, initial = 5) {
@@ -179,7 +196,18 @@ export default function VaronisPosturePanel() {
   // Dossiers sensibles : ceux qui cumulent le plus de points à traiter d'abord, puis les plus gros
   const issues = (z: { isStale: boolean; staleAccess: boolean; ownerIssue: boolean }) => Number(z.isStale) + Number(z.staleAccess) + Number(z.ownerIssue);
   const priority = [...(zones?.top ?? [])].sort((a, b) => issues(b) - issues(a) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
-  const zoneList = useShowMore(priority);
+  // Clic sur un chiffre ou une pastille : la liste montre les dossiers de ce cas
+  const [zoneView, setZoneView] = useState<ZoneIssueKey | null>(null);
+  const showZones = (v: ZoneIssueKey | null) => {
+    setZoneView((cur) => (cur === v ? null : v));
+    zonesRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const viewResult: ZoneResult | undefined = zoneView ? r[zoneView] : zones;
+  const listItems = zoneView ? (r[zoneView]?.top ?? []) : priority;
+  const zoneList = useShowMore(listItems);
+  const zonesRef = useRef<HTMLDivElement>(null);
+  const exposedRef = useRef<HTMLDivElement>(null);
+  const accountsRef = useRef<HTMLDivElement>(null);
   const exposedList = useShowMore(exposed?.top);
   const [showAdmins, setShowAdmins] = useState(false);
   const errorMessage = (refresh.error ?? error) as Error | null;
@@ -278,6 +306,7 @@ export default function VaronisPosturePanel() {
           color="border-l-red-500"
           r={exposed}
           sub={exposed?.status === "done" && `dont ${formatCount(exposed.withoutValidOwner)} sans responsable`}
+          onClick={() => exposedRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
         />
         <Kpi
           title="Données sensibles inutilisées"
@@ -285,6 +314,8 @@ export default function VaronisPosturePanel() {
           icon={Archive}
           color="border-l-amber-500"
           r={r.zonesStale}
+          onClick={() => showZones("zonesStale")}
+          active={zoneView === "zonesStale"}
           sub={r.zonesStale?.status === "done" && `dossiers · ${formatBytes(r.zonesStale.sizeBytes)} à archiver`}
         />
         <Kpi
@@ -293,6 +324,8 @@ export default function VaronisPosturePanel() {
           icon={KeyRound}
           color="border-l-orange-500"
           r={r.zonesStaleAccess}
+          onClick={() => showZones("zonesStaleAccess")}
+          active={zoneView === "zonesStaleAccess"}
           sub={r.zonesStaleAccess?.status === "done" && (zones.status === "done"
             ? `dossiers sensibles sur ${formatCount(zones.count, zones.capped)} (${share(r.zonesStaleAccess.count, zones.count) ?? 0} %)`
             : "dossiers sensibles")}
@@ -303,6 +336,7 @@ export default function VaronisPosturePanel() {
           icon={Crown}
           color="border-l-violet-500"
           r={priv && { ...priv, count: priv.status === "done" ? priv.stale : undefined }}
+          onClick={() => { setShowAdmins(true); accountsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
           sub={priv?.status === "done" && (priv.staleOld === undefined
             ? `sur ${formatCount(priv.admins)} administrateurs`
             : `sur ${formatCount(priv.admins)} : ${formatCount(priv.staleOld)} sans connexion depuis ${INACTIVE_DAYS} j · ${formatCount(priv.staleNoLogon)} sans date de connexion`)}
@@ -311,22 +345,35 @@ export default function VaronisPosturePanel() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* DOSSIERS SENSIBLES À TRAITER */}
-        <Card className="lg:col-span-2">
+        <Card className="lg:col-span-2 scroll-mt-4" ref={zonesRef}>
           <CardHeader className="pb-1">
-            <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <FolderOpen className="w-4 h-4 text-primary" /> Dossiers sensibles à traiter en priorité
+            <CardTitle className="text-sm font-bold flex flex-wrap items-center gap-2">
+              <FolderOpen className="w-4 h-4 text-primary" />
+              {zoneView ? `${ZONE_VIEWS[zoneView]} : les dossiers les plus volumineux` : "Dossiers sensibles à traiter en priorité"}
+              {zoneView && (
+                <button type="button" onClick={() => setZoneView(null)} className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-primary/10 text-primary hover:bg-primary/20">
+                  {ZONE_VIEWS[zoneView]} <X className="w-3 h-3" />
+                </button>
+              )}
             </CardTitle>
-            <p className="text-xs text-muted-foreground">Partages et dossiers personnels (ex. D:\Shares\Partage_Finance, D:\Users\ALEX)</p>
+            <p className="text-xs text-muted-foreground">
+              Partages et dossiers personnels (ex. D:\Shares\Partage_Finance, D:\Users\ALEX). Cliquez sur un chiffre ou une pastille pour filtrer la liste.
+            </p>
           </CardHeader>
           <CardContent>
             {/* Chiffres de référence : total et propriétaires */}
             <div className="grid grid-cols-3 gap-2 mb-3">
               {[
-                { label: "Contenant des données sensibles", value: zones, help: <>Partages et dossiers personnels où la classification Varonis a trouvé des données sensibles (personnelles, financières, RH…).</> },
-                { label: "Propriétaire inactif", value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b> : plus personne pour valider qui y a accès.</> },
-                { label: "Propriétaire désactivé", value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation) : à réattribuer.</> },
-              ].map(({ label, value, help }) => (
-                <div key={label} className="rounded-lg bg-muted/50 p-2.5">
+                { label: "Contenant des données sensibles", view: null, value: zones, help: <>Partages et dossiers personnels où la classification Varonis a trouvé des données sensibles (personnelles, financières, RH…).</> },
+                { label: "Propriétaire inactif", view: "zonesStaleOwner" as const, value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b> : plus personne pour valider qui y a accès.</> },
+                { label: "Propriétaire désactivé", view: "zonesDisabledOwner" as const, value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation) : à réattribuer.</> },
+              ].map(({ label, view, value, help }) => (
+                <div
+                  key={label}
+                  onClick={() => (view ? showZones(view) : setZoneView(null))}
+                  title="Cliquer pour afficher ces dossiers"
+                  className={`rounded-lg bg-muted/50 p-2.5 cursor-pointer hover:bg-muted ${zoneView === view ? "ring-2 ring-primary/60" : ""}`}
+                >
                   <div className="flex items-start justify-between gap-1 text-[11px] font-semibold text-muted-foreground">
                     <span>{label}</span><Help>{help}</Help>
                   </div>
@@ -336,9 +383,13 @@ export default function VaronisPosturePanel() {
                 </div>
               ))}
             </div>
-            <Status r={zones}>
-              {priority.length === 0 ? (
-                <p className="text-sm text-emerald-600 py-2">Aucun dossier contenant des données sensibles.</p>
+            <Status r={viewResult}>
+              {listItems.length === 0 ? (
+                <p className={`text-sm py-2 ${zoneView && viewResult?.status === "done" && (viewResult.count ?? 0) > 0 ? "text-muted-foreground" : "text-emerald-600"}`}>
+                  {zoneView && viewResult?.status === "done" && (viewResult.count ?? 0) > 0
+                    ? "Liste disponible après le prochain calcul de la posture."
+                    : zoneView ? "Aucun dossier dans ce cas." : "Aucun dossier contenant des données sensibles."}
+                </p>
               ) : (
                 <>
                   <ul>
@@ -349,10 +400,10 @@ export default function VaronisPosturePanel() {
                         chips={issues(z) === 0
                           ? <span className="text-[11px] text-muted-foreground">Rien à signaler</span>
                           : <>
-                              {z.isStale && <Chip>Données inutilisées</Chip>}
-                              {z.staleAccess && <Chip>Droits inutilisés</Chip>}
-                              {z.staleOwner && <Chip tone="red">Propriétaire inactif</Chip>}
-                              {z.disabledOwner && <Chip tone="red">Propriétaire désactivé</Chip>}
+                              {z.isStale && <Chip onClick={() => showZones("zonesStale")}>Données inutilisées</Chip>}
+                              {z.staleAccess && <Chip onClick={() => showZones("zonesStaleAccess")}>Droits inutilisés</Chip>}
+                              {z.staleOwner && <Chip tone="red" onClick={() => showZones("zonesStaleOwner")}>Propriétaire inactif</Chip>}
+                              {z.disabledOwner && <Chip tone="red" onClick={() => showZones("zonesDisabledOwner")}>Propriétaire désactivé</Chip>}
                               {z.ownerIssue && z.staleOwner === undefined && <Chip tone="red">Sans responsable</Chip>}
                             </>}
                       />
@@ -366,7 +417,7 @@ export default function VaronisPosturePanel() {
         </Card>
 
         {/* COMPTES */}
-        <Card>
+        <Card ref={accountsRef} className="scroll-mt-4">
           <CardHeader className="pb-1">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <Users className="w-4 h-4 text-sky-500" /> Comptes
@@ -407,7 +458,7 @@ export default function VaronisPosturePanel() {
 
             <dl className="border-t border-border pt-3 space-y-2 text-sm">
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground">Administrateurs</dt>
+                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={() => setShowAdmins(true)} title="Afficher les administrateurs inactifs">Administrateurs</dt>
                 <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.admins)}</Status></dd>
               </div>
               <div className="flex justify-between gap-2">
@@ -445,7 +496,7 @@ export default function VaronisPosturePanel() {
       </div>
 
       {/* DOSSIERS OUVERTS À TOUS */}
-      <Card>
+      <Card ref={exposedRef} className="scroll-mt-4">
         <CardHeader className="pb-1">
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à tous : les plus volumineux
