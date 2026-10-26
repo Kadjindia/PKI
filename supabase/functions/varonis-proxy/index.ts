@@ -362,20 +362,23 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
     jobName: "resourcesQueryJob",
     where: { isSensitive: yes, isRootOrgWideExposed: yes },
     fields: "id name path sharePaths url sizeOfResourceAndNestedResources totalNumberOfNestedObjects hasStaleOwner hasDisabledOwner isStale lastEventDate dataSource { name type }",
-    summarize: (rows) => ({
-      count: rows.length,
-      withoutValidOwner: count(rows, (r) => r.hasStaleOwner || r.hasDisabledOwner),
-      top: [...rows]
-        .sort((a, b) => (b.totalNumberOfNestedObjects ?? 0) - (a.totalNumberOfNestedObjects ?? 0))
-        .slice(0, 10)
-        .map((r) => ({
-          name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
-          source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
-          objects: r.totalNumberOfNestedObjects, sizeBytes: r.sizeOfResourceAndNestedResources,
-          ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner), isStale: Boolean(r.isStale),
-          lastEventDate: r.lastEventDate,
-        })),
-    }),
+    summarize: (all) => {
+      const rows = uniqueById(all); // une même ressource peut remonter par plusieurs chemins
+      return {
+        count: rows.length,
+        withoutValidOwner: count(rows, (r) => r.hasStaleOwner || r.hasDisabledOwner),
+        top: [...rows]
+          .sort((a, b) => (b.totalNumberOfNestedObjects ?? 0) - (a.totalNumberOfNestedObjects ?? 0))
+          .slice(0, 10)
+          .map((r) => ({
+            name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
+            source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
+            objects: r.totalNumberOfNestedObjects, sizeBytes: r.sizeOfResourceAndNestedResources,
+            ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner), isStale: Boolean(r.isStale),
+            lastEventDate: r.lastEventDate,
+          })),
+      };
+    },
   },
   // Zones (dossiers de niveau 3) contenant des données sensibles
   zones: {
