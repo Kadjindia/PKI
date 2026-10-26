@@ -9,9 +9,9 @@ import {
   RefreshCw, Loader2, AlertTriangle, Info, Clock,
 } from "lucide-react";
 import {
-  formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal,
+  formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal, zoneTotal,
   allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
-  POSTURE_KEYS, type PostureResults, type PostureState, type ZoneTotals,
+  type PostureResults, type PostureState,
 } from "@/lib/varonisPosture";
 
 // La posture est calculée côté serveur (tâche planifiée chaque nuit, ou à la
@@ -169,13 +169,13 @@ export default function VaronisPosturePanel() {
   }, [running]);
 
   const exposed = r.sensitiveExposed;
-  const zones = r.zones;
+  // Total des dossiers sensibles (une recherche par source de données) et les plus volumineux
+  const zones = zoneTotal(r);
   const priv = r.privileged;
   const inactive = inactiveTotal(r);
   // Une tranche plafonnée par Varonis ne donne pas un chiffre fiable : on ne l'affiche pas
   const inactiveUnreliable = INACTIVE_BUCKETS.some((b) => b.key !== "neverLogged" && r[b.key]?.status === "done" && r[b.key]?.capped);
   const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => !x || x.status !== "done");
-  const zonePart = (part?: ZoneTotals) => zones && { ...zones, count: zones.status === "done" ? part?.count : undefined };
   // Dossiers sensibles : ceux qui cumulent le plus de points à traiter d'abord, puis les plus gros
   const issues = (z: { isStale: boolean; staleAccess: boolean; ownerIssue: boolean }) => Number(z.isStale) + Number(z.staleAccess) + Number(z.ownerIssue);
   const priority = [...(zones?.top ?? [])].sort((a, b) => issues(b) - issues(a) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
@@ -217,7 +217,7 @@ export default function VaronisPosturePanel() {
           <CardContent className="p-4 space-y-1 text-sm">
             <div className="flex items-center gap-2 font-semibold text-foreground">
               <Loader2 className="w-4 h-4 animate-spin text-primary" />
-              Calcul en cours depuis {formatElapsed(now - new Date(running.started_at).getTime())} : {snapshotProgress(running.results)} / {POSTURE_KEYS.length} indicateurs prêts
+              Calcul en cours depuis {formatElapsed(now - new Date(running.started_at).getTime())} : {snapshotProgress(running.results).done} / {snapshotProgress(running.results).total} recherches terminées
             </div>
             <p className="text-muted-foreground">
               Les recherches Varonis sont lancées quelques-unes à la fois pour ne pas dépasser la limite de requêtes : comptez de quelques minutes à une demi-heure.
@@ -284,16 +284,18 @@ export default function VaronisPosturePanel() {
           help={<>Partages et dossiers personnels contenant des données sensibles que <b>plus personne n&apos;ouvre ni ne modifie</b> (durée réglée dans Varonis). À archiver ou supprimer : moins de données, moins de risque.</>}
           icon={Archive}
           color="border-l-amber-500"
-          r={zonePart(zones?.stale)}
-          sub={zones?.status === "done" && `dossiers · ${formatBytes(zones.stale?.sizeBytes)} à archiver`}
+          r={r.zonesStale}
+          sub={r.zonesStale?.status === "done" && `dossiers · ${formatBytes(r.zonesStale.sizeBytes)} à archiver`}
         />
         <Kpi
           title="Droits inutilisés"
           help={<>Partages et dossiers personnels sensibles où des personnes ont <b>un droit d&apos;accès dont elles ne se servent jamais</b> (ancien poste, projet terminé…). À retirer : si l&apos;un de ces comptes est piraté, les données sont exposées.</>}
           icon={KeyRound}
           color="border-l-orange-500"
-          r={zonePart(zones?.staleAccess)}
-          sub={zones?.status === "done" && `dossiers sensibles sur ${formatCount(zones.count)} (${share(zones.staleAccess?.count, zones.count) ?? 0} %)`}
+          r={r.zonesStaleAccess}
+          sub={r.zonesStaleAccess?.status === "done" && (zones.status === "done"
+            ? `dossiers sensibles sur ${formatCount(zones.count, zones.capped)} (${share(r.zonesStaleAccess.count, zones.count) ?? 0} %)`
+            : "dossiers sensibles")}
         />
         <Kpi
           title="Administrateurs inactifs"
@@ -312,12 +314,26 @@ export default function VaronisPosturePanel() {
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <FolderOpen className="w-4 h-4 text-primary" /> Dossiers sensibles à traiter en priorité
             </CardTitle>
-            <p className="text-xs text-muted-foreground">
-              Partages et dossiers personnels contenant des données sensibles
-              {zones?.status === "done" && <> : {formatCount(zones.count)} au total, dont {formatCount(zones.ownerIssue?.count)} sans responsable</>}
-            </p>
+            <p className="text-xs text-muted-foreground">Partages et dossiers personnels (ex. D:\Shares\Partage_Finance, D:\Users\ALEX)</p>
           </CardHeader>
           <CardContent>
+            {/* Chiffres de référence : total et propriétaires */}
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {[
+                { label: "Contenant des données sensibles", value: zones, help: <>Partages et dossiers personnels où la classification Varonis a trouvé des données sensibles (personnelles, financières, RH…).</> },
+                { label: "Propriétaire inactif", value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b> : plus personne pour valider qui y a accès.</> },
+                { label: "Propriétaire désactivé", value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation) : à réattribuer.</> },
+              ].map(({ label, value, help }) => (
+                <div key={label} className="rounded-lg bg-muted/50 p-2.5">
+                  <div className="flex items-start justify-between gap-1 text-[11px] font-semibold text-muted-foreground">
+                    <span>{label}</span><Help>{help}</Help>
+                  </div>
+                  <Status r={value}>
+                    <div className="text-xl font-black text-foreground">{formatCount(value?.count, value?.capped)}</div>
+                  </Status>
+                </div>
+              ))}
+            </div>
             <Status r={zones}>
               {priority.length === 0 ? (
                 <p className="text-sm text-emerald-600 py-2">Aucun dossier contenant des données sensibles.</p>
@@ -333,7 +349,9 @@ export default function VaronisPosturePanel() {
                           : <>
                               {z.isStale && <Chip>Données inutilisées</Chip>}
                               {z.staleAccess && <Chip>Droits inutilisés</Chip>}
-                              {z.ownerIssue && <Chip tone="red">Sans responsable</Chip>}
+                              {z.staleOwner && <Chip tone="red">Propriétaire inactif</Chip>}
+                              {z.disabledOwner && <Chip tone="red">Propriétaire désactivé</Chip>}
+                              {z.ownerIssue && z.staleOwner === undefined && <Chip tone="red">Sans responsable</Chip>}
                             </>}
                       />
                     ))}
