@@ -299,11 +299,13 @@ export default function VaronisPosturePanel() {
         />
         <Kpi
           title="Administrateurs inactifs"
-          help={<>Comptes administrateurs <b>encore activés</b> mais sans connexion depuis plus de {INACTIVE_DAYS} jours. Personne ne les surveille : ce sont des cibles de choix. À désactiver ou justifier.</>}
+          help={<>Comptes administrateurs <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, ou sans aucune date de connexion (jamais utilisés ou date non remontée). Personne ne les surveille : ce sont des cibles de choix. À désactiver ou justifier.</>}
           icon={Crown}
           color="border-l-violet-500"
           r={priv && { ...priv, count: priv.status === "done" ? priv.stale : undefined }}
-          sub={priv?.status === "done" && `sur ${formatCount(priv.admins)} administrateurs`}
+          sub={priv?.status === "done" && (priv.staleOld === undefined
+            ? `sur ${formatCount(priv.admins)} administrateurs`
+            : `sur ${formatCount(priv.admins)} : ${formatCount(priv.staleOld)} sans connexion depuis ${INACTIVE_DAYS} j · ${formatCount(priv.staleNoLogon)} sans date de connexion`)}
         />
       </div>
 
