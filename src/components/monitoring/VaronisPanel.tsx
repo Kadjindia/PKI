@@ -13,8 +13,9 @@ import {
   ShieldAlert, AlertOctagon, Database, Bell, RefreshCw, Loader2, AlertTriangle, Inbox,
   Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks,
   Lock, Upload, UserCog, Trash2, Hourglass, Users, Tag, Zap, Volume2,
-  ShieldCheck, Server, UserCheck, ExternalLink, ChevronDown, ChevronUp,
+  ShieldCheck, Server, UserCheck, ExternalLink, ChevronDown, ChevronUp, Filter, X,
 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip as RechartsTooltip, Legend,
@@ -27,6 +28,7 @@ import {
   verdictStats, dataSourceStats, closedByStats, openEscalations, safeAlertUrl,
   VERDICT_LABELS, ESCALATION_LABELS, type Verdict, type EscalationType,
   SEVERITY_LABELS, type ThreatFamily,
+  applyFilters, toggleFilter, applyFilterPatch, filterChips, removeChip, isFiltered, type AlertFilters,
   type SeverityLevel, type VaronisAlert, type VaronisProxyResponse, type TimePrefix, type TimeUnit, type Granularity, type Insight,
 } from "@/lib/varonis";
 
@@ -131,6 +133,10 @@ function PreviousPeriod({ current, previous, comparable }: { readonly current: n
   );
 }
 
+/** Élément cliquable d'un visuel : estompé quand un autre élément du même visuel est filtré. */
+const clickable = (active: boolean, dimmed: boolean) =>
+  `cursor-pointer transition-opacity hover:bg-muted/60 rounded-md ${active ? "ring-2 ring-primary/60" : ""} ${dimmed ? "opacity-40" : ""}`;
+
 /** Alertes de sévérité élevée levées (ouvertes ou fermées). */
 const countHigh = (list: VaronisAlert[]) => list.filter((a) => normalizeSeverity(a.policy?.severity) === "high").length;
 
@@ -141,6 +147,12 @@ export default function VaronisPanel() {
   const [timeUnit, setTimeUnit] = useState<TimeUnit>("days");
   const [showDetails, setShowDetails] = useState(false);
   const [showAllLatest, setShowAllLatest] = useState(false);
+  // Filtres croisés : tout clic sur un visuel filtre l'ensemble de l'onglet
+  const [filters, setFilters] = useState<AlertFilters>({});
+  const toggle = <K extends keyof AlertFilters>(key: K, value: Parameters<typeof toggleFilter<K>>[2]) =>
+    setFilters((f) => toggleFilter(f, key, value));
+  const patch = (p: AlertFilters) => setFilters((f) => applyFilterPatch(f, p));
+  const has = (p: AlertFilters) => Object.entries(p).every(([k, v]) => JSON.stringify(filters[k as keyof AlertFilters]) === JSON.stringify(v));
 
   const { data, error, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery({
     queryKey: ["varonis-alerts"],
@@ -152,15 +164,20 @@ export default function VaronisPanel() {
 
   const view = useMemo(() => {
     const all = data?.alerts ?? [];
+    // Filtres (hors barre du graphique d'évolution) appliqués à toutes les alertes reçues,
+    // y compris pour les blocs « toutes périodes » (arriéré, escalades, prise en charge)
+    const { bucket, ...rest } = filters;
+    const scoped = applyFilters(all, rest);
     const range = computeRange(timePrefix, timeValue, timeUnit);
-    const current = filterByRange(all, range);
+    const inRange = filterByRange(scoped, range);
+    const current = bucket ? applyFilters(inRange, { bucket }) : inRange;
     const prevRange = previousRange(range);
-    const previous = filterByRange(all, prevRange);
+    const previous = filterByRange(scoped, prevRange);
     const coverage = dataCoverage(all);
     // Pas de comparaison si la période précédente commence avant les données reçues
     const canCompare = coverage !== null && prevRange.from >= coverage.oldest.getTime();
     const granularity = granularityFor(range);
-    const summary = summarizeAlerts(current);
+    const summary = summarizeAlerts(current, 50);
     const offHours = current.filter((a) => { const d = alertDate(a); return d ? isOffHours(d) : false; }).length;
     return {
       range,
@@ -172,15 +189,18 @@ export default function VaronisPanel() {
       highRaised: countHigh(current),
       previousHigh: countHigh(previous),
       granularity,
-      timeline: buildTimeline(current, range, granularity).map((p) => ({ ...p, label: formatBucket(p.start, granularity) })),
+      // L'évolution garde toutes ses barres : la barre choisie est mise en avant
+      timeline: buildTimeline(inRange, range, granularity).map((p, i, list) => ({
+        ...p, label: formatBucket(p.start, granularity), end: list[i + 1]?.start ?? range.to,
+      })),
       hourly: hourlyDistribution(current),
       offHoursPct: current.length ? Math.round((offHours / current.length) * 100) : 0,
       // 6 points maximum, déjà classés du plus critique au plus informatif
-      insights: buildInsights(current, canCompare ? previous : [], all).slice(0, 6),
+      insights: buildInsights(current, canCompare ? previous : [], scoped).slice(0, 6),
       threats: threatTracking(current, canCompare ? previous : []),
       canCompare,
-      ages: openAgeBuckets(all),
-      handling: handlingSplit(all),
+      ages: openAgeBuckets(scoped),
+      handling: handlingSplit(scoped),
       escalation: escalationRate(current),
       spikes: eventSpikes(current),
       noise: policyNoise(current).slice(0, 8),
@@ -188,10 +208,10 @@ export default function VaronisPanel() {
       verdicts: verdictStats(current),
       sources: dataSourceStats(current).slice(0, 6),
       closers: closedByStats(current),
-      escalations: openEscalations(all),
+      escalations: openEscalations(scoped),
       treatedPct: summary.total ? Math.round(((summary.total - summary.open) / summary.total) * 100) : 0,
     };
-  }, [data, timePrefix, timeValue, timeUnit]);
+  }, [data, timePrefix, timeValue, timeUnit, filters]);
 
   const { summary, coverage } = view;
   // Outil de diagnostic du schéma Varonis, affiché seulement avec ?diag=1
@@ -298,6 +318,7 @@ export default function VaronisPanel() {
     );
   }
 
+  const statusOptions = [...new Set((data?.alerts ?? []).map((a) => formatStatus(a.status)))].sort();
   const severityData = SEVERITY_ORDER
     .map((s) => ({ key: s, name: SEVERITY_LABELS[s], value: summary.bySeverity[s] }))
     .filter((d) => d.value > 0);
@@ -317,18 +338,73 @@ export default function VaronisPanel() {
         </div>
       )}
 
+      {/* FILTRES */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Popover>
+          <PopoverTrigger className="inline-flex items-center gap-1.5 text-sm font-semibold px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted">
+            <Filter className="w-4 h-4" /> Statut{filters.state || filters.status?.length ? " •" : ""} <ChevronDown className="w-3.5 h-3.5" />
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-64 p-2 space-y-1">
+            {(["open", "closed"] as const).map((st) => (
+              <label key={st} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-muted text-sm cursor-pointer">
+                <input type="checkbox" checked={filters.state === st} onChange={() => toggle("state", st)} />
+                {st === "open" ? "Ouvertes" : "Clôturées"}
+              </label>
+            ))}
+            <div className="border-t border-border my-1" />
+            {statusOptions.map((name) => (
+              <label key={name} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-muted text-sm cursor-pointer">
+                <input type="checkbox" checked={filters.status?.includes(name) ?? false} onChange={() => toggle("status", name)} />
+                {name}
+              </label>
+            ))}
+          </PopoverContent>
+        </Popover>
+        <Popover>
+          <PopoverTrigger className="inline-flex items-center gap-1.5 text-sm font-semibold px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted">
+            <Filter className="w-4 h-4" /> Sévérité{filters.severity?.length ? " •" : ""} <ChevronDown className="w-3.5 h-3.5" />
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-56 p-2 space-y-1">
+            {SEVERITY_ORDER.map((sev) => (
+              <label key={sev} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-muted text-sm cursor-pointer">
+                <input type="checkbox" checked={filters.severity?.includes(sev) ?? false} onChange={() => toggle("severity", sev)} />
+                <span className="w-2.5 h-2.5 rounded-full" style={{ background: SEVERITY_COLORS[sev] }} /> {SEVERITY_LABELS[sev]}
+              </label>
+            ))}
+          </PopoverContent>
+        </Popover>
+        {filterChips(filters).map((chip) => (
+          <button
+            key={`${chip.key}-${String(chip.value ?? "")}`}
+            type="button"
+            onClick={() => setFilters((f) => removeChip(f, chip))}
+            className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20"
+            title="Retirer ce filtre"
+          >
+            {chip.label} <X className="w-3 h-3" />
+          </button>
+        ))}
+        {isFiltered(filters) ? (
+          <button type="button" onClick={() => setFilters({})} className="text-xs font-semibold text-muted-foreground hover:text-foreground underline">
+            Tout effacer
+          </button>
+        ) : (
+          <span className="text-xs text-muted-foreground">Astuce : cliquez sur un chiffre, une barre, une part ou une ligne pour filtrer tout l&apos;onglet.</span>
+        )}
+      </div>
+
       {summary.total === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16 space-y-2 text-muted-foreground">
             <Inbox className="w-8 h-8" />
-            <p className="text-sm">Aucune alerte Varonis sur cette période.</p>
+            <p className="text-sm">{isFiltered(filters) ? "Aucune alerte ne correspond aux filtres sur cette période." : "Aucune alerte Varonis sur cette période."}</p>
           </CardContent>
         </Card>
       ) : (
         <>
           {/* LIGNE 1 : INDICATEURS CLÉS */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card className="border-l-4 border-l-primary">
+            <Card className={`border-l-4 border-l-primary ${clickable(!filters.state && !filters.severity?.length && !filters.sensitive, false)}`} onClick={() => setFilters((f) => ({ ...f, state: undefined, severity: undefined, sensitive: undefined }))} title="Toutes les alertes (retire les filtres de statut, sévérité et données sensibles)">
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Alertes sur la période</CardTitle>
                 <div className="p-1.5 bg-primary/10 rounded-md"><Bell className="w-4 h-4 text-primary" /></div>
@@ -339,7 +415,7 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
 
-            <Card className="border-l-4 border-l-amber-500">
+            <Card className={`border-l-4 border-l-amber-500 ${clickable(has({ state: "open" }), false)}`} onClick={() => patch({ state: "open" })} title="Filtrer sur les alertes ouvertes">
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">À traiter</CardTitle>
                 <div className="p-1.5 bg-amber-500/10 rounded-md"><ListChecks className="w-4 h-4 text-amber-500" /></div>
@@ -352,7 +428,7 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
 
-            <Card className="border-l-4 border-l-red-500">
+            <Card className={`border-l-4 border-l-red-500 ${clickable(has({ state: "open", severity: ["high"] }), false)}`} onClick={() => patch({ state: "open", severity: ["high"] })} title="Filtrer sur les alertes élevées ouvertes">
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Sévérité élevée ouvertes</CardTitle>
                 <div className="p-1.5 bg-red-500/10 rounded-md"><AlertOctagon className="w-4 h-4 text-red-500" /></div>
@@ -364,7 +440,7 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
 
-            <Card className="border-l-4 border-l-orange-500">
+            <Card className={`border-l-4 border-l-orange-500 ${clickable(has({ state: "open", sensitive: true }), false)}`} onClick={() => patch({ state: "open", sensitive: true })} title="Filtrer sur les alertes ouvertes touchant des données sensibles">
               <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Alertes sur données sensibles</CardTitle>
                 <div className="p-1.5 bg-orange-500/10 rounded-md"><Database className="w-4 h-4 text-orange-500" /></div>
@@ -389,11 +465,11 @@ export default function VaronisPanel() {
                 const Icon = THREAT_ICONS[t.key];
                 const active = t.open > 0;
                 return (
-                  <span key={t.key} className="inline-flex items-center gap-1.5 text-sm" title={`${t.total} sur la période`}>
+                  <button type="button" key={t.key} onClick={() => toggle("threat", t.key)} className={`inline-flex items-center gap-1.5 text-sm px-2 py-1 ${clickable(filters.threat === t.key, Boolean(filters.threat) && filters.threat !== t.key)}`} title={`${t.total} sur la période · cliquer pour filtrer`}>
                     <Icon className={`w-4 h-4 ${active ? "text-red-500" : "text-muted-foreground"}`} />
                     <span className="text-foreground">{t.label}</span>
                     <b className={active ? "text-red-500" : "text-foreground"}>{t.open}</b>
-                  </span>
+                  </button>
                 );
               })}
             </CardContent>
@@ -411,10 +487,17 @@ export default function VaronisPanel() {
                 {view.insights.slice(0, 4).map((ins) => {
                   const { icon: Icon, className } = INSIGHT_STYLE[ins.level];
                   return (
-                    <div key={ins.text} className={`flex items-start gap-3 p-3 rounded-lg border ${className}`}>
+                    <button
+                      type="button"
+                      key={ins.text}
+                      disabled={!ins.filter}
+                      onClick={() => ins.filter && patch(ins.filter)}
+                      className={`w-full text-left flex items-start gap-3 p-3 rounded-lg border ${className} ${ins.filter ? "cursor-pointer hover:brightness-95" : "cursor-default"} ${ins.filter && has(ins.filter) ? "ring-2 ring-primary/60" : ""}`}
+                      title={ins.filter ? "Cliquer pour filtrer sur ces alertes" : undefined}
+                    >
                       <Icon className="w-4 h-4 mt-0.5 shrink-0" />
                       <span className="text-sm font-medium text-foreground">{ins.text}</span>
-                    </div>
+                    </button>
                   );
                 })}
               </CardContent>
@@ -431,18 +514,20 @@ export default function VaronisPanel() {
                   const { lt7, d7to30, gt30 } = view.ages;
                   const total = Math.max(1, lt7 + d7to30 + gt30);
                   const segs = [
-                    { label: "< 7 jours", value: lt7, color: "bg-emerald-500" },
-                    { label: "7 à 30 jours", value: d7to30, color: "bg-amber-500" },
-                    { label: "> 30 jours", value: gt30, color: "bg-red-500" },
+                    { key: "lt7" as const, label: "< 7 jours", value: lt7, color: "bg-emerald-500" },
+                    { key: "d7to30" as const, label: "7 à 30 jours", value: d7to30, color: "bg-amber-500" },
+                    { key: "gt30" as const, label: "> 30 jours", value: gt30, color: "bg-red-500" },
                   ];
                   return (
                     <>
                       <div className="flex h-3 rounded-full overflow-hidden bg-muted">
-                        {segs.map((sg) => <div key={sg.label} className={sg.color} style={{ width: `${(sg.value / total) * 100}%` }} />)}
+                        {segs.map((sg) => (
+                          <div key={sg.label} onClick={() => toggle("age", sg.key)} className={`${sg.color} cursor-pointer ${filters.age && filters.age !== sg.key ? "opacity-40" : ""}`} style={{ width: `${(sg.value / total) * 100}%` }} />
+                        ))}
                       </div>
                       <div className="grid grid-cols-3 gap-2 text-center">
                         {segs.map((sg) => (
-                          <div key={sg.label}>
+                          <div key={sg.label} onClick={() => toggle("age", sg.key)} className={`py-1 ${clickable(filters.age === sg.key, Boolean(filters.age) && filters.age !== sg.key)}`} title="Cliquer pour filtrer">
                             <div className="text-xl font-black text-foreground">{sg.value}</div>
                             <div className="text-[11px] text-muted-foreground flex items-center justify-center gap-1">
                               <span className={`w-2 h-2 rounded-full ${sg.color}`} /> {sg.label}
@@ -450,7 +535,7 @@ export default function VaronisPanel() {
                           </div>
                         ))}
                       </div>
-                      <p className="text-xs text-muted-foreground border-t border-border pt-3">
+                      <p className={`text-xs text-muted-foreground border-t border-border pt-3 ${view.ages.highGt7 > 0 ? "cursor-pointer hover:text-foreground" : ""}`} onClick={() => view.ages.highGt7 > 0 && patch({ severity: ["high"], age: "gt7" })}>
                         {view.ages.highGt7 > 0
                           ? <><span className="font-bold text-red-500">{view.ages.highGt7}</span> alerte{view.ages.highGt7 > 1 ? "s" : ""} élevée{view.ages.highGt7 > 1 ? "s" : ""} ouverte{view.ages.highGt7 > 1 ? "s" : ""} depuis plus de 7 jours</>
                           : "Aucune alerte élevée ouverte depuis plus de 7 jours"}
@@ -463,7 +548,7 @@ export default function VaronisPanel() {
                   <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">Escalades Varonis en attente de votre action</p>
                   <div className="grid grid-cols-3 gap-2 text-center">
                     {ESCALATION_ORDER.map((t) => (
-                      <div key={t} className={`rounded-lg border p-2 ${t === "MITIGATION" && view.escalations[t] > 0 ? "border-red-500/40 bg-red-500/5" : "border-border"}`}>
+                      <div key={t} onClick={() => toggle("escalation", t)} title="Cliquer pour filtrer" className={`rounded-lg border p-2 ${t === "MITIGATION" && view.escalations[t] > 0 ? "border-red-500/40 bg-red-500/5" : "border-border"} ${clickable(filters.escalation === t, Boolean(filters.escalation) && filters.escalation !== t)}`}>
                         <div className={`text-lg font-black ${t === "MITIGATION" && view.escalations[t] > 0 ? "text-red-500" : "text-foreground"}`}>{view.escalations[t]}</div>
                         <div className="text-[11px] text-muted-foreground">{ESCALATION_LABELS[t]}</div>
                       </div>
@@ -487,14 +572,29 @@ export default function VaronisPanel() {
               </CardHeader>
               <CardContent className="pt-4 h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={view.timeline} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                  <BarChart
+                    data={view.timeline}
+                    margin={{ top: 5, right: 10, left: -20, bottom: 0 }}
+                    className="cursor-pointer"
+                    onClick={(e) => {
+                      const p = e?.activePayload?.[0]?.payload as { start: number; end: number; label: string } | undefined;
+                      if (p) toggle("bucket", { from: p.start, to: p.end, label: p.label });
+                    }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                     <XAxis dataKey="label" tick={AXIS_TICK} tickLine={false} axisLine={false} minTickGap={12} />
                     <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
                     <RechartsTooltip {...TOOLTIP_STYLE} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
-                    <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: 12, cursor: "pointer" }} onClick={(e) => toggle("severity", e.dataKey as SeverityLevel)} />
                     {SEVERITY_ORDER.filter((s) => (s !== "info" && s !== "unknown") || view.timeline.some((p) => p[s] > 0)).map((s) => (
-                      <Bar key={s} dataKey={s} name={SEVERITY_LABELS[s]} stackId="sev" fill={SEVERITY_COLORS[s]} radius={s === "high" ? [3, 3, 0, 0] : 0} />
+                      <Bar key={s} dataKey={s} name={SEVERITY_LABELS[s]} stackId="sev" fill={SEVERITY_COLORS[s]} radius={s === "high" ? [3, 3, 0, 0] : 0}>
+                        {view.timeline.map((p) => (
+                          <Cell
+                            key={p.start}
+                            fillOpacity={(filters.bucket && filters.bucket.from !== p.start) || (filters.severity?.length && !filters.severity.includes(s)) ? 0.25 : 1}
+                          />
+                        ))}
+                      </Bar>
                     ))}
                   </BarChart>
                 </ResponsiveContainer>
@@ -510,7 +610,7 @@ export default function VaronisPanel() {
               <CardContent className="pt-2">
                 <ul>
                   {view.noise.slice(0, 5).map((p) => (
-                    <li key={p.name} className="flex items-center justify-between gap-3 py-1.5 border-b border-border/50 last:border-0 text-sm">
+                    <li key={p.name} onClick={() => toggle("policy", p.name)} title="Cliquer pour filtrer" className={`flex items-center justify-between gap-3 py-1.5 px-1 border-b border-border/50 last:border-0 text-sm ${clickable(filters.policy === p.name, Boolean(filters.policy) && filters.policy !== p.name)}`}>
                       <span className="truncate text-foreground" title={p.name}>{p.name}</span>
                       <span className="flex items-center gap-2 shrink-0">
                         {p.noisy && <Badge variant="outline" className="bg-violet-500/15 text-violet-600 border-violet-500/30">Bruit</Badge>}
@@ -527,7 +627,7 @@ export default function VaronisPanel() {
           <Card>
             <CardHeader className="pb-2 border-b border-border/50">
               <CardTitle className="text-xs font-bold text-muted-foreground uppercase">
-                Dernières alertes de la période
+                {isFiltered(filters) ? `Alertes correspondant aux filtres (${summary.total})` : "Dernières alertes de la période"}
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-2">
@@ -551,18 +651,18 @@ export default function VaronisPanel() {
                       return (
                         <TableRow key={a.id} className={isOpen(a) ? "" : "opacity-60"}>
                           <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(alertDate(a))}</TableCell>
-                          <TableCell className="font-medium">{a.policy?.name ?? "—"}</TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{a.policy?.category ?? "—"}</TableCell>
-                          <TableCell>
+                          <TableCell className="font-medium cursor-pointer hover:underline" onClick={() => toggle("policy", a.policy?.name || "Politique inconnue")} title="Filtrer sur cette politique">{a.policy?.name ?? "—"}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground cursor-pointer hover:underline" onClick={() => toggle("category", a.policy?.category || "Non catégorisée")} title="Filtrer sur cette catégorie">{a.policy?.category ?? "—"}</TableCell>
+                          <TableCell className="cursor-pointer" onClick={() => toggle("severity", sev)} title="Filtrer sur cette sévérité">
                             <Badge variant="outline" className={SEVERITY_BADGE[sev]}>
                               {a.policy?.severity ?? SEVERITY_LABELS.unknown}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-sm">{formatStatus(a.status)}</TableCell>
+                          <TableCell className="text-sm cursor-pointer hover:underline" onClick={() => toggle("status", formatStatus(a.status))} title="Filtrer sur ce statut">{formatStatus(a.status)}</TableCell>
                           <TableCell className="text-right font-mono text-sm">{a.eventsCount ?? "—"}</TableCell>
                           <TableCell>
                             {a.hasSensitiveResource
-                              ? <Badge variant="outline" className="bg-orange-500/15 text-orange-600 border-orange-500/30">Oui</Badge>
+                              ? <Badge variant="outline" onClick={() => patch({ sensitive: true })} className="cursor-pointer bg-orange-500/15 text-orange-600 border-orange-500/30">Oui</Badge>
                               : <span className="text-sm text-muted-foreground">Non</span>}
                           </TableCell>
                           <TableCell>
@@ -612,8 +712,13 @@ export default function VaronisPanel() {
                   <div className="relative w-full h-[240px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
-                        <Pie data={severityData} dataKey="value" nameKey="name" innerRadius={65} outerRadius={95} paddingAngle={3} stroke="none">
-                          {severityData.map((d) => <Cell key={d.key} fill={SEVERITY_COLORS[d.key]} />)}
+                        <Pie
+                          data={severityData} dataKey="value" nameKey="name" innerRadius={65} outerRadius={95} paddingAngle={3} stroke="none"
+                          className="cursor-pointer" onClick={(d) => toggle("severity", (d as unknown as { key: SeverityLevel }).key)}
+                        >
+                          {severityData.map((d) => (
+                            <Cell key={d.key} fill={SEVERITY_COLORS[d.key]} fillOpacity={filters.severity?.length && !filters.severity.includes(d.key) ? 0.3 : 1} />
+                          ))}
                         </Pie>
                         <RechartsTooltip {...TOOLTIP_STYLE} />
                         <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
@@ -639,10 +744,10 @@ export default function VaronisPanel() {
                   const { varonis, internal } = view.handling;
                   const total = Math.max(1, varonis + internal);
                   return [
-                    { label: "Équipe interne", value: internal, color: "bg-sky-500" },
-                    { label: "Varonis (MDR)", value: varonis, color: "bg-violet-500" },
+                    { key: "internal" as const, label: "Équipe interne", value: internal, color: "bg-sky-500" },
+                    { key: "varonis" as const, label: "Varonis (MDR)", value: varonis, color: "bg-violet-500" },
                   ].map((r) => (
-                    <div key={r.label} className="space-y-1">
+                    <div key={r.label} onClick={() => toggle("handling", r.key)} title="Cliquer pour filtrer" className={`space-y-1 p-1 ${clickable(filters.handling === r.key, Boolean(filters.handling) && filters.handling !== r.key)}`}>
                       <div className="flex justify-between text-sm">
                         <span className="text-foreground">{r.label}</span>
                         <span className="font-bold">{r.value} <span className="text-muted-foreground font-normal">({Math.round((r.value / total) * 100)} %)</span></span>
@@ -670,7 +775,7 @@ export default function VaronisPanel() {
                 ) : (
                   <ul className="space-y-2">
                     {view.spikes.spikes.map((a) => (
-                      <li key={a.id} className="flex items-center justify-between gap-3 text-sm">
+                      <li key={a.id} onClick={() => toggle("policy", a.policy?.name || "Politique inconnue")} title="Filtrer sur cette politique" className={`flex items-center justify-between gap-3 text-sm p-1 ${clickable(filters.policy === a.policy?.name, false)}`}>
                         <div className="min-w-0">
                           <div className="truncate font-medium text-foreground" title={a.policy?.name ?? ""}>{a.policy?.name ?? "—"}</div>
                           <div className="text-[11px] text-muted-foreground">{formatDate(alertDate(a))} · {formatStatus(a.status)}</div>
@@ -700,12 +805,12 @@ export default function VaronisPanel() {
                   <>
                     <div className="flex h-3 rounded-full overflow-hidden bg-muted">
                       {(["truePositive", "falsePositive", "other"] as Verdict[]).map((k) => (
-                        <div key={k} className={VERDICT_COLORS[k]} style={{ width: `${(view.verdicts[k] / view.verdicts.classified) * 100}%` }} />
+                        <div key={k} onClick={() => toggle("verdict", k)} className={`${VERDICT_COLORS[k]} cursor-pointer ${filters.verdict && filters.verdict !== k ? "opacity-40" : ""}`} style={{ width: `${(view.verdicts[k] / view.verdicts.classified) * 100}%` }} />
                       ))}
                     </div>
                     <ul className="space-y-1.5">
                       {(["truePositive", "falsePositive", "other"] as Verdict[]).map((k) => (
-                        <li key={k} className="flex justify-between gap-3 text-sm">
+                        <li key={k} onClick={() => toggle("verdict", k)} title="Cliquer pour filtrer" className={`flex justify-between gap-3 text-sm px-1 ${clickable(filters.verdict === k, Boolean(filters.verdict) && filters.verdict !== k)}`}>
                           <span className="flex items-center gap-2 text-foreground"><span className={`w-2.5 h-2.5 rounded-full ${VERDICT_COLORS[k]}`} />{VERDICT_LABELS[k]}</span>
                           <span className="font-bold">{view.verdicts[k]} <span className="text-muted-foreground font-normal">({Math.round((view.verdicts[k] / view.verdicts.classified) * 100)} %)</span></span>
                         </li>
@@ -714,7 +819,7 @@ export default function VaronisPanel() {
                     <div className="border-t border-border pt-2">
                       <p className="text-[11px] font-bold uppercase text-muted-foreground mb-1">Motifs les plus fréquents</p>
                       {view.verdicts.reasons.slice(0, 4).map((r) => (
-                        <div key={r.name} className="flex justify-between gap-3 text-xs">
+                        <div key={r.name} onClick={() => toggle("closeReason", r.name)} className={`flex justify-between gap-3 text-xs px-1 ${clickable(filters.closeReason === r.name, Boolean(filters.closeReason) && filters.closeReason !== r.name)}`}>
                           <span className="truncate text-muted-foreground" title={r.name}>{r.name}</span>
                           <span className="font-semibold">{r.count}</span>
                         </div>
@@ -733,7 +838,7 @@ export default function VaronisPanel() {
               </CardHeader>
               <CardContent className="pt-4 space-y-3">
                 {view.sources.map((src) => (
-                  <div key={src.label} className="space-y-1">
+                  <div key={src.label} onClick={() => toggle("source", src.label)} title="Cliquer pour filtrer" className={`space-y-1 p-1 ${clickable(filters.source === src.label, Boolean(filters.source) && filters.source !== src.label)}`}>
                     <div className="flex justify-between gap-3 text-sm">
                       <span className="truncate text-foreground" title={src.label}>{src.label}</span>
                       <span className="font-bold shrink-0">{src.total}{src.open > 0 && <span className="text-amber-500 font-semibold"> · {src.open} ouverte{src.open > 1 ? "s" : ""}</span>}</span>
@@ -757,11 +862,11 @@ export default function VaronisPanel() {
                   const c = view.closers;
                   const total = Math.max(1, c.varonis + c.internal + c.unknown);
                   return [
-                    { label: "Équipe interne", value: c.internal, color: "bg-sky-500" },
-                    { label: "Varonis (MDR)", value: c.varonis, color: "bg-violet-500" },
-                    ...(c.unknown > 0 ? [{ label: "Non renseigné", value: c.unknown, color: "bg-slate-400" }] : []),
+                    { key: "internal" as const, label: "Équipe interne", value: c.internal, color: "bg-sky-500" },
+                    { key: "varonis" as const, label: "Varonis (MDR)", value: c.varonis, color: "bg-violet-500" },
+                    ...(c.unknown > 0 ? [{ key: "unknown" as const, label: "Non renseigné", value: c.unknown, color: "bg-slate-400" }] : []),
                   ].map((r) => (
-                    <div key={r.label} className="space-y-1">
+                    <div key={r.label} onClick={() => toggle("closer", r.key)} title="Cliquer pour filtrer" className={`space-y-1 p-1 ${clickable(filters.closer === r.key, Boolean(filters.closer) && filters.closer !== r.key)}`}>
                       <div className="flex justify-between text-sm">
                         <span className="text-foreground">{r.label}</span>
                         <span className="font-bold">{r.value} <span className="text-muted-foreground font-normal">({Math.round((r.value / total) * 100)} %)</span></span>
@@ -776,7 +881,7 @@ export default function VaronisPanel() {
                   <div className="border-t border-border pt-2">
                     <p className="text-[11px] font-bold uppercase text-muted-foreground mb-1">Analystes internes</p>
                     {view.closers.analysts.map((a) => (
-                      <div key={a.name} className="flex justify-between gap-3 text-xs">
+                      <div key={a.name} onClick={() => toggle("analyst", a.name)} className={`flex justify-between gap-3 text-xs px-1 ${clickable(filters.analyst === a.name, Boolean(filters.analyst) && filters.analyst !== a.name)}`}>
                         <span className="truncate text-muted-foreground" title={a.name}>{a.name}</span>
                         <span className="font-semibold">{a.count}</span>
                       </div>
@@ -809,7 +914,7 @@ export default function VaronisPanel() {
                 </div>
                 <ul className="space-y-1.5 border-t border-border pt-3">
                   {summary.byStatus.map((st) => (
-                    <li key={st.name} className="flex justify-between gap-3 text-sm">
+                    <li key={st.name} onClick={() => toggle("status", st.name)} title="Cliquer pour filtrer" className={`flex justify-between gap-3 text-sm px-1 ${clickable(filters.status?.includes(st.name) ?? false, Boolean(filters.status?.length) && !filters.status?.includes(st.name))}`}>
                       <span className="text-foreground">{st.name}</span>
                       <span className="font-bold">{st.count}</span>
                     </li>
@@ -818,7 +923,7 @@ export default function VaronisPanel() {
                 {summary.byCategory.length > 0 && (
                   <div className="pt-3 border-t border-border flex flex-wrap gap-1.5">
                     {summary.byCategory.map((c) => (
-                      <Badge key={c.name} variant="secondary" className="font-normal">{c.name} · {c.count}</Badge>
+                      <Badge key={c.name} variant="secondary" onClick={() => toggle("category", c.name)} className={`font-normal cursor-pointer ${filters.category === c.name ? "ring-2 ring-primary/60" : ""} ${filters.category && filters.category !== c.name ? "opacity-40" : ""}`}>{c.name} · {c.count}</Badge>
                     ))}
                   </div>
                 )}
@@ -829,20 +934,25 @@ export default function VaronisPanel() {
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
                   <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire
                 </CardTitle>
-                <p className="text-[11px] text-muted-foreground pt-1">
+                <p className={`text-[11px] text-muted-foreground pt-1 cursor-pointer hover:text-foreground ${filters.offHours ? "font-bold" : ""}`} onClick={() => toggle("offHours", true)} title="Filtrer sur les alertes hors heures ouvrées">
                   <span className="font-bold text-violet-500">{view.offHoursPct} %</span> hors heures ouvrées (avant 8 h, après 19 h, week-end)
                 </p>
               </CardHeader>
               <CardContent className="pt-4 h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={view.hourly} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                  <BarChart
+                    data={view.hourly}
+                    margin={{ top: 5, right: 5, left: -25, bottom: 0 }}
+                    className="cursor-pointer"
+                    onClick={(e) => { const h = e?.activePayload?.[0]?.payload?.hour; if (typeof h === "number") toggle("hour", h); }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                     <XAxis dataKey="hour" tick={AXIS_TICK} tickLine={false} axisLine={false} tickFormatter={(h) => `${h}h`} interval={3} />
                     <YAxis allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
                     <RechartsTooltip {...TOOLTIP_STYLE} labelFormatter={(h) => `${h}h – ${Number(h) + 1}h`} formatter={(v) => [v, "Alertes"]} cursor={{ fill: "hsl(var(--muted) / 0.4)" }} />
                     <Bar dataKey="count" radius={[3, 3, 0, 0]}>
                       {view.hourly.map((h) => (
-                        <Cell key={h.hour} fill={h.hour < 8 || h.hour >= 19 ? "#8b5cf6" : "#0ea5e9"} />
+                        <Cell key={h.hour} fill={h.hour < 8 || h.hour >= 19 ? "#8b5cf6" : "#0ea5e9"} fillOpacity={filters.hour !== undefined && filters.hour !== h.hour ? 0.25 : 1} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -875,7 +985,7 @@ export default function VaronisPanel() {
                     </TableHeader>
                     <TableBody>
                       {view.noise.map((p) => (
-                        <TableRow key={p.name}>
+                        <TableRow key={p.name} onClick={() => toggle("policy", p.name)} title="Cliquer pour filtrer" className={`cursor-pointer ${filters.policy === p.name ? "bg-primary/10" : ""} ${filters.policy && filters.policy !== p.name ? "opacity-40" : ""}`}>
                           <TableCell className="font-medium max-w-[260px] truncate" title={p.name}>{p.name}</TableCell>
                           <TableCell><Badge variant="outline" className={SEVERITY_BADGE[p.severity]}>{SEVERITY_LABELS[p.severity]}</Badge></TableCell>
                           <TableCell className="text-right font-bold">{p.total}</TableCell>

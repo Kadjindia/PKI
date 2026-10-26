@@ -5,6 +5,7 @@ import {
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
   threatFamily, threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
   closeVerdict, verdictStats, dataSourceLabel, dataSourceStats, closedByStats, openEscalations, safeAlertUrl,
+  applyFilters, toggleFilter, applyFilterPatch, filterChips, removeChip, isFiltered,
 } from "@/lib/varonis";
 
 const alert = (id: string, over: Partial<VaronisAlert> = {}): VaronisAlert => ({
@@ -322,5 +323,46 @@ describe("étape 2 : verdicts, sources, clôture, escalades", () => {
     const list = [alert("1", { escalationType: "MITIGATION" })];
     const texts = buildInsights(list, [], list).map((i) => i.text);
     expect(texts).toContain("1 alerte escaladée par Varonis attend une action de remédiation de votre part.");
+  });
+});
+
+describe("filtres croisés", () => {
+  const now = new Date("2026-10-26T12:00:00Z");
+  const mk = (o: Partial<VaronisAlert>): VaronisAlert => ({ id: Math.random().toString(), status: "Open", ...o } as VaronisAlert);
+  const alerts = [
+    mk({ policy: { name: "P1", severity: "High", category: "Ransomware" }, generationTime: { dateTimeUtc: "2026-10-25T10:00:00Z" }, hasSensitiveResource: true }),
+    mk({ status: "Closed", policy: { name: "P2", severity: "Low" }, closeReason: { name: "False positive" }, closedBy: { name: "Varonis" }, generationTime: { dateTimeUtc: "2026-09-01T10:00:00Z" } }),
+    mk({ policy: { name: "P2", severity: "Medium" }, escalationType: "MITIGATION", isAssignedToVaronis: true, generationTime: { dateTimeUtc: "2026-09-01T22:00:00Z" } }),
+  ];
+
+  it("combine les filtres", () => {
+    expect(applyFilters(alerts, {}, now)).toHaveLength(3);
+    expect(applyFilters(alerts, { state: "open" }, now)).toHaveLength(2);
+    expect(applyFilters(alerts, { state: "open", severity: ["high"] }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { policy: "P2", state: "closed" }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { verdict: "falsePositive" }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { closer: "varonis" }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { escalation: "MITIGATION" }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { handling: "varonis" }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { age: "gt30" }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { age: "lt7" }, now)).toHaveLength(1);
+    expect(applyFilters(alerts, { threat: "ransomware", sensitive: true }, now)).toHaveLength(1);
+    const from = Date.parse("2026-10-25T00:00:00Z");
+    expect(applyFilters(alerts, { bucket: { from, to: from + 86400000, label: "25/10" } }, now)).toHaveLength(1);
+  });
+
+  it("bascule au clic et décrit les filtres actifs", () => {
+    let f = toggleFilter({}, "severity", "high");
+    f = toggleFilter(f, "severity", "medium");
+    expect(f.severity).toEqual(["high", "medium"]);
+    f = toggleFilter(f, "severity", "high");
+    expect(f.severity).toEqual(["medium"]);
+    f = toggleFilter(f, "policy", "P2");
+    expect(toggleFilter(f, "policy", "P2").policy).toBeUndefined();
+    expect(filterChips(f).map((c) => c.label)).toEqual(["Sévérité : Moyenne", "Politique : P2"]);
+    expect(removeChip(f, filterChips(f)[0]).severity).toBeUndefined();
+    const patched = applyFilterPatch({}, { state: "open", severity: ["high"] });
+    expect(patched).toEqual({ state: "open", severity: ["high"] });
+    expect(isFiltered(applyFilterPatch(patched, { state: "open", severity: ["high"] }))).toBe(false);
   });
 });
