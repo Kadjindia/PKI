@@ -288,10 +288,10 @@ const inactiveSince = (lastLogon?: string | null) =>
 const ZONE_DEPTH = 3;
 
 /**
- * Dédoublonne les ressources. Varonis renvoie souvent plusieurs lignes pour une
- * même ressource, chacune avec un identifiant différent (comme les « Results »
- * de la console) : on compte une ressource par couple source de données + chemin,
- * ce qui correspond aux « Unique resources » de la console.
+ * Dédoublonne les ressources par couple source de données + chemin (précaution :
+ * en pratique chaque ligne est une ressource distincte). Le total correspond aux
+ * « Results » de la console ; « Unique resources » y désigne autre chose
+ * (dossiers à permissions propres, non héritées).
  */
 function uniqueResources(rows: Row[]): Row[] {
   const seen = new Map<string, Row>();
@@ -379,12 +379,36 @@ function zoneIssueQuery(extra: Record<string, unknown>): PostureQuery {
 /** Préfixe des recherches « total des dossiers sensibles », une par source de données. */
 const ZONES_TOTAL_PREFIX = "zonesTotal:";
 
-/** Dossiers sensibles de niveau 3 d'une source de données : total, volume et les plus gros. */
-function zonesTotalQuery(sourceId: number): PostureQuery {
+/**
+ * Bornes de taille d'une partition (octets, intervalle ]lo ; hi[). Une source qui
+ * atteint le plafond est redécoupée en deux par taille de dossier, à mi-chemin
+ * sur une échelle logarithmique, jusqu'à passer sous le plafond.
+ */
+const SIZE_MIN = -1;
+const SIZE_MAX = Number.MAX_SAFE_INTEGER;
+
+/** Clé d'une partition : « zonesTotal:<source> » ou « zonesTotal:<source>:<lo>:<hi> ». */
+function parseZonesTotalKey(key: string): { source: number; lo: number; hi: number; sized: boolean } | null {
+  const m = key.slice(ZONES_TOTAL_PREFIX.length).match(/^(\d+)(?::(-?\d+):(\d+))?$/);
+  if (!m) return null;
+  return { source: Number(m[1]), lo: m[2] ? Number(m[2]) : SIZE_MIN, hi: m[3] ? Number(m[3]) : SIZE_MAX, sized: Boolean(m[2]) };
+}
+
+/** Coupe ]lo ; hi[ en deux (moyenne géométrique), ou null si l'intervalle ne se coupe plus. */
+function splitSizeRange(lo: number, hi: number): [number, number, number] | null {
+  const mid = Math.round(Math.sqrt(Math.max(1, lo + 1) * hi));
+  return mid > lo + 1 && mid < hi ? [lo, mid, hi] : null;
+}
+
+/** Dossiers sensibles de niveau 3 d'une source (et d'une tranche de taille) : total, volume, les plus gros. */
+function zonesTotalQuery(sourceId: number, lo = SIZE_MIN, hi = SIZE_MAX, sized = false): PostureQuery {
   return {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
-    where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH }, dataSource: { id: { eq: sourceId } } },
+    where: {
+      isSensitive: yes, pathDepth: { eq: ZONE_DEPTH }, dataSource: { id: { eq: sourceId } },
+      ...(sized ? { sizeOfResourceAndNestedResources: { gt: lo, lt: hi } } : {}),
+    },
     fields: ZONE_FIELDS,
     summarize: (all) => {
       const rows = uniqueResources(all);
@@ -501,8 +525,8 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
 /** Requête associée à une clé de résultat (y compris les partitions par source). */
 function queryFor(key: string): PostureQuery | undefined {
   if (key.startsWith(ZONES_TOTAL_PREFIX)) {
-    const id = Number(key.slice(ZONES_TOTAL_PREFIX.length));
-    return Number.isInteger(id) ? zonesTotalQuery(id) : undefined;
+    const k = parseZonesTotalKey(key);
+    return k ? zonesTotalQuery(k.source, k.lo, k.hi, k.sized) : undefined;
   }
   return POSTURE_QUERIES[key];
 }
@@ -675,6 +699,19 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         if (/^\d+$/.test(src.id)) results[`${ZONES_TOTAL_PREFIX}${src.id}`] = { status: "queued", attempts: 0 };
       }
       results.dataSources = { ...ds, expanded: true };
+    }
+
+    // 1 ter. Partition plafonnée : redécoupée en deux tranches de taille de dossier
+    for (const [key, entry] of Object.entries(results)) {
+      if (!key.startsWith(ZONES_TOTAL_PREFIX) || entry.status !== "done" || !entry.capped || entry.split) continue;
+      const k = parseZonesTotalKey(key);
+      const parts = k && splitSizeRange(k.lo, k.hi);
+      if (!k || !parts) continue; // ne se coupe plus : reste signalé comme plafonné
+      const [lo, mid, hi] = parts;
+      results[key] = { ...entry, split: true, top: undefined };
+      // ]lo ; mid] et ]mid ; hi[ : « lt » est strict, d'où mid + 1
+      results[`${ZONES_TOTAL_PREFIX}${k.source}:${lo}:${mid + 1}`] = { status: "queued", attempts: 0 };
+      results[`${ZONES_TOTAL_PREFIX}${k.source}:${mid}:${hi}`] = { status: "queued", attempts: 0 };
     }
 
     // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS

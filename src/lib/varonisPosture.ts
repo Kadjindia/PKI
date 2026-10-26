@@ -58,7 +58,7 @@ export interface Zone {
 }
 
 /** Résultat d'une recherche de dossiers (nombre unique et volume). */
-export type ZoneResult = Base & Partial<ZoneTotals> & { lines?: number; top?: Zone[] };
+export type ZoneResult = Base & Partial<ZoneTotals> & { lines?: number; top?: Zone[]; split?: boolean };
 
 export interface PostureResults {
   sensitiveExposed?: Base & { withoutValidOwner?: number; top?: ExposedFolder[] };
@@ -94,7 +94,9 @@ export function zoneTotal(r: PostureResults, topSize = 15): ZoneResult {
   const ds = r.dataSources;
   if (!ds || ds.status === "queued" || ds.status === "pending") return { status: ds?.status ?? "queued" };
   if (ds.status === "error") return ds;
-  const parts = Object.keys(r).filter((k) => k.startsWith(ZONES_TOTAL_PREFIX)).map((k) => r[k as `zonesTotal:${string}`]!);
+  // Une partition redécoupée par taille est remplacée par ses deux moitiés
+  const parts = Object.keys(r).filter((k) => k.startsWith(ZONES_TOTAL_PREFIX))
+    .map((k) => r[k as `zonesTotal:${string}`]!).filter((p) => !p.split);
   if (!ds.expanded || parts.some((p) => p.status === "queued" || p.status === "pending")) {
     return { status: "pending", progress: null };
   }

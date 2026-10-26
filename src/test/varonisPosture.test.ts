@@ -85,6 +85,8 @@ describe("posture Varonis : mise en forme", () => {
       dataSources: { status: "done", expanded: true },
       "zonesTotal:1": { status: "done", count: 3, sizeBytes: 10, files: 5, top: [zone("A", 10)] },
       "zonesTotal:2": { status: "done", count: 2, sizeBytes: 30, files: 1, capped: true, top: [zone("B", 30)] },
+      // partition redécoupée : ignorée au profit de ses moitiés
+      "zonesTotal:3": { status: "done", count: 99, capped: true, split: true },
     });
     expect(t).toMatchObject({ status: "done", count: 5, sizeBytes: 40, files: 6, capped: true });
     expect(t.top?.map((z) => z.name)).toEqual(["B", "A"]);
