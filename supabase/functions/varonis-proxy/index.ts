@@ -510,14 +510,6 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
   },
   // Comptes activés sans connexion récente, par ancienneté
   ...Object.fromEntries(INACTIVE_BUCKETS.map((b) => [b.key, inactiveBucketQuery(b.from, b.to)])),
-  // Comptes activés qui ne se sont jamais connectés
-  neverLogged: {
-    asyncName: "identitiesAsync",
-    jobName: "identitiesQueryJob",
-    where: { isDisabled: enabledOnly, lastLogonTime: { hasValue: false } },
-    fields: "id isDisabled",
-    summarize: (rows) => ({ count: count(rows, (r) => !r.isDisabled) }),
-  },
   // Comptes expirés mais toujours activés
   expiredEnabled: {
     asyncName: "identitiesAsync",
