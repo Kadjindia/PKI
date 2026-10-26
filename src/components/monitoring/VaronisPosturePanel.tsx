@@ -174,7 +174,7 @@ export default function VaronisPosturePanel() {
   const priv = r.privileged;
   const inactive = inactiveTotal(r);
   // Une tranche plafonnée par Varonis ne donne pas un chiffre fiable : on ne l'affiche pas
-  const inactiveUnreliable = INACTIVE_BUCKETS.some((b) => b.key !== "neverLogged" && r[b.key]?.status === "done" && r[b.key]?.capped);
+  const inactiveUnreliable = INACTIVE_BUCKETS.some((b) => r[b.key]?.status === "done" && r[b.key]?.capped);
   const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => !x || x.status !== "done");
   // Dossiers sensibles : ceux qui cumulent le plus de points à traiter d'abord, puis les plus gros
   const issues = (z: { isStale: boolean; staleAccess: boolean; ownerIssue: boolean }) => Number(z.isStale) + Number(z.staleAccess) + Number(z.ownerIssue);

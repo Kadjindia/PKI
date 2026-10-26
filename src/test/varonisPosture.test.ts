@@ -52,8 +52,8 @@ describe("posture Varonis : mise en forme", () => {
   it("additionne les tranches de comptes inactifs et choisit le chemin le plus parlant", () => {
     const done = (count: number, capped = false) => ({ status: "done" as const, count, capped });
     expect(inactiveTotal({
-      inactive90: done(3), inactive180: done(4), inactive365: done(5), inactive730: done(6, true), neverLogged: done(1),
-    })).toEqual({ count: 19, capped: true });
+      inactive90: done(3), inactive180: done(4), inactive365: done(5), inactive730: done(6, true),
+    })).toEqual({ count: 18, capped: true });
     expect(inactiveTotal({ inactive90: done(3), inactive180: { status: "pending" } })).toEqual({ count: undefined, capped: false });
     expect(displayPath({ sharePath: "\\\\FS01\\Departments", path: "D:\\Departments" })).toBe("\\\\FS01\\Departments");
     expect(displayPath({ path: "D:\\Users" })).toBe("D:\\Users");

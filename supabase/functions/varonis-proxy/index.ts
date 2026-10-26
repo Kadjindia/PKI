@@ -268,6 +268,20 @@ interface PostureQuery {
   where: Record<string, unknown>;
   fields: string;
   summarize: (rows: Row[]) => Record<string, unknown>;
+  /** Complète le filtre au lancement (ex. valeur d'énumération lue dans le schéma). */
+  resolveWhere?: (baseUrl: string, token: string) => Promise<Record<string, unknown>>;
+}
+
+/**
+ * Valeur d'une énumération GraphQL Varonis choisie par motif (ex. « Expired »),
+ * lue dans le schéma du tenant pour ne pas dépendre de son orthographe exacte.
+ */
+async function enumValue(baseUrl: string, token: string, typeName: string, pattern: RegExp): Promise<string> {
+  const data = await callVaronisGraphQL(baseUrl, token, `query e($n: String!) { __type(name: $n) { enumValues { name } } }`, { n: typeName });
+  const values: string[] = (data.__type?.enumValues ?? []).map((v: Row) => v.name);
+  const found = values.find((v) => pattern.test(v));
+  if (!found) throw new Error(`Valeur introuvable dans ${typeName} (valeurs : ${values.join(", ") || "aucune"})`);
+  return found;
 }
 
 const yes = { eq: true };
@@ -510,21 +524,18 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
   },
   // Comptes activés sans connexion récente, par ancienneté
   ...Object.fromEntries(INACTIVE_BUCKETS.map((b) => [b.key, inactiveBucketQuery(b.from, b.to)])),
-  // Comptes activés qui ne se sont jamais connectés
-  neverLogged: {
-    asyncName: "identitiesAsync",
-    jobName: "identitiesQueryJob",
-    where: { isDisabled: enabledOnly, lastLogonTime: { hasValue: false } },
-    fields: "id isDisabled",
-    summarize: (rows) => ({ count: count(rows, (r) => !r.isDisabled) }),
-  },
-  // Comptes expirés mais toujours activés
+  // Comptes expirés mais toujours activés, comme « Account expiration status =
+  // Expired » + « Disabled account = No » dans la console
   expiredEnabled: {
     asyncName: "identitiesAsync",
     jobName: "identitiesQueryJob",
-    where: { isEnabledExpired: yes },
-    fields: "id",
-    summarize: (rows) => ({ count: rows.length }),
+    where: { isDisabled: enabledOnly },
+    resolveWhere: async (baseUrl, token) => ({
+      isDisabled: enabledOnly,
+      expirationStatus: { eq: await enumValue(baseUrl, token, "ExpirationStatus", /^expired$/i) },
+    }),
+    fields: "id isDisabled",
+    summarize: (rows) => ({ count: count(rows, (r) => !r.isDisabled) }),
   },
 };
 
@@ -558,7 +569,8 @@ async function startPostureJob(baseUrl: string, token: string, q: PostureQuery):
       ${q.asyncName}(where: $where) { jobId jobStatus jobProgress results { ${q.fields} } }
     }
   `;
-  const data = await callVaronisGraphQL(baseUrl, token, query, { where: q.where });
+  const where = q.resolveWhere ? await q.resolveWhere(baseUrl, token) : q.where;
+  const data = await callVaronisGraphQL(baseUrl, token, query, { where });
   return data[q.asyncName].jobId;
 }
 

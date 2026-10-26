@@ -1,7 +1,7 @@
 // Posture des données Varonis (étape 3) : types des résumés renvoyés par
 // varonis-proxy ({ action: "posture" }) et mise en forme pour l'affichage.
 
-export type InactiveKey = "inactive90" | "inactive180" | "inactive365" | "inactive730" | "neverLogged";
+export type InactiveKey = "inactive90" | "inactive180" | "inactive365" | "inactive730";
 
 export type ZoneIssueKey = "zonesStale" | "zonesStaleAccess" | "zonesStaleOwner" | "zonesDisabledOwner";
 
@@ -10,7 +10,7 @@ export type PostureKey =
 
 export const POSTURE_KEYS: PostureKey[] = [
   "sensitiveExposed", "zonesStale", "zonesStaleAccess", "zonesStaleOwner", "zonesDisabledOwner", "dataSources",
-  "privileged", "inactive90", "inactive180", "inactive365", "inactive730", "neverLogged", "expiredEnabled",
+  "privileged", "inactive90", "inactive180", "inactive365", "inactive730", "expiredEnabled",
 ];
 
 /** Préfixe des résultats « total des dossiers sensibles », un par source de données. */
@@ -22,7 +22,6 @@ export const INACTIVE_BUCKETS: { key: InactiveKey; label: string }[] = [
   { key: "inactive180", label: "6 à 12 mois" },
   { key: "inactive365", label: "1 à 2 ans" },
   { key: "inactive730", label: "Plus de 2 ans" },
-  { key: "neverLogged", label: "Jamais connectés" },
 ];
 
 /** Profondeur des zones (dossiers de niveau 3 : partages métier, dossiers personnels). */
@@ -79,7 +78,6 @@ export interface PostureResults {
   inactive180?: Base;
   inactive365?: Base;
   inactive730?: Base;
-  neverLogged?: Base;
   expiredEnabled?: Base;
   /** Total des dossiers sensibles, une entrée par source de données (« zonesTotal:<id> »). */
   [key: `zonesTotal:${string}`]: ZoneResult | undefined;
