@@ -287,10 +287,18 @@ const inactiveSince = (lastLogon?: string | null) =>
  */
 const ZONE_DEPTH = 3;
 
-/** Dédoublonne par identifiant (une même ressource peut remonter par plusieurs chemins). */
-function uniqueById(rows: Row[]): Row[] {
+/**
+ * Dédoublonne les ressources. Varonis renvoie souvent plusieurs lignes pour une
+ * même ressource, chacune avec un identifiant différent (comme les « Results »
+ * de la console) : on compte une ressource par couple source de données + chemin,
+ * ce qui correspond aux « Unique resources » de la console.
+ */
+function uniqueResources(rows: Row[]): Row[] {
   const seen = new Map<string, Row>();
-  for (const r of rows) if (!seen.has(String(r.id))) seen.set(String(r.id), r);
+  for (const r of rows) {
+    const key = `${r.dataSource?.id ?? ""}|${r.path ?? r.id}`;
+    if (!seen.has(key)) seen.set(key, r);
+  }
   return [...seen.values()];
 }
 
@@ -355,15 +363,59 @@ function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
   };
 }
 
+const ZONE_FIELDS = "id name path sharePaths url dataSource { id name type } sizeOfResourceAndNestedResources numberOfNestedFiles isStaleIncludingSubfolders hasStaleAccess hasStaleOwner hasDisabledOwner";
+
+/** Dossiers sensibles de niveau 3 présentant un point à traiter : nombre unique et volume. */
+function zoneIssueQuery(extra: Record<string, unknown>): PostureQuery {
+  return {
+    asyncName: "resourcesAsync",
+    jobName: "resourcesQueryJob",
+    where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH }, ...extra },
+    fields: "id path dataSource { id } sizeOfResourceAndNestedResources numberOfNestedFiles",
+    summarize: (rows) => ({ ...zoneTotals(uniqueResources(rows)), lines: rows.length }),
+  };
+}
+
+/** Préfixe des recherches « total des dossiers sensibles », une par source de données. */
+const ZONES_TOTAL_PREFIX = "zonesTotal:";
+
+/** Dossiers sensibles de niveau 3 d'une source de données : total, volume et les plus gros. */
+function zonesTotalQuery(sourceId: number): PostureQuery {
+  return {
+    asyncName: "resourcesAsync",
+    jobName: "resourcesQueryJob",
+    where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH }, dataSource: { id: { eq: sourceId } } },
+    fields: ZONE_FIELDS,
+    summarize: (all) => {
+      const rows = uniqueResources(all);
+      return {
+        ...zoneTotals(rows),
+        lines: all.length,
+        top: [...rows]
+          .sort((a, b) => (b.sizeOfResourceAndNestedResources ?? 0) - (a.sizeOfResourceAndNestedResources ?? 0))
+          .slice(0, 15)
+          .map((r) => ({
+            name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
+            source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
+            sizeBytes: r.sizeOfResourceAndNestedResources, files: r.numberOfNestedFiles,
+            isStale: Boolean(r.isStaleIncludingSubfolders), staleAccess: Boolean(r.hasStaleAccess),
+            staleOwner: Boolean(r.hasStaleOwner), disabledOwner: Boolean(r.hasDisabledOwner),
+            ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner),
+          })),
+      };
+    },
+  };
+}
+
 const POSTURE_QUERIES: Record<string, PostureQuery> = {
   // Dossiers sensibles exposés à toute l'organisation (racines d'accès ouvert)
   sensitiveExposed: {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
     where: { isSensitive: yes, isRootOrgWideExposed: yes },
-    fields: "id name path sharePaths url sizeOfResourceAndNestedResources totalNumberOfNestedObjects hasStaleOwner hasDisabledOwner isStale lastEventDate dataSource { name type }",
+    fields: "id name path sharePaths url sizeOfResourceAndNestedResources totalNumberOfNestedObjects hasStaleOwner hasDisabledOwner isStale lastEventDate dataSource { id name type }",
     summarize: (all) => {
-      const rows = uniqueById(all); // une même ressource peut remonter par plusieurs chemins
+      const rows = uniqueResources(all); // une même ressource peut remonter par plusieurs chemins
       return {
         count: rows.length,
         withoutValidOwner: count(rows, (r) => r.hasStaleOwner || r.hasDisabledOwner),
@@ -380,33 +432,22 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
       };
     },
   },
-  // Zones (dossiers de niveau 3) contenant des données sensibles
-  zones: {
-    asyncName: "resourcesAsync",
-    jobName: "resourcesQueryJob",
-    where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH } },
-    fields: "id name path sharePaths url sizeOfResourceAndNestedResources numberOfNestedFiles isStaleIncludingSubfolders hasStaleAccess hasStaleOwner hasDisabledOwner dataSource { name type }",
-    summarize: (all) => {
-      const rows = uniqueById(all);
-      const stale = rows.filter((r) => r.isStaleIncludingSubfolders);
-      const staleAccess = rows.filter((r) => r.hasStaleAccess);
-      const ownerIssue = rows.filter((r) => r.hasStaleOwner || r.hasDisabledOwner);
-      return {
-        ...zoneTotals(rows),
-        stale: zoneTotals(stale),
-        staleAccess: zoneTotals(staleAccess),
-        ownerIssue: zoneTotals(ownerIssue),
-        top: [...rows]
-          .sort((a, b) => (b.sizeOfResourceAndNestedResources ?? 0) - (a.sizeOfResourceAndNestedResources ?? 0))
-          .slice(0, 15)
-          .map((r) => ({
-            name: r.name, path: r.path, sharePath: (r.sharePaths ?? [])[0] ?? null, url: r.url,
-            source: r.dataSource?.type ?? null, sourceName: r.dataSource?.name ?? null,
-            sizeBytes: r.sizeOfResourceAndNestedResources, files: r.numberOfNestedFiles,
-            isStale: Boolean(r.isStaleIncludingSubfolders), staleAccess: Boolean(r.hasStaleAccess),
-            ownerIssue: Boolean(r.hasStaleOwner || r.hasDisabledOwner),
-          })),
-      };
+  // Dossiers sensibles de niveau 3, une recherche par point à traiter (filtrée
+  // chez Varonis : chaque résultat reste loin du plafond)
+  zonesStale: zoneIssueQuery({ isStaleIncludingSubfolders: yes }),
+  zonesStaleAccess: zoneIssueQuery({ hasStaleAccess: yes }),
+  zonesStaleOwner: zoneIssueQuery({ hasStaleOwner: yes }),
+  zonesDisabledOwner: zoneIssueQuery({ hasDisabledOwner: yes }),
+  // Liste des sources de données : sert à découper le total des dossiers
+  // sensibles (trop de lignes pour une seule recherche), voir zonesTotalQuery
+  dataSources: {
+    asyncName: "dataSourcesAsync",
+    jobName: "dataSourcesQueryJob",
+    where: {},
+    fields: "id name type isDecommissioned",
+    summarize: (rows) => {
+      const active = rows.filter((r) => !r.isDecommissioned && r.id !== null && r.id !== undefined);
+      return { count: active.length, sources: active.map((r) => ({ id: String(r.id), name: r.name ?? null, type: r.type ?? null })) };
     },
   },
   // Comptes privilégiés activés : administrateurs et comptes de service, séparés
@@ -457,6 +498,15 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
   },
 };
 
+/** Requête associée à une clé de résultat (y compris les partitions par source). */
+function queryFor(key: string): PostureQuery | undefined {
+  if (key.startsWith(ZONES_TOTAL_PREFIX)) {
+    const id = Number(key.slice(ZONES_TOTAL_PREFIX.length));
+    return Number.isInteger(id) ? zonesTotalQuery(id) : undefined;
+  }
+  return POSTURE_QUERIES[key];
+}
+
 /**
  * Traduit une erreur GraphQL Varonis en cause lisible :
  * droits insuffisants de la clé d'API, filtre refusé, ou autre.
@@ -489,6 +539,7 @@ function filterTypeOf(asyncName: string): string {
     identitiesAsync: "User_FilterInput",
     membershipsAsync: "GroupMembership_FilterInput",
     physicalPermissionsAsync: "PhysicalPermission_FilterInput",
+    dataSourcesAsync: "FileServer_FilterInput",
   }[asyncName]!;
 }
 
@@ -516,7 +567,7 @@ const STEP_INTERVAL_MS = 15_000;
 const STEP_LEASE_MS = 120_000; // verrou pendant une étape (évite deux étapes simultanées)
 const RATE_LIMIT_BACKOFF_MS = 120_000; // pause après un refus « trop de requêtes »
 const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
-const RUN_TIMEOUT_MS = 90 * 60 * 1000; // au-delà, ce qui reste est abandonné
+const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000; // au-delà, ce qui reste est abandonné (une recherche par source de données)
 const MANUAL_COOLDOWN_MS = 15 * 60 * 1000; // délai minimal entre deux calculs demandés
 const SNAPSHOT_COLUMNS = "id, status, trigger, results, last_error, started_at, finished_at";
 
@@ -599,7 +650,8 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
     // 1. Jobs déjà lancés
     for (const [key, entry] of Object.entries(results)) {
       if (entry.status !== "pending") continue;
-      const q = POSTURE_QUERIES[key];
+      const q = queryFor(key);
+      if (!q) { results[key] = { status: "error", error: "Indicateur inconnu" }; continue; }
       try {
         const job = await checkPostureJob(baseUrl, token, q, entry.jobId);
         if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
@@ -616,12 +668,23 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
       }
     }
 
+    // 1 bis. Sources de données connues : une recherche « total » par source
+    const ds = results.dataSources;
+    if (ds?.status === "done" && !ds.expanded) {
+      for (const src of (ds.sources ?? []) as Row[]) {
+        if (/^\d+$/.test(src.id)) results[`${ZONES_TOTAL_PREFIX}${src.id}`] = { status: "queued", attempts: 0 };
+      }
+      results.dataSources = { ...ds, expanded: true };
+    }
+
     // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS
     for (const [key, entry] of Object.entries(results)) {
       if (Object.values(results).filter((r) => r.status === "pending").length >= MAX_RUNNING_JOBS) break;
       if (entry.status !== "queued") continue;
       try {
-        const jobId = await startPostureJob(baseUrl, token, POSTURE_QUERIES[key]);
+        const q = queryFor(key);
+        if (!q) { results[key] = { status: "error", error: "Indicateur inconnu" }; continue; }
+        const jobId = await startPostureJob(baseUrl, token, q);
         results[key] = { status: "pending", jobId, attempts: entry.attempts ?? 0, progress: null };
       } catch (e) {
         if (isRateLimited(e)) throw e;

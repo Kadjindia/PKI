@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
-  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel,
+  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -35,16 +35,16 @@ describe("posture Varonis : mise en forme", () => {
     expect(snapshotProgress({
       inactive90: { status: "done", count: 7 },
       expiredEnabled: { status: "error", code: "timeout" },
-      zones: { status: "pending" },
+      zonesStale: { status: "pending" },
       privileged: { status: "queued" },
-    })).toBe(2);
+    })).toEqual({ done: 2, total: 4 });
   });
 
   it("détecte un refus de droits général et produit des messages courts", () => {
     const denied = { status: "error" as const, code: "unauthorized" as const };
-    expect(allUnauthorized({ zones: denied, privileged: { status: "error", code: "filter", field: "isDisabled" } })).toBe(true);
-    expect(allUnauthorized({ zones: denied, inactive90: { status: "done", count: 2 } })).toBe(false);
-    expect(allUnauthorized({ zones: { status: "pending" } })).toBe(false);
+    expect(allUnauthorized({ zonesStale: denied, privileged: { status: "error", code: "filter", field: "isDisabled" } })).toBe(true);
+    expect(allUnauthorized({ zonesStale: denied, inactive90: { status: "done", count: 2 } })).toBe(false);
+    expect(allUnauthorized({ zonesStale: { status: "pending" } })).toBe(false);
     expect(shortError(denied)).toBe("Droits Varonis insuffisants");
     expect(shortError({ code: "filter", field: "isStale" })).toBe("Filtre « isStale » refusé par Varonis");
   });
@@ -75,5 +75,18 @@ describe("posture Varonis : mise en forme", () => {
     expect(sourceLabel("OneDrive")).toBe("OneDrive");
     expect(sourceLabel("Windows")).toBe("Partage de fichiers");
     expect(sourceLabel(null)).toBeNull();
+  });
+
+  it("additionne le total des dossiers sensibles par source de données", () => {
+    const zone = (name: string, sizeBytes: number) => ({ name, sizeBytes, isStale: false, staleAccess: false, ownerIssue: false });
+    expect(zoneTotal({}).status).toBe("queued");
+    expect(zoneTotal({ dataSources: { status: "done", expanded: true }, "zonesTotal:1": { status: "pending" } }).status).toBe("pending");
+    const t = zoneTotal({
+      dataSources: { status: "done", expanded: true },
+      "zonesTotal:1": { status: "done", count: 3, sizeBytes: 10, files: 5, top: [zone("A", 10)] },
+      "zonesTotal:2": { status: "done", count: 2, sizeBytes: 30, files: 1, capped: true, top: [zone("B", 30)] },
+    });
+    expect(t).toMatchObject({ status: "done", count: 5, sizeBytes: 40, files: 6, capped: true });
+    expect(t.top?.map((z) => z.name)).toEqual(["B", "A"]);
   });
 });

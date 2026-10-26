@@ -3,12 +3,18 @@
 
 export type InactiveKey = "inactive90" | "inactive180" | "inactive365" | "inactive730" | "neverLogged";
 
-export type PostureKey = "sensitiveExposed" | "zones" | "privileged" | InactiveKey | "expiredEnabled";
+export type ZoneIssueKey = "zonesStale" | "zonesStaleAccess" | "zonesStaleOwner" | "zonesDisabledOwner";
+
+export type PostureKey =
+  | "sensitiveExposed" | ZoneIssueKey | "dataSources" | "privileged" | InactiveKey | "expiredEnabled";
 
 export const POSTURE_KEYS: PostureKey[] = [
-  "sensitiveExposed", "zones", "privileged",
-  "inactive90", "inactive180", "inactive365", "inactive730", "neverLogged", "expiredEnabled",
+  "sensitiveExposed", "zonesStale", "zonesStaleAccess", "zonesStaleOwner", "zonesDisabledOwner", "dataSources",
+  "privileged", "inactive90", "inactive180", "inactive365", "inactive730", "neverLogged", "expiredEnabled",
 ];
+
+/** Préfixe des résultats « total des dossiers sensibles », un par source de données. */
+export const ZONES_TOTAL_PREFIX = "zonesTotal:";
 
 /** Tranches d'ancienneté des comptes activés sans connexion récente. */
 export const INACTIVE_BUCKETS: { key: InactiveKey; label: string }[] = [
@@ -48,11 +54,19 @@ export interface Zone {
   source?: string | null; sourceName?: string | null;
   sizeBytes?: number | null; files?: number | null;
   isStale: boolean; staleAccess: boolean; ownerIssue: boolean;
+  staleOwner?: boolean; disabledOwner?: boolean;
 }
+
+/** Résultat d'une recherche de dossiers (nombre unique et volume). */
+export type ZoneResult = Base & Partial<ZoneTotals> & { lines?: number; top?: Zone[] };
 
 export interface PostureResults {
   sensitiveExposed?: Base & { withoutValidOwner?: number; top?: ExposedFolder[] };
-  zones?: Base & Partial<ZoneTotals> & { stale?: ZoneTotals; staleAccess?: ZoneTotals; ownerIssue?: ZoneTotals; top?: Zone[] };
+  zonesStale?: ZoneResult;
+  zonesStaleAccess?: ZoneResult;
+  zonesStaleOwner?: ZoneResult;
+  zonesDisabledOwner?: ZoneResult;
+  dataSources?: Base & { sources?: { id: string; name?: string | null; type?: string | null }[]; expanded?: boolean };
   privileged?: Base & {
     byType?: { type: string; count: number }[];
     admins?: number;
@@ -67,6 +81,33 @@ export interface PostureResults {
   inactive730?: Base;
   neverLogged?: Base;
   expiredEnabled?: Base;
+  /** Total des dossiers sensibles, une entrée par source de données (« zonesTotal:<id> »). */
+  [key: `zonesTotal:${string}`]: ZoneResult | undefined;
+}
+
+/**
+ * Total des dossiers sensibles (somme des recherches par source de données) et
+ * les plus volumineux toutes sources confondues. En cours tant que la liste des
+ * sources ou l'une des recherches n'est pas terminée.
+ */
+export function zoneTotal(r: PostureResults, topSize = 15): ZoneResult {
+  const ds = r.dataSources;
+  if (!ds || ds.status === "queued" || ds.status === "pending") return { status: ds?.status ?? "queued" };
+  if (ds.status === "error") return ds;
+  const parts = Object.keys(r).filter((k) => k.startsWith(ZONES_TOTAL_PREFIX)).map((k) => r[k as `zonesTotal:${string}`]!);
+  if (!ds.expanded || parts.some((p) => p.status === "queued" || p.status === "pending")) {
+    return { status: "pending", progress: null };
+  }
+  const failed = parts.find((p) => p.status === "error");
+  if (failed) return failed;
+  return {
+    status: "done",
+    count: parts.reduce((t, p) => t + (p.count ?? 0), 0),
+    sizeBytes: parts.reduce((t, p) => t + (p.sizeBytes ?? 0), 0),
+    files: parts.reduce((t, p) => t + (p.files ?? 0), 0),
+    capped: parts.some((p) => p.capped),
+    top: parts.flatMap((p) => p.top ?? []).sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0)).slice(0, topSize),
+  };
 }
 
 /** Total des comptes inactifs encore activés (toutes tranches), si toutes sont terminées. */
@@ -137,9 +178,10 @@ export interface PostureState {
   scheduled: boolean;
 }
 
-/** Nombre d'indicateurs terminés (ou en échec) d'une photo. */
-export function snapshotProgress(results: PostureResults): number {
-  return POSTURE_KEYS.filter((k) => results[k]?.status === "done" || results[k]?.status === "error").length;
+/** Avancement d'une photo : recherches terminées (ou en échec) sur le total prévu. */
+export function snapshotProgress(results: PostureResults): { done: number; total: number } {
+  const entries = Object.values(results).filter(Boolean) as Base[];
+  return { done: entries.filter((e) => e.status === "done" || e.status === "error").length, total: entries.length };
 }
 
 /** Vrai si toutes les requêtes terminées ont échoué faute de droits sur la clé d'API. */
