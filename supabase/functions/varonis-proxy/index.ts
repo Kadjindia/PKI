@@ -267,9 +267,10 @@ interface PostureQuery {
   jobName: string;
   where: Record<string, unknown>;
   fields: string;
-  summarize: (rows: Row[]) => Record<string, unknown>;
+  /** Résumé des lignes reçues ; ref = heure de début de la photo (référence des dates). */
+  summarize: (rows: Row[], ref: number) => Record<string, unknown>;
   /** Complète le filtre au lancement (ex. valeur d'énumération lue dans le schéma). */
-  resolveWhere?: (baseUrl: string, token: string) => Promise<Record<string, unknown>>;
+  resolveWhere?: (baseUrl: string, token: string, ref: number) => Promise<Record<string, unknown>>;
 }
 
 /**
@@ -339,20 +340,22 @@ const INACTIVE_BUCKETS: { key: string; from: number; to: number | null }[] = [
 
 /** Borne basse de la dernière tranche (« plus de 2 ans ») : 30 ans. */
 const OLDEST_LOGON_DAYS = 30 * 365;
-const daysAgoIso = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+const daysAgoIso = (ref: number, days: number) => new Date(ref - days * DAY).toISOString();
 
 function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
   return {
     asyncName: "identitiesAsync",
     jobName: "identitiesQueryJob",
-    where: {
+    where: { isDisabled: enabledOnly },
+    // Tranche exacte : dernière connexion entre (début de la photo - to) et (début de la
+    // photo - from). Toutes les tranches partent de la même heure : elles sont jointives.
+    resolveWhere: (_baseUrl, _token, ref) => Promise.resolve({
       isDisabled: enabledOnly,
-      // Tranche exacte : dernière connexion entre (aujourd'hui - to) et (aujourd'hui - from)
-      lastLogonTime: { between: { from: daysAgoIso(to ?? OLDEST_LOGON_DAYS), to: daysAgoIso(from) } },
-    },
+      lastLogonTime: { between: { from: daysAgoIso(ref, to ?? OLDEST_LOGON_DAYS), to: daysAgoIso(ref, from) } },
+    }),
     fields: "id isDisabled lastLogonTime",
-    summarize: (rows) => {
-      const now = Date.now();
+    summarize: (rows, ref) => {
+      const now = ref;
       const ageOf = (r: Row) => (now - new Date(r.lastLogonTime).getTime()) / DAY;
       const dated = rows.filter((r) => r.lastLogonTime);
       const ages = dated.map(ageOf).sort((a, b) => a - b);
@@ -508,11 +511,14 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
       const admins = rows.filter((r) => types(r).includes("ADMIN"));
       const services = rows.filter((r) => types(r).includes("SERVICE") && !types(r).includes("ADMIN"));
       const inactiveAdmins = admins.filter((r) => inactiveSince(r.lastLogonTime));
+      const noLogonAdmins = count(admins, (r) => !r.lastLogonTime);
       return {
         count: rows.length,
         byType: [...byType.entries()].map(([type, n]) => ({ type, count: n })).sort((a, b) => b.count - a.count),
         admins: admins.length,
         stale: inactiveAdmins.length,
+        staleOld: inactiveAdmins.length - noLogonAdmins, // dernière connexion il y a plus de 90 j
+        staleNoLogon: noLogonAdmins, // aucune date de connexion
         services: services.length,
         servicesStale: count(services, (r) => inactiveSince(r.lastLogonTime)),
         staleList: inactiveAdmins
@@ -563,13 +569,13 @@ function classifyVaronisError(message: string): { code: string; error: string; f
   return { code: "other", error: message.slice(0, 300) };
 }
 
-async function startPostureJob(baseUrl: string, token: string, q: PostureQuery): Promise<string> {
+async function startPostureJob(baseUrl: string, token: string, q: PostureQuery, ref: number): Promise<string> {
   const query = `
     query start($where: ${filterTypeOf(q.asyncName)}!) {
       ${q.asyncName}(where: $where) { jobId jobStatus jobProgress results { ${q.fields} } }
     }
   `;
-  const where = q.resolveWhere ? await q.resolveWhere(baseUrl, token) : q.where;
+  const where = q.resolveWhere ? await q.resolveWhere(baseUrl, token, ref) : q.where;
   const data = await callVaronisGraphQL(baseUrl, token, query, { where });
   return data[q.asyncName].jobId;
 }
@@ -683,6 +689,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
   if (!claimed) return; // étape déjà en cours ailleurs, ou trop tôt
 
   const results: Record<string, Row> = { ...claimed.results };
+  const ref = new Date(claimed.started_at).getTime(); // référence commune des dates de la photo
   let lastError: string | null = null;
   let nextStepIn = STEP_INTERVAL_MS;
 
@@ -698,7 +705,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         const job = await checkPostureJob(baseUrl, token, q, entry.jobId);
         if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
           const rows = (job.results ?? []) as Row[];
-          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, ...q.summarize(rows) };
+          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, ...q.summarize(rows, ref) };
         } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
           results[key] = failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
         } else {
@@ -739,7 +746,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
       try {
         const q = queryFor(key);
         if (!q) { results[key] = { status: "error", error: "Indicateur inconnu" }; continue; }
-        const jobId = await startPostureJob(baseUrl, token, q);
+        const jobId = await startPostureJob(baseUrl, token, q, ref);
         results[key] = { status: "pending", jobId, attempts: entry.attempts ?? 0, progress: null };
       } catch (e) {
         if (isRateLimited(e)) throw e;

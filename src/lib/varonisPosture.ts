@@ -70,6 +70,8 @@ export interface PostureResults {
     byType?: { type: string; count: number }[];
     admins?: number;
     stale?: number;
+    staleOld?: number;
+    staleNoLogon?: number;
     services?: number;
     servicesStale?: number;
     staleList?: { name?: string | null; types: string[]; lastLogonTime?: string | null }[];
