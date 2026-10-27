@@ -338,6 +338,28 @@ const INACTIVE_BUCKETS: { key: string; from: number; to: number | null }[] = [
   { key: "inactive730", from: 730, to: null },
 ];
 
+/**
+ * Inventaire des comptes : champs lus pour chaque identité (types simples
+ * uniquement, d'après le schéma User du tenant) et format compact enregistré.
+ */
+const IDENTITY_FIELDS = "id name samAccountName userPrincipalName email department jobTitle company description distinguishedName "
+  + "lastLogonTime lastActivityDate passwordLastSet passwordExpirationStatus expirationDate expirationStatus creationDate "
+  + "isDisabled isStale isLockedOut privilegedIdentityType mfaMethod type";
+
+function toAccount(r: Row) {
+  const out: Row = {
+    name: r.name, sam: r.samAccountName, upn: r.userPrincipalName, email: r.email,
+    department: r.department, jobTitle: r.jobTitle, company: r.company, description: r.description,
+    dn: r.distinguishedName, lastLogon: r.lastLogonTime, lastActivity: r.lastActivityDate,
+    pwdLastSet: r.passwordLastSet, pwdStatus: r.passwordExpirationStatus,
+    expiration: r.expirationDate, expirationStatus: r.expirationStatus, created: r.creationDate,
+    stale: r.isStale, lockedOut: r.isLockedOut, privileged: r.privilegedIdentityType, mfa: r.mfaMethod, type: r.type,
+  };
+  // Champs vides retirés : l'inventaire peut compter des milliers de comptes
+  for (const k of Object.keys(out)) if (out[k] === null || out[k] === undefined || (Array.isArray(out[k]) && out[k].length === 0)) delete out[k];
+  return out;
+}
+
 /** Borne basse de la dernière tranche (« plus de 2 ans ») : 30 ans. */
 const OLDEST_LOGON_DAYS = 30 * 365;
 const daysAgoIso = (ref: number, days: number) => new Date(ref - days * DAY).toISOString();
@@ -353,18 +375,20 @@ function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
       isDisabled: enabledOnly,
       lastLogonTime: { between: { from: daysAgoIso(ref, to ?? OLDEST_LOGON_DAYS), to: daysAgoIso(ref, from) } },
     }),
-    fields: "id isDisabled lastLogonTime",
+    fields: IDENTITY_FIELDS,
     summarize: (rows, ref) => {
       const now = ref;
       const ageOf = (r: Row) => (now - new Date(r.lastLogonTime).getTime()) / DAY;
       const dated = rows.filter((r) => r.lastLogonTime);
       const ages = dated.map(ageOf).sort((a, b) => a - b);
+      const inBucket = rows.filter((r) => {
+        if (r.isDisabled || !r.lastLogonTime) return false;
+        const days = ageOf(r);
+        return days > from && (to === null || days <= to);
+      });
       return {
-        count: count(rows, (r) => {
-          if (r.isDisabled || !r.lastLogonTime) return false;
-          const days = ageOf(r);
-          return days > from && (to === null || days <= to);
-        }),
+        count: inBucket.length,
+        items: inBucket.map(toAccount),
         // Diagnostic : ce que Varonis a réellement renvoyé pour cette tranche
         diag: {
           received: rows.length,
@@ -380,7 +404,30 @@ function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
   };
 }
 
-const ZONE_FIELDS = "id name path sharePaths url dataSource { id name type } sizeOfResourceAndNestedResources numberOfNestedFiles isStaleIncludingSubfolders hasStaleAccess resourceOwner { isStale isDisabled }";
+const ZONE_FIELDS = "id name path sharePaths url dataSource { id name type } sizeOfResourceAndNestedResources numberOfNestedFiles isStaleIncludingSubfolders hasStaleAccess "
+  + "resourceOwner { isStale isDisabled name samAccountName userPrincipalName email department jobTitle company }";
+
+/** Propriétaires des dossiers : un élément par compte, avec ses dossiers (les 50 plus gros). */
+function ownersOf(rows: Row[]) {
+  const byOwner = new Map<string, { owner: Row; folders: Row[] }>();
+  for (const r of rows) {
+    const o = r.resourceOwner ?? {};
+    const key = String(o.samAccountName || o.userPrincipalName || o.name || "?");
+    if (!byOwner.has(key)) byOwner.set(key, { owner: o, folders: [] });
+    byOwner.get(key)!.folders.push(r);
+  }
+  return [...byOwner.values()].map(({ owner, folders }) => ({
+    name: owner.name, sam: owner.samAccountName, upn: owner.userPrincipalName, email: owner.email,
+    department: owner.department, jobTitle: owner.jobTitle, company: owner.company,
+    stale: owner.isStale, disabled: owner.isDisabled,
+    folderCount: folders.length,
+    sizeBytes: folders.reduce((t, f) => t + (f.sizeOfResourceAndNestedResources ?? 0), 0),
+    folders: [...folders]
+      .sort((a, b) => (b.sizeOfResourceAndNestedResources ?? 0) - (a.sizeOfResourceAndNestedResources ?? 0))
+      .slice(0, 50)
+      .map((f) => ({ path: (f.sharePaths ?? [])[0] ?? f.path, sizeBytes: f.sizeOfResourceAndNestedResources })),
+  })).sort((a, b) => b.folderCount - a.folderCount);
+}
 
 /** Propriétaire du dossier (compte du système de fichiers) inactif ou désactivé. */
 const ownerStale = (r: Row) => Boolean(r.resourceOwner?.isStale);
@@ -402,7 +449,7 @@ function topZones(rows: Row[], size = 15) {
 }
 
 /** Dossiers sensibles de niveau 3 présentant un point à traiter : nombre, volume et les plus gros. */
-function zoneIssueQuery(extra: Record<string, unknown>): PostureQuery {
+function zoneIssueQuery(extra: Record<string, unknown>, withOwners = false): PostureQuery {
   return {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
@@ -410,7 +457,7 @@ function zoneIssueQuery(extra: Record<string, unknown>): PostureQuery {
     fields: ZONE_FIELDS,
     summarize: (all) => {
       const rows = uniqueResources(all);
-      return { ...zoneTotals(rows), lines: all.length, top: topZones(rows) };
+      return { ...zoneTotals(rows), lines: all.length, top: topZones(rows), ...(withOwners ? { owners: ownersOf(rows) } : {}) };
     },
   };
 }
@@ -491,8 +538,8 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
   zonesStaleAccess: zoneIssueQuery({ hasStaleAccess: yes }),
   // Propriétaire du dossier (compte du système de fichiers) inactif ou désactivé,
   // comme « Stale / Disabled account (Resource owner) » dans la console
-  zonesStaleOwner: zoneIssueQuery({ resourceOwner: { isStale: yes } }), // « eq » ici, « in » pour isDisabled
-  zonesDisabledOwner: zoneIssueQuery({ resourceOwner: { isDisabled: { in: [true] } } }),
+  zonesStaleOwner: zoneIssueQuery({ resourceOwner: { isStale: yes } }, true), // « eq » ici, « in » pour isDisabled
+  zonesDisabledOwner: zoneIssueQuery({ resourceOwner: { isDisabled: { in: [true] } } }, true),
   // Liste des sources de données : sert à découper le total des dossiers
   // sensibles (trop de lignes pour une seule recherche), voir zonesTotalQuery
   dataSources: {
@@ -510,7 +557,7 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
     asyncName: "identitiesAsync",
     jobName: "identitiesQueryJob",
     where: { privilegedIdentityType: { hasValue: true }, isDisabled: enabledOnly },
-    fields: "id name privilegedIdentityType isDisabled lastLogonTime",
+    fields: IDENTITY_FIELDS,
     summarize: (all) => {
       const rows = all.filter((r) => !r.isDisabled);
       const types = (r: Row) => (r.privilegedIdentityType ?? []) as string[];
@@ -533,6 +580,9 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
           .sort((a, b) => String(a.lastLogonTime ?? "").localeCompare(String(b.lastLogonTime ?? "")))
           .slice(0, 10)
           .map((r) => ({ name: r.name, types: types(r), lastLogonTime: r.lastLogonTime ?? null })),
+        // Inventaire : administrateurs (avec indicateur d'inactivité) et comptes de service
+        items: admins.map((r) => ({ ...toAccount(r), inactive: inactiveSince(r.lastLogonTime) })),
+        serviceItems: services.map((r) => ({ ...toAccount(r), inactive: inactiveSince(r.lastLogonTime) })),
       };
     },
   },
@@ -548,8 +598,11 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
       isDisabled: enabledOnly,
       expirationStatus: { eq: await enumValue(baseUrl, token, "ExpirationStatus", /^expired$/i) },
     }),
-    fields: "id isDisabled",
-    summarize: (rows) => ({ count: count(rows, (r) => !r.isDisabled) }),
+    fields: IDENTITY_FIELDS,
+    summarize: (rows) => {
+      const enabled = rows.filter((r) => !r.isDisabled);
+      return { count: enabled.length, items: enabled.map(toAccount) };
+    },
   },
 };
 
@@ -846,13 +899,63 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
     ...(finished ? { status: "done", finished_at: new Date().toISOString(), summary: snapshotSummary(results) } : {}),
   }).eq("id", snap.id);
   if (error) throw new Error(error.message);
+  if (finished) await pruneOldLists(admin, snap.id);
+}
+
+/** Listes de l'inventaire, chargées à part (action posture-inventory) : retirées ailleurs. */
+const LIST_FIELDS = ["items", "serviceItems", "owners"];
+function withoutLists({ jobId: _jobId, ...rest }: Row): Row {
+  for (const f of LIST_FIELDS) delete rest[f];
+  return rest;
+}
+
+/** Inventaire des comptes : une liste de la dernière photo terminée. */
+const INVENTORY_LISTS: Record<string, (r: Record<string, Row>) => Row[] | undefined> = {
+  admins: (r) => r.privileged?.items,
+  adminsInactive: (r) => r.privileged?.items?.filter((a: Row) => a.inactive),
+  services: (r) => r.privileged?.serviceItems,
+  expired: (r) => r.expiredEnabled?.items,
+  inactive: (r) => {
+    const parts = INACTIVE_BUCKETS.map((b) => (r[b.key]?.items as Row[] | undefined)?.map((a) => ({ ...a, bucket: b.key })));
+    return parts.every(Boolean) ? parts.flat() as Row[] : undefined;
+  },
+  ownersStale: (r) => r.zonesStaleOwner?.owners,
+  ownersDisabled: (r) => r.zonesDisabledOwner?.owners,
+};
+
+async function postureInventory(admin: Admin, list: string) {
+  const pick = INVENTORY_LISTS[list];
+  if (!pick) return jsonResponse({ error: "Liste inconnue" }, 400);
+  const { data, error } = await admin.from("varonis_posture_snapshots").select("started_at, results")
+    .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
+  if (error) throw new Error(error.message);
+  const items = data ? pick(data.results ?? {}) : undefined;
+  return jsonResponse({ date: data?.started_at ?? null, available: Boolean(items), items: items ?? [] });
+}
+
+/**
+ * Les listes de l'inventaire ne sont gardées que sur les 3 dernières photos :
+ * la 4e plus récente est allégée à chaque fin de calcul (ses chiffres restent).
+ */
+async function pruneOldLists(admin: Admin, keepId: string) {
+  const { data } = await admin.from("varonis_posture_snapshots").select("id, results")
+    .eq("status", "done").order("started_at", { ascending: false }).range(3, 3);
+  for (const row of (data ?? []) as Row[]) {
+    if (row.id === keepId) continue; // garde-fou : jamais la photo qui vient de se terminer
+    const results = Object.fromEntries(Object.entries(row.results ?? {}).map(([k, v]) => {
+      const copy = { ...(v as Row) };
+      for (const f of LIST_FIELDS) delete copy[f];
+      return [k, copy];
+    }));
+    await admin.from("varonis_posture_snapshots").update({ results }).eq("id", row.id);
+  }
 }
 
 /** État renvoyé à l'écran : dernière photo terminée et photo en cours (sans les jobId). */
 function publicState(state: { latest: Snapshot | null; running: Snapshot | null }) {
   const clean = (s: Snapshot | null) => s && {
     ...s,
-    results: Object.fromEntries(Object.entries(s.results).map(([k, { jobId: _jobId, ...rest }]) => [k, rest])),
+    results: Object.fromEntries(Object.entries(s.results).map(([k, v]) => [k, withoutLists(v)])),
   };
   return { latest: clean(state.latest), running: clean(state.running), scheduled: Boolean(POSTURE_CRON_SECRET) };
 }
@@ -946,6 +1049,11 @@ Deno.serve(async (req) => {
     }
 
     // Posture des données : lecture de la dernière photo, ou nouveau calcul
+    // Inventaire des comptes : { action: "posture-inventory", list: "admins" | … }
+    if (body.action === "posture-inventory") {
+      return await postureInventory(adminClient(), String((body as Row).list ?? ""));
+    }
+
     // Évolution dans le temps : { action: "posture-history" }
     if (body.action === "posture-history") {
       return jsonResponse({ from: HISTORY_FROM, points: await postureHistory(adminClient()) });
