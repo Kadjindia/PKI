@@ -497,22 +497,26 @@ function parseZonesTotalKey(key: string): { source: number; lo: number; hi: numb
  * de zéro pour cette source).
  */
 async function previousPartitions(admin: Admin): Promise<Map<number, string[]>> {
+  // Les dernières photos, de la plus récente à la plus ancienne : pour chaque source,
+  // le premier découpage complet trouvé (un recalcul rapide peut en porter un incomplet)
   const { data } = await admin.from("varonis_posture_snapshots").select("summary")
-    .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
-  const bySource = new Map<number, { lo: number; hi: number; key: string }[]>();
-  for (const key of (data?.summary?.partitions ?? []) as string[]) {
-    const k = parseZonesTotalKey(String(key));
-    if (!k?.sized) continue;
-    if (!bySource.has(k.source)) bySource.set(k.source, []);
-    bySource.get(k.source)!.push({ lo: k.lo, hi: k.hi, key: String(key) });
-  }
+    .eq("status", "done").order("started_at", { ascending: false }).limit(10);
   const result = new Map<number, string[]>();
-  for (const [source, parts] of bySource) {
-    parts.sort((a, b) => a.lo - b.lo);
-    // Contiguïté : chaque tranche ]lo ; hi[ enchaîne avec la suivante (hi - 1 = lo suivant)
-    const covers = parts[0].lo === SIZE_MIN && parts[parts.length - 1].hi === SIZE_MAX
-      && parts.every((p, i) => i === 0 || parts[i - 1].hi - 1 === p.lo);
-    if (covers) result.set(source, parts.map((p) => p.key));
+  for (const row of (data ?? []) as Row[]) {
+    const bySource = new Map<number, { lo: number; hi: number; key: string }[]>();
+    for (const key of (row.summary?.partitions ?? []) as string[]) {
+      const k = parseZonesTotalKey(String(key));
+      if (!k?.sized || result.has(k.source)) continue;
+      if (!bySource.has(k.source)) bySource.set(k.source, []);
+      bySource.get(k.source)!.push({ lo: k.lo, hi: k.hi, key: String(key) });
+    }
+    for (const [source, parts] of bySource) {
+      parts.sort((a, b) => a.lo - b.lo);
+      // Contiguïté : chaque tranche ]lo ; hi[ enchaîne avec la suivante (hi - 1 = lo suivant)
+      const covers = parts[0].lo === SIZE_MIN && parts[parts.length - 1].hi === SIZE_MAX
+        && parts.every((p, i) => i === 0 || parts[i - 1].hi - 1 === p.lo);
+      if (covers) result.set(source, parts.map((p) => p.key));
+    }
   }
   return result;
 }
