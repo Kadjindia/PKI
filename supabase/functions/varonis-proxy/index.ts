@@ -488,6 +488,32 @@ function parseZonesTotalKey(key: string): { source: number; lo: number; hi: numb
   return { source: Number(m[1]), lo: m[2] ? Number(m[2]) : SIZE_MIN, hi: m[3] ? Number(m[3]) : SIZE_MAX, sized: Boolean(m[2]) };
 }
 
+/**
+ * Découpage par taille de la dernière photo terminée : source → clés des partitions.
+ * N'est retenu que s'il couvre toute l'échelle de tailles sans trou (sinon on repart
+ * de zéro pour cette source).
+ */
+async function previousPartitions(admin: Admin): Promise<Map<number, string[]>> {
+  const { data } = await admin.from("varonis_posture_snapshots").select("summary")
+    .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
+  const bySource = new Map<number, { lo: number; hi: number; key: string }[]>();
+  for (const key of (data?.summary?.partitions ?? []) as string[]) {
+    const k = parseZonesTotalKey(String(key));
+    if (!k?.sized) continue;
+    if (!bySource.has(k.source)) bySource.set(k.source, []);
+    bySource.get(k.source)!.push({ lo: k.lo, hi: k.hi, key: String(key) });
+  }
+  const result = new Map<number, string[]>();
+  for (const [source, parts] of bySource) {
+    parts.sort((a, b) => a.lo - b.lo);
+    // Contiguïté : chaque tranche ]lo ; hi[ enchaîne avec la suivante (hi - 1 = lo suivant)
+    const covers = parts[0].lo === SIZE_MIN && parts[parts.length - 1].hi === SIZE_MAX
+      && parts.every((p, i) => i === 0 || parts[i - 1].hi - 1 === p.lo);
+    if (covers) result.set(source, parts.map((p) => p.key));
+  }
+  return result;
+}
+
 /** Coupe ]lo ; hi[ en deux (moyenne géométrique), ou null si l'intervalle ne se coupe plus. */
 function splitSizeRange(lo: number, hi: number): [number, number, number] | null {
   const mid = Math.round(Math.sqrt(Math.max(1, lo + 1) * hi));
@@ -688,6 +714,11 @@ const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
 // Varonis laisse parfois un job en attente indéfiniment, sans erreur.
 const JOB_TIMEOUT_MS = 10 * 60 * 1000;
 const TIMEOUT_ATTEMPTS = 2;
+// Calcul manuel (rapide) : plus de recherches en parallèle, pas de relance d'une
+// recherche bloquée (la valeur précédente est reprise)
+const MANUAL_JOB_TIMEOUT_MS = 5 * 60 * 1000;
+const MANUAL_TIMEOUT_ATTEMPTS = 1;
+const MANUAL_MAX_RUNNING_JOBS = 6;
 const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000; // au-delà, ce qui reste est abandonné (une recherche par source de données)
 const MANUAL_COOLDOWN_MS = 15 * 60 * 1000; // délai minimal entre deux calculs demandés
 // Durée de travail d'un passage de la tâche planifiée (sous la limite d'exécution
@@ -729,9 +760,28 @@ async function runningSnapshot(admin: Admin): Promise<Snapshot | null> {
   return data;
 }
 
+/**
+ * Calcul manuel = calcul rapide : le total des dossiers sensibles (une recherche
+ * par source de données, environ deux tiers du travail) et la liste prioritaire
+ * sont repris de la dernière photo terminée, avec leur date. Le calcul de nuit
+ * refait tout.
+ */
+async function quickReuse(admin: Admin): Promise<Record<string, Row>> {
+  const { data } = await admin.from("varonis_posture_snapshots").select("started_at, results")
+    .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
+  const prev = (data?.results ?? {}) as Record<string, Row>;
+  const parts = Object.entries(prev).filter(([k, v]) => k.startsWith(ZONES_TOTAL_PREFIX) && v.status === "done" && !v.split);
+  if (prev.dataSources?.status !== "done" || parts.length === 0 || parts.some(([, v]) => v.capped)) return {}; // rien de fiable : calcul complet
+  const from = prev.dataSources.carriedFrom ?? data!.started_at;
+  const reused: Record<string, Row> = { dataSources: { ...prev.dataSources, expanded: true, carriedFrom: from } };
+  for (const [k, v] of parts) reused[k] = { ...v, carriedFrom: v.carriedFrom ?? from };
+  return reused;
+}
+
 /** Démarre une nouvelle photo (tous les indicateurs en attente). Une seule à la fois. */
-async function createSnapshot(admin: Admin, trigger: "manual" | "schedule", userId: string | null) {
-  const results = Object.fromEntries(Object.keys(POSTURE_QUERIES).map((k) => [k, { status: "queued", attempts: 0 }]));
+async function createSnapshot(admin: Admin, trigger: "manual" | "schedule", userId: string | null, full = false) {
+  const results: Record<string, Row> = Object.fromEntries(Object.keys(POSTURE_QUERIES).map((k) => [k, { status: "queued", attempts: 0 }]));
+  if (trigger === "manual" && !full) Object.assign(results, await quickReuse(admin));
   const { error } = await admin.from("varonis_posture_snapshots").insert({ trigger, requested_by: userId, results });
   // 23505 : une photo est déjà en cours (index unique), rien à faire
   if (error && error.code !== "23505") throw new Error(error.message);
@@ -765,7 +815,7 @@ function reliable(r: Row | undefined, field = "count"): number | null {
 }
 
 /** Chiffres clés d'une photo (null quand la valeur n'est pas fiable). */
-function snapshotSummary(results: Record<string, Row>): Record<string, number | null> {
+function snapshotSummary(results: Record<string, Row>): Record<string, unknown> {
   const parts = Object.entries(results).filter(([k, v]) => k.startsWith(ZONES_TOTAL_PREFIX) && !v.split).map(([, v]) => v);
   const zonesTotal = results.dataSources?.status === "done" && parts.length > 0 && parts.every((p) => reliable(p) !== null)
     ? parts.reduce((t, p) => t + (p.count ?? 0), 0)
@@ -782,6 +832,10 @@ function snapshotSummary(results: Record<string, Row>): Record<string, number | 
     adminsInactive: reliable(results.privileged, "stale"),
     inactiveAccounts: buckets.every((v) => v !== null) ? buckets.reduce((t, v) => t + (v ?? 0), 0) : null,
     expired: reliable(results.expiredEnabled),
+    // Découpage final par taille des sources trop grosses : réutilisé par la photo suivante
+    partitions: Object.entries(results)
+      .filter(([k, v]) => k.startsWith(ZONES_TOTAL_PREFIX) && parseZonesTotalKey(k)?.sized && v.status === "done" && !v.split)
+      .map(([k]) => k),
   };
 }
 
@@ -801,9 +855,17 @@ async function postureHistory(admin: Admin) {
     row.summary = snapshotSummary(full.results ?? {});
     await admin.from("varonis_posture_snapshots").update({ summary: row.summary }).eq("id", row.id);
   }
-  const byDay = new Map<string, Row>();
-  for (const row of rows) byDay.set(String(row.started_at).slice(0, 10), row); // la dernière du jour l'emporte
-  return [...byDay.values()].map((row) => ({ date: row.started_at, values: row.summary }));
+  // Par jour : la dernière valeur fiable de chaque indicateur (un calcul manuel rapide
+  // ne refait pas le total des dossiers sensibles : on garde celui de la nuit)
+  const byDay = new Map<string, { date: string; values: Row }>();
+  for (const row of rows) {
+    const day = String(row.started_at).slice(0, 10);
+    const cur = byDay.get(day) ?? { date: row.started_at, values: {} as Row };
+    for (const [k, v] of Object.entries(row.summary ?? {})) if (typeof v === "number") cur.values[k] = v;
+    cur.date = row.started_at;
+    byDay.set(day, cur);
+  }
+  return [...byDay.values()];
 }
 
 async function carryOverFailures(admin: Admin, results: Record<string, Row>) {
@@ -853,16 +915,17 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         const job = await checkPostureJob(baseUrl, token, q, entry.jobId);
         if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
           const rows = (job.results ?? []) as Row[];
-          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, ...q.summarize(rows, ref) };
+          const seconds = entry.startedAt ? Math.round((now - new Date(entry.startedAt).getTime()) / 1000) : null;
+          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, seconds, ...q.summarize(rows, ref) };
         } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
           results[key] = failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
         } else {
           // Heure de lancement inconnue (photo antérieure) : début de la photo
           const launched = new Date(entry.startedAt ?? claimed.started_at).getTime();
-          if (now - launched > JOB_TIMEOUT_MS) {
+          if (now - launched > (claimed.trigger === "manual" ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS)) {
             const attempts = (entry.attempts ?? 0) + 1;
-            const error = `Varonis n'a pas terminé la recherche en ${JOB_TIMEOUT_MS / 60000} min`;
-            results[key] = attempts < TIMEOUT_ATTEMPTS
+            const error = `Varonis n'a pas terminé la recherche en ${(claimed.trigger === "manual" ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS) / 60000} min`;
+            results[key] = attempts < (claimed.trigger === "manual" ? MANUAL_TIMEOUT_ATTEMPTS : TIMEOUT_ATTEMPTS)
               ? { status: "queued", attempts, lastError: error }
               : { status: "error", code: "timeout", attempts, error };
           } else {
@@ -878,8 +941,13 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
     // 1 bis. Sources de données connues : une recherche « total » par source
     const ds = results.dataSources;
     if (ds?.status === "done" && !ds.expanded) {
+      // Une source déjà découpée par taille lors de la photo précédente repart de ce
+      // découpage (une partie redevenue trop grosse sera redécoupée normalement)
+      const known = await previousPartitions(admin);
       for (const src of (ds.sources ?? []) as Row[]) {
-        if (/^\d+$/.test(src.id)) results[`${ZONES_TOTAL_PREFIX}${src.id}`] = { status: "queued", attempts: 0 };
+        if (!/^\d+$/.test(src.id)) continue;
+        const parts = known.get(Number(src.id));
+        for (const key of parts ?? [`${ZONES_TOTAL_PREFIX}${src.id}`]) results[key] = { status: "queued", attempts: 0 };
       }
       results.dataSources = { ...ds, expanded: true };
     }
@@ -899,7 +967,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
 
     // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS
     for (const [key, entry] of Object.entries(results)) {
-      if (Object.values(results).filter((r) => r.status === "pending").length >= MAX_RUNNING_JOBS) break;
+      if (Object.values(results).filter((r) => r.status === "pending").length >= (claimed.trigger === "manual" ? MANUAL_MAX_RUNNING_JOBS : MAX_RUNNING_JOBS)) break;
       if (entry.status !== "queued") continue;
       try {
         const q = queryFor(key);
@@ -1019,7 +1087,7 @@ async function handlePosture(action: string, body: Row, baseUrl: string, apiKey:
         error: `Dernier calcul lancé il y a moins de ${MANUAL_COOLDOWN_MS / 60000} min : nouveau calcul possible dans ${Math.ceil(wait / 60000)} min (limite de requêtes Varonis).`,
       }, 429);
     }
-    await createSnapshot(admin, "manual", userId);
+    await createSnapshot(admin, "manual", userId, body.full === true); // full : calcul complet demandé
     state = await latestSnapshots(admin);
   }
   if (action === "posture-cron" && body.start === true && !state.running) {

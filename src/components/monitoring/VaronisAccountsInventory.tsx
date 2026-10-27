@@ -187,7 +187,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
           ) : error ? (
             <p className="text-sm text-destructive">{(error as Error).message}</p>
           ) : !data?.available ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">Liste disponible après le prochain calcul de la posture (bouton « Recalculer » de l&apos;onglet Posture, ou calcul de la nuit).</p>
+            <p className="text-sm text-muted-foreground py-6 text-center">Liste disponible après le prochain calcul de la posture (bouton « Recalcul rapide » de l&apos;onglet Posture, ou calcul de la nuit).</p>
           ) : rows.length === 0 ? (
             <p className="text-sm text-emerald-600 py-6 text-center">{search ? "Aucun résultat pour cette recherche." : "Aucun compte dans cette liste."}</p>
           ) : (
