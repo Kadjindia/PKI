@@ -748,13 +748,13 @@ const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
 // Recherche que Varonis n'a pas terminée dans ce délai : relancée une seule fois.
 // Les recherches sur les dossiers prennent plus de 5 min chez Varonis (millions de
 // dossiers) : le délai ne doit couper qu'une recherche réellement bloquée.
-const JOB_TIMEOUT_MS = 30 * 60 * 1000;
+const JOB_TIMEOUT_MS = 60 * 60 * 1000; // « données / droits inutilisés » dépassent 20 min
 const TIMEOUT_ATTEMPTS = 2;
-// Calcul manuel (rapide) : plus de recherches en parallèle, pas de relance d'une
-// recherche bloquée (la valeur précédente est reprise)
+// Recalcul rapide (comptes) : toutes ses recherches lancées ensemble, pas de relance
+// d'une recherche bloquée (la valeur précédente est reprise)
 const MANUAL_JOB_TIMEOUT_MS = 20 * 60 * 1000;
 const MANUAL_TIMEOUT_ATTEMPTS = 1;
-const MANUAL_MAX_RUNNING_JOBS = 6;
+const MANUAL_MAX_RUNNING_JOBS = 7;
 const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000; // au-delà, ce qui reste est abandonné (une recherche par source de données)
 const MANUAL_COOLDOWN_MS = 15 * 60 * 1000; // délai minimal entre deux calculs demandés
 // Durée de travail d'un passage de la tâche planifiée (sous la limite d'exécution
@@ -796,23 +796,31 @@ async function runningSnapshot(admin: Admin): Promise<Snapshot | null> {
   return data;
 }
 
+/** Recherches sur les comptes : seules refaites par le recalcul rapide (3 à 6 min seules). */
+const ACCOUNT_KEYS = ["privileged", "inactive90", "inactive180", "inactive365", "inactive730", "expiredEnabled", "adminMemberships"];
+
 /**
- * Calcul manuel = calcul rapide : le total des dossiers sensibles (une recherche
- * par source de données, environ deux tiers du travail) et la liste prioritaire
- * sont repris de la dernière photo terminée, avec leur date. Le calcul de nuit
- * refait tout.
+ * Recalcul rapide = les comptes. Les recherches sur les dossiers prennent de 8 à
+ * plus de 20 min chez Varonis : leurs résultats sont repris de la dernière photo
+ * terminée, avec leur date. Le calcul complet (manuel ou de nuit) refait tout.
  */
 async function quickReuse(admin: Admin): Promise<Record<string, Row>> {
   const { data } = await admin.from("varonis_posture_snapshots").select("started_at, results")
     .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
   const prev = (data?.results ?? {}) as Record<string, Row>;
-  const parts = Object.entries(prev).filter(([k, v]) => k.startsWith(ZONES_TOTAL_PREFIX) && v.status === "done" && !v.split);
-  if (prev.dataSources?.status !== "done" || parts.length === 0 || parts.some(([, v]) => v.capped)) return {}; // rien de fiable : calcul complet
-  const from = prev.dataSources.carriedFrom ?? data!.started_at;
-  const reused: Record<string, Row> = { dataSources: { ...prev.dataSources, expanded: true, carriedFrom: from } };
-  for (const [k, v] of parts) reused[k] = { ...v, carriedFrom: v.carriedFrom ?? from };
+  if (prev.dataSources?.status !== "done") return {}; // pas de photo complète exploitable : calcul complet
+  const reused: Record<string, Row> = {};
+  for (const [k, v] of Object.entries(prev)) {
+    if (ACCOUNT_KEYS.includes(k) || v.status !== "done" || v.split) continue;
+    reused[k] = { ...v, carriedFrom: v.carriedFrom ?? data!.started_at };
+  }
+  reused.dataSources = { ...reused.dataSources, expanded: true };
   return reused;
 }
+
+/** Recalcul rapide : photo manuelle dont les dossiers sont repris (dataSources repris). */
+const isQuick = (snap: { trigger: string; results: Record<string, Row> }) =>
+  snap.trigger === "manual" && Boolean(snap.results.dataSources?.carriedFrom);
 
 /** Démarre une nouvelle photo (tous les indicateurs en attente). Une seule à la fois. */
 async function createSnapshot(admin: Admin, trigger: "manual" | "schedule", userId: string | null, full = false) {
@@ -922,6 +930,20 @@ const shortReason = (r: Row) => r.code === "timeout" ? "Délai dépassé" : (r.e
  * de nouveaux dans la limite autorisée, puis enregistre. Ne fait rien si une
  * autre étape est en cours ou trop récente.
  */
+/**
+ * Priorité de lancement (plus petit = plus tôt), d'après les durées mesurées chez
+ * Varonis : dossiers (plus de 5 min) puis comptes (3 à 6 min), le reste ensuite.
+ */
+const LAUNCH_PRIORITY = [
+  "dataSources", "zonesStaleAccess", "zonesStale", "zonesStaleOwner", "zonesDisabledOwner", "sensitiveExposed",
+  "inactive90", "inactive180", "inactive365", "inactive730", "expiredEnabled", "privileged", "adminMemberships",
+];
+function launchRank(key: string): number {
+  if (key.startsWith(ZONES_TOTAL_PREFIX)) return 5.5; // total par source : avec les dossiers
+  const i = LAUNCH_PRIORITY.indexOf(key);
+  return i === -1 ? LAUNCH_PRIORITY.length : i;
+}
+
 /** Résultat d'une étape : avancée, ou rien fait (étape en cours ailleurs, pause « trop de requêtes »). */
 type StepOutcome = "advanced" | "skipped" | "backoff";
 
@@ -958,10 +980,10 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         } else {
           // Heure de lancement inconnue (photo antérieure) : début de la photo
           const launched = new Date(entry.startedAt ?? claimed.started_at).getTime();
-          if (now - launched > (claimed.trigger === "manual" ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS)) {
+          if (now - launched > (isQuick(claimed) ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS)) {
             const attempts = (entry.attempts ?? 0) + 1;
-            const error = `Varonis n'a pas terminé la recherche en ${(claimed.trigger === "manual" ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS) / 60000} min`;
-            results[key] = attempts < (claimed.trigger === "manual" ? MANUAL_TIMEOUT_ATTEMPTS : TIMEOUT_ATTEMPTS)
+            const error = `Varonis n'a pas terminé la recherche en ${(isQuick(claimed) ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS) / 60000} min`;
+            results[key] = attempts < (isQuick(claimed) ? MANUAL_TIMEOUT_ATTEMPTS : TIMEOUT_ATTEMPTS)
               ? { status: "queued", attempts, lastError: error }
               : { status: "error", code: "timeout", attempts, error };
           } else {
@@ -1001,9 +1023,12 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
       results[`${ZONES_TOTAL_PREFIX}${k.source}:${mid}:${hi}`] = { status: "queued", attempts: 0 };
     }
 
-    // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS
-    for (const [key, entry] of Object.entries(results)) {
-      if (Object.values(results).filter((r) => r.status === "pending").length >= (claimed.trigger === "manual" ? MANUAL_MAX_RUNNING_JOBS : MAX_RUNNING_JOBS)) break;
+    // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS. Les plus longs d'abord
+    // (recherches sur les dossiers, puis les comptes) : les courts se glissent dans les
+    // places libérées pendant que les longs tournent, la photo se termine plus tôt.
+    const launchOrder = Object.entries(results).sort(([a], [b]) => launchRank(a) - launchRank(b));
+    for (const [key, entry] of launchOrder) {
+      if (Object.values(results).filter((r) => r.status === "pending").length >= (isQuick(claimed) ? MANUAL_MAX_RUNNING_JOBS : MAX_RUNNING_JOBS)) break;
       if (entry.status !== "queued") continue;
       try {
         const q = queryFor(key);
