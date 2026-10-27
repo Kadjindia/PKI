@@ -36,6 +36,8 @@ interface Base {
   progress?: number | null; partial?: boolean; capped?: boolean; count?: number;
   /** Valeur reprise d'une photo précédente (date de celle-ci) faute de résultat cette fois. */
   carriedFrom?: string; lastError?: string;
+  /** Heure de fin de la recherche (calcul en cours : valeur déjà mise à jour). */
+  doneAt?: string; fresh?: boolean;
 }
 
 export interface ExposedFolder {
@@ -297,6 +299,10 @@ export interface AccountItem {
   description?: string; dn?: string; lastLogon?: string; lastActivity?: string; pwdLastSet?: string; pwdStatus?: string;
   expiration?: string; expirationStatus?: string; created?: string; stale?: boolean; lockedOut?: boolean;
   privileged?: string[]; mfa?: string[]; type?: string; inactive?: boolean; bucket?: InactiveKey;
+  entraRoles?: string[]; exchangeRoles?: string[];
+  /** Administrateurs : groupes (profondeur d'héritage, applications connectées). */
+  groups?: { name: string; depth?: number | null; inherited?: boolean; description?: string | null; apps?: string[]; type?: string | null }[];
+  groupNames?: string[]; apps?: string[];
 }
 
 /** Propriétaire de dossiers sensibles et ses dossiers (les 50 plus gros). */
@@ -326,4 +332,27 @@ export function toCsv(rows: Record<string, unknown>[], columns: { key: string; l
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return "﻿" + [columns.map((c) => cell(c.label)).join(";"), ...rows.map((r) => columns.map((c) => cell(r[c.key])).join(";"))].join("\r\n");
+}
+
+/**
+ * Affichage au fil de l'eau : pendant un calcul, chaque indicateur dont la recherche
+ * est terminée remplace celui de la dernière photo (marqué « fresh »). Le total des
+ * dossiers sensibles (plusieurs recherches) n'est remplacé qu'une fois complet, pour
+ * ne jamais additionner des morceaux de deux calculs.
+ */
+export function mergeRunning(latest: PostureResults | undefined, running: PostureResults | undefined): PostureResults {
+  if (!running) return latest ?? {};
+  const out: PostureResults = { ...(latest ?? {}) };
+  const isTotalKey = (k: string) => k === "dataSources" || k.startsWith(ZONES_TOTAL_PREFIX);
+  for (const [k, v] of Object.entries(running)) {
+    if (isTotalKey(k) || !v || v.status !== "done" || v.carriedFrom) continue;
+    (out as Record<string, unknown>)[k] = { ...v, fresh: true };
+  }
+  const total = zoneTotal(running);
+  const reused = Boolean((running.dataSources as Base | undefined)?.carriedFrom);
+  if (total.status === "done" && !reused) {
+    for (const k of Object.keys(out)) if (isTotalKey(k)) delete (out as Record<string, unknown>)[k];
+    for (const [k, v] of Object.entries(running)) if (isTotalKey(k)) (out as Record<string, unknown>)[k] = { ...v, fresh: true };
+  }
+  return out;
 }

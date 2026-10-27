@@ -17,7 +17,7 @@ import {
 
 type Item = AccountItem | OwnerItem;
 
-async function fetchInventory(list: InventoryList): Promise<{ date: string | null; available: boolean; items: Item[] }> {
+async function fetchInventory(list: InventoryList): Promise<{ date: string | null; running?: boolean; available: boolean; items: Item[] }> {
   const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action: "posture-inventory", list } });
   if (error) {
     if (error instanceof FunctionsHttpError) {
@@ -46,6 +46,8 @@ const ACCOUNT_CSV = [
   { key: "lastActivity", label: "Dernière activité" }, { key: "bucket", label: "Ancienneté" }, { key: "pwdLastSet", label: "Mot de passe changé le" },
   { key: "pwdStatus", label: "Statut du mot de passe" }, { key: "expiration", label: "Expiration du compte" },
   { key: "expirationStatus", label: "Statut d'expiration" }, { key: "created", label: "Créé le" }, { key: "privileged", label: "Privilèges" },
+  { key: "apps", label: "Applications connectées (via groupes)" }, { key: "groupNames", label: "Groupes" },
+  { key: "entraRoles", label: "Rôles Entra ID" }, { key: "exchangeRoles", label: "Groupes de rôles Exchange" },
   { key: "mfa", label: "Méthodes MFA" }, { key: "lockedOut", label: "Verrouillé" }, { key: "stale", label: "Inactif selon Varonis" },
   { key: "type", label: "Type" }, { key: "description", label: "Description" }, { key: "dn", label: "DN" },
 ];
@@ -97,6 +99,8 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
     queryFn: () => fetchInventory(list),
     staleTime: 30 * 60 * 1000,
     retry: false,
+    // Liste issue d'un calcul en cours : rafraîchie toutes les minutes
+    refetchInterval: (q) => (q.state.data?.running ? 60_000 : false),
   });
 
   const rows = useMemo(() => {
@@ -135,7 +139,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
           <Users className="w-6 h-6 text-primary" /> Inventaire des comptes
         </h3>
         <p className="text-sm text-muted-foreground">
-          Listes détaillées issues de la dernière photo de posture{data?.date ? ` (${new Date(data.date).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })})` : ""} : à filtrer, trier et exporter.
+          Listes détaillées issues {data?.running ? "du calcul en cours, lancé le" : "de la dernière photo de posture"}{data?.date ? ` ${data.running ? "" : "("}${new Date(data.date).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}${data.running ? "" : ")"}` : ""} : à filtrer, trier et exporter.
         </p>
       </div>
 
@@ -252,6 +256,9 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
                                 <TableCell className="text-xs max-w-[220px] truncate" title={ouFromDn(a.dn)}>{ouFromDn(a.dn) || "—"}</TableCell>
                                 <TableCell className="space-x-1 whitespace-nowrap">
                                   {(a.privileged ?? []).map((p) => <Tag key={p} tone={p === "ADMIN" ? "red" : "muted"}>{PRIV_LABELS[p] ?? p}</Tag>)}
+                                  {(a.apps ?? []).slice(0, 3).map((app) => <Tag key={app}>{app}</Tag>)}
+                                  {(a.apps?.length ?? 0) > 3 && <Tag>{`+${a.apps!.length - 3}`}</Tag>}
+                                  {(a.entraRoles?.length ?? 0) > 0 && <Tag tone="red">{`${a.entraRoles!.length} rôle${a.entraRoles!.length > 1 ? "s" : ""} Entra ID`}</Tag>}
                                   {a.inactive && <Tag tone="orange">Inactif</Tag>}
                                   {a.lockedOut && <Tag tone="orange">Verrouillé</Tag>}
                                   {a.expirationStatus === "EXPIRED" && <Tag tone="red">Expiré</Tag>}
@@ -278,12 +285,29 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
                                     </ul>
                                   </div>
                                 ) : (
+                                  <div className="space-y-2">
+                                  {(a.groups?.length ?? 0) > 0 && (
+                                    <div>
+                                      <div className="font-semibold mb-1">Groupes ({a.groups!.length}){(a.apps?.length ?? 0) > 0 && <> · applications connectées : {a.apps!.join(", ")}</>}</div>
+                                      <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-0.5">
+                                        {a.groups!.map((g) => (
+                                          <li key={g.name} className="truncate" title={g.description ?? ""}>
+                                            <span className="font-mono">{g.name}</span>
+                                            {g.inherited && <span className="text-muted-foreground"> (hérité)</span>}
+                                            {(g.apps?.length ?? 0) > 0 && <span className="text-primary"> · {g.apps!.join(", ")}</span>}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
                                   <dl className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1">
                                     {[
                                       ["E-mail", a.email], ["UPN", a.upn], ["Société", a.company],
                                       ["Dernière activité", fmtDate(a.lastActivity)], ["Créé le", fmtDate(a.created)],
                                       ["Statut du mot de passe", a.pwdStatus ? STATUS_LABELS[a.pwdStatus] ?? a.pwdStatus : ""],
                                       ["Statut d'expiration", a.expirationStatus ? STATUS_LABELS[a.expirationStatus] ?? a.expirationStatus : ""],
+                                      ["Rôles Entra ID", (a.entraRoles ?? []).join(", ")],
+                                      ["Groupes de rôles Exchange", (a.exchangeRoles ?? []).join(", ")],
                                       ["Méthodes MFA", (a.mfa ?? []).join(", ")], ["Type", a.type],
                                       ["Inactif selon Varonis", a.stale ? "Oui" : a.stale === false ? "Non" : ""],
                                       ["Description", a.description], ["DN", a.dn],
@@ -294,6 +318,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
                                       </div>
                                     ))}
                                   </dl>
+                                  </div>
                                 )}
                               </TableCell>
                             </TableRow>
