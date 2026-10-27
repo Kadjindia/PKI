@@ -12,7 +12,7 @@ import {
 import {
   ShieldAlert, AlertOctagon, Database, Bell, RefreshCw, Loader2, AlertTriangle, Inbox,
   Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks,
-  Lock, Upload, UserCog, Trash2, Hourglass, Users, Tag, Zap, Volume2,
+  Lock, Upload, UserCog, Trash2, Hourglass, Users, Tag, Volume2,
   ShieldCheck, Server, UserCheck, ExternalLink, ChevronDown, ChevronUp, Filter, X,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -24,7 +24,7 @@ import {
   summarizeAlerts, normalizeSeverity, formatStatus, alertDate, isOpen,
   computeRange, previousRange, filterByRange, dataCoverage,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
-  threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, eventsCapped, EVENTS_CAP, policyNoise,
+  threatTracking, openAgeBuckets, handlingSplit, escalationRate, policyNoise,
   verdictStats, dataSourceStats, closedByStats, openEscalations, safeAlertUrl,
   VERDICT_LABELS, ESCALATION_LABELS, type Verdict, type EscalationType,
   SEVERITY_LABELS, type ThreatFamily,
@@ -206,7 +206,6 @@ export default function VaronisPanel() {
       ages: openAgeBuckets(scoped),
       handling: handlingSplit(scoped),
       escalation: escalationRate(current),
-      spikes: eventSpikes(current),
       noise: policyNoise(current).slice(0, 8),
       taggedOpen: current.filter((a) => isOpen(a) && a.hasTaggedResource).length,
       verdicts: verdictStats(current),
@@ -712,7 +711,7 @@ export default function VaronisPanel() {
 
           {showDetails && (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card className="flex flex-col">
               <CardHeader className="pb-0">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -772,34 +771,6 @@ export default function VaronisPanel() {
                     </div>
                   ));
                 })()}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2 border-b border-border/50">
-                <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
-                  <Zap className="w-4 h-4 text-red-500" /> Pics d&apos;activité
-                </CardTitle>
-                <p className="text-[11px] text-muted-foreground">
-                  Alertes avec au moins {view.spikes.threshold} événements (activité massive : suppression, chiffrement, copie)
-                  {view.spikes.capped > 0 && <> · {view.spikes.capped} au plafond Varonis de {EVENTS_CAP.toLocaleString("fr-FR")} événements enregistrés par alerte (volume réel supérieur)</>}
-                </p>
-              </CardHeader>
-              <CardContent className="pt-3">
-                {view.spikes.spikes.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Aucun pic d&apos;activité sur la période.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {view.spikes.spikes.map((a) => (
-                      <li key={a.id} onClick={() => toggle("policy", a.policy?.name || "Politique inconnue")} title="Filtrer sur cette politique" className={`flex items-center justify-between gap-3 text-sm p-1 ${clickable(filters.policy === a.policy?.name, false)}`}>
-                        <div className="min-w-0">
-                          <div className="truncate font-medium text-foreground" title={a.policy?.name ?? ""}>{a.policy?.name ?? "—"}</div>
-                          <div className="text-[11px] text-muted-foreground">{formatDate(alertDate(a))} · {formatStatus(a.status)}</div>
-                        </div>
-                        <span className="font-mono font-black text-red-500 shrink-0">{(a.eventsCount ?? 0).toLocaleString("fr-FR")}{eventsCapped(a) ? " et +" : ""}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
               </CardContent>
             </Card>
               </div>
