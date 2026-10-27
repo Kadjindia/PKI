@@ -60,7 +60,7 @@ function Status({ r, children }: {
       )}
       {r.carriedFrom && (
         <div className="text-[11px] text-amber-600 mt-1" title={r.lastError}>
-          Valeur du {formatDateTime(r.carriedFrom)}{r.lastError ? " : le dernier calcul n'a pas abouti pour cet indicateur" : " (calcul complet de la nuit)"}
+          Valeur du {formatDateTime(r.carriedFrom)}{r.lastError ? " : le dernier calcul n'a pas abouti pour cet indicateur" : " (dernier calcul complet)"}
         </div>
       )}
     </>
@@ -241,7 +241,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
           type="button"
           onClick={() => refresh.mutate(false)}
           disabled={isLoading || refresh.isPending || Boolean(running)}
-          title={running ? "Un calcul est déjà en cours" : "Calcul rapide : tous les indicateurs et l'inventaire ; le total des dossiers sensibles reprend la valeur du calcul de la nuit"}
+          title={running ? "Un calcul est déjà en cours" : "Recalcul rapide (quelques minutes) : comptes et inventaire ; les indicateurs sur les dossiers restent ceux du dernier calcul complet"}
           className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 "
         >
           <RefreshCw className={`w-4 h-4 ${refresh.isPending || running ? "animate-spin" : ""}`} /> Recalcul rapide
@@ -250,7 +250,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
             type="button"
             onClick={() => refresh.mutate(true)}
             disabled={isLoading || refresh.isPending || Boolean(running)}
-            title={running ? "Un calcul est déjà en cours" : "Tout recalculer maintenant, y compris le total des dossiers sensibles (plus long)"}
+            title={running ? "Un calcul est déjà en cours" : "Tout recalculer maintenant, dossiers compris : long (certaines recherches Varonis sur les dossiers dépassent 20 min)"}
             className="text-sm font-semibold px-3 py-2.5 rounded-xl border border-border text-muted-foreground hover:bg-muted disabled:opacity-50"
           >
             Calcul complet
@@ -267,7 +267,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
             </div>
             <p className="text-muted-foreground">
               {running.trigger === "manual" && running.results.dataSources?.carriedFrom
-                ? "Calcul rapide : tous les indicateurs et l'inventaire sont recalculés ; le total des dossiers sensibles reprend la valeur du dernier calcul complet."
+                ? "Recalcul rapide : les comptes et l'inventaire sont recalculés ; les indicateurs sur les dossiers restent ceux du dernier calcul complet."
                 : "Calcul complet : les recherches Varonis sont lancées quelques-unes à la fois pour ne pas dépasser la limite de requêtes."}
               {latest && ` Les chiffres affichés restent ceux du ${formatDateTime(latest.started_at)} jusqu'à la fin du calcul.`}
               {state?.scheduled ? " Vous pouvez quitter la page : le calcul continue sur le serveur." : " Gardez la page ouverte pour que le calcul avance."}
