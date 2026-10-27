@@ -87,12 +87,96 @@ function Tag({ children, tone = "muted" }: { readonly children: React.ReactNode;
   return <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{children}</span>;
 }
 
+/**
+ * Groupes intégrés à forts privilèges (Active Directory) : toujours mis en avant,
+ * même quand la liste des groupes est repliée. Noms anglais et français.
+ */
+const SENSITIVE_GROUPS = [
+  /^(domain admins|admins du domaine)$/i, /^(enterprise admins|administrateurs de l'entreprise)$/i,
+  /^(schema admins|administrateurs du sch[ée]ma)$/i, /^(administrators|administrateurs)$/i,
+  /^(account operators|op[ée]rateurs de compte)$/i, /^(backup operators|op[ée]rateurs de sauvegarde)$/i,
+  /^(server operators|op[ée]rateurs de serveur)$/i, /^(print operators|op[ée]rateurs d'impression)$/i,
+  /^(group policy creator owners|propri[ée]taires cr[ée]ateurs de la strat[ée]gie de groupe)$/i,
+  /^dnsadmins$/i, /^(enterprise key admins|key admins)$/i,
+];
+const isSensitiveGroup = (name: string) => SENSITIVE_GROUPS.some((re) => re.test(name.trim()));
+const GROUPS_PAGE = 50;
+
+type Group = NonNullable<AccountItem["groups"]>[number];
+
+/** Groupes d'un compte : résumé + groupes sensibles, détail repliable (filtre, directs/hérités). */
+function GroupsPanel({ groups }: { readonly groups: Group[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [kind, setKind] = useState<"direct" | "inherited">("direct");
+  const [filter, setFilter] = useState("");
+  const [shown, setShown] = useState(GROUPS_PAGE);
+  const direct = groups.filter((g) => !g.inherited);
+  const inherited = groups.filter((g) => g.inherited);
+  const sensitive = groups.filter((g) => isSensitiveGroup(g.name));
+  const list = (kind === "direct" ? direct : inherited).filter((g) => !filter || g.name.toLowerCase().includes(filter.toLowerCase()));
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold">Groupes : {groups.length.toLocaleString("fr-FR")}</span>
+        <span className="text-muted-foreground">({direct.length.toLocaleString("fr-FR")} directs · {inherited.length.toLocaleString("fr-FR")} hérités)</span>
+        <button type="button" onClick={() => setExpanded(!expanded)} className="text-primary font-semibold hover:underline">
+          {expanded ? "Masquer" : "Afficher"}
+        </button>
+      </div>
+      {sensitive.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-red-600 font-semibold">Groupes à forts privilèges :</span>
+          {sensitive.map((g) => <Tag key={g.name} tone="red">{g.name}{g.inherited ? " (hérité)" : ""}</Tag>)}
+        </div>
+      )}
+      {expanded && (
+        <div className="space-y-1.5 border-l-2 border-border pl-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {(["direct", "inherited"] as const).map((k) => (
+              <button key={k} type="button" onClick={() => { setKind(k); setShown(GROUPS_PAGE); }}
+                className={`px-2 py-0.5 rounded ${kind === k ? "bg-primary/15 text-primary font-semibold" : "text-muted-foreground hover:bg-muted"}`}>
+                {k === "direct" ? `Directs (${direct.length})` : `Hérités (${inherited.length})`}
+              </button>
+            ))}
+            <input
+              aria-label="Filtrer les groupes"
+              value={filter}
+              onChange={(e) => { setFilter(e.target.value); setShown(GROUPS_PAGE); }}
+              placeholder="Filtrer les groupes…"
+              className="px-2 py-0.5 rounded border border-border bg-background w-48"
+            />
+          </div>
+          <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-0.5">
+            {list.slice(0, shown).map((g) => (
+              <li key={g.name} className="truncate" title={g.description ?? g.name}>
+                <span className={`font-mono ${isSensitiveGroup(g.name) ? "text-red-600 font-semibold" : ""}`}>{g.name}</span>
+                {(g.apps?.length ?? 0) > 0 && <span className="text-primary"> · {g.apps!.join(", ")}</span>}
+              </li>
+            ))}
+          </ul>
+          {list.length === 0 && <p className="text-muted-foreground">Aucun groupe.</p>}
+          {list.length > shown && (
+            <button type="button" onClick={() => setShown(shown + GROUPS_PAGE * 4)} className="text-primary font-semibold hover:underline">
+              Afficher plus ({(list.length - shown).toLocaleString("fr-FR")} restants)
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function VaronisAccountsInventory({ list, onListChange }: { readonly list: InventoryList; readonly onListChange: (l: InventoryList) => void }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "name", dir: 1 });
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState<number | null>(null);
+  // Listes d'administrateurs : vue « par application » (applications connectées via les groupes)
+  const [byApp, setByApp] = useState(false);
+  const [openApp, setOpenApp] = useState<string | null>(null);
   const def = INVENTORY_LISTS.find((l) => l.key === list)!;
+  const canByApp = list === "admins" || list === "adminsInactive";
+  const appView = canByApp && byApp;
 
   const { data, error, isLoading } = useQuery({
     queryKey: ["varonis-inventory", list],
@@ -109,12 +193,21 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
     return filtered.sort((a, b) => (by(a) < by(b) ? -sort.dir : by(a) > by(b) ? sort.dir : 0));
   }, [data, search, sort]);
   const pageRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  // Application → administrateurs qui y ont accès (comptes affichés, recherche comprise)
+  const apps = useMemo(() => {
+    const map = new Map<string, AccountItem[]>();
+    for (const a of rows as AccountItem[]) for (const app of a.apps ?? []) map.set(app, [...(map.get(app) ?? []), a]);
+    return [...map.entries()].map(([name, admins]) => ({ name, admins })).sort((x, y) => y.admins.length - x.admins.length || x.name.localeCompare(y.name));
+  }, [rows]);
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
 
-  const changeList = (l: InventoryList) => { onListChange(l); setPage(0); setOpen(null); setSearch(""); };
+  const changeList = (l: InventoryList) => { onListChange(l); setPage(0); setOpen(null); setOpenApp(null); setSearch(""); };
 
   const exportCsv = () => {
-    const csv = def.owners
+    const csv = appView
+      ? toCsv(apps.map((x) => ({ app: x.name, count: x.admins.length, admins: x.admins.map((a) => a.sam ?? a.name).join(", ") })),
+          [{ key: "app", label: "Application" }, { key: "count", label: "Administrateurs" }, { key: "admins", label: "Comptes" }])
+      : def.owners
       ? toCsv((rows as OwnerItem[]).map((o) => ({ ...o, size: formatBytes(o.sizeBytes), folders: o.folders.map((f) => f.path).join(" | ") })), OWNER_CSV)
       : toCsv((rows as AccountItem[]).map((a) => ({
           ...a, ou: ouFromDn(a.dn), bucket: bucketLabel(a.bucket),
@@ -127,7 +220,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = `varonis-${list}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `varonis-${list}${appView ? "-applications" : ""}-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -164,6 +257,16 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
               <p className="text-xs text-muted-foreground">{def.help}</p>
             </div>
             <div className="flex items-center gap-2">
+              {canByApp && (
+                <div className="flex rounded-lg border border-border overflow-hidden text-xs">
+                  {[false, true].map((v) => (
+                    <button key={String(v)} type="button" onClick={() => setByApp(v)}
+                      className={`px-2.5 py-1.5 ${byApp === v ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}>
+                      {v ? "Par application" : "Par compte"}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="relative">
                 <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
                 <input
@@ -192,6 +295,37 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
             <p className="text-sm text-destructive">{(error as Error).message}</p>
           ) : !data?.available ? (
             <p className="text-sm text-muted-foreground py-6 text-center">Liste disponible après le prochain calcul de la posture (bouton « Recalcul rapide » de l&apos;onglet Posture, ou calcul de la nuit).</p>
+          ) : appView ? (
+            apps.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">
+                Aucune application connectée renvoyée par Varonis pour ces administrateurs. Varonis ne relie aux groupes que les
+                applications Microsoft 365 (Teams, boîtes partagées…) ; pour les applications métier, cherchez leur nom dans les groupes.
+              </p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {apps.map((x) => (
+                  <li key={x.name} className="py-2">
+                    <button type="button" onClick={() => setOpenApp(openApp === x.name ? null : x.name)} className="w-full flex items-center justify-between gap-3 text-left">
+                      <span className="flex items-center gap-2 font-medium">
+                        {openApp === x.name ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+                        {x.name}
+                      </span>
+                      <span className="text-sm"><b>{x.admins.length}</b> administrateur{x.admins.length > 1 ? "s" : ""}</span>
+                    </button>
+                    {openApp === x.name && (
+                      <ul className="mt-2 ml-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-0.5 text-xs">
+                        {x.admins.map((a, j) => (
+                          <li key={j} className="truncate">
+                            <span className="font-medium">{a.name ?? a.sam}</span> <span className="font-mono text-muted-foreground">{a.sam}</span>
+                            {a.inactive && <> <Tag tone="orange">Inactif</Tag></>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )
           ) : rows.length === 0 ? (
             <p className="text-sm text-emerald-600 py-6 text-center">{search ? "Aucun résultat pour cette recherche." : "Aucun compte dans cette liste."}</p>
           ) : (
@@ -256,8 +390,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
                                 <TableCell className="text-xs max-w-[220px] truncate" title={ouFromDn(a.dn)}>{ouFromDn(a.dn) || "—"}</TableCell>
                                 <TableCell className="space-x-1 whitespace-nowrap">
                                   {(a.privileged ?? []).map((p) => <Tag key={p} tone={p === "ADMIN" ? "red" : "muted"}>{PRIV_LABELS[p] ?? p}</Tag>)}
-                                  {(a.apps ?? []).slice(0, 3).map((app) => <Tag key={app}>{app}</Tag>)}
-                                  {(a.apps?.length ?? 0) > 3 && <Tag>{`+${a.apps!.length - 3}`}</Tag>}
+                                  {(a.apps?.length ?? 0) > 0 && <Tag>{`${a.apps!.length} appli${a.apps!.length > 1 ? "s" : ""}`}</Tag>}
                                   {(a.entraRoles?.length ?? 0) > 0 && <Tag tone="red">{`${a.entraRoles!.length} rôle${a.entraRoles!.length > 1 ? "s" : ""} Entra ID`}</Tag>}
                                   {a.inactive && <Tag tone="orange">Inactif</Tag>}
                                   {a.lockedOut && <Tag tone="orange">Verrouillé</Tag>}
@@ -286,20 +419,15 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
                                   </div>
                                 ) : (
                                   <div className="space-y-2">
-                                  {(a.groups?.length ?? 0) > 0 && (
-                                    <div>
-                                      <div className="font-semibold mb-1">Groupes ({a.groups!.length}){(a.apps?.length ?? 0) > 0 && <> · applications connectées : {a.apps!.join(", ")}</>}</div>
-                                      <ul className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-0.5">
-                                        {a.groups!.map((g) => (
-                                          <li key={g.name} className="truncate" title={g.description ?? ""}>
-                                            <span className="font-mono">{g.name}</span>
-                                            {g.inherited && <span className="text-muted-foreground"> (hérité)</span>}
-                                            {(g.apps?.length ?? 0) > 0 && <span className="text-primary"> · {g.apps!.join(", ")}</span>}
-                                          </li>
-                                        ))}
-                                      </ul>
+                                  {a.groups !== undefined && (
+                                    <div className="flex flex-wrap items-center gap-1">
+                                      <span className="font-semibold">Applications connectées ({a.apps?.length ?? 0}) :</span>
+                                      {(a.apps?.length ?? 0) > 0
+                                        ? a.apps!.map((app) => <Tag key={app}>{app}</Tag>)
+                                        : <span className="text-muted-foreground">aucune (Varonis ne relie aux groupes que les applications Microsoft 365 : Teams, boîtes partagées…)</span>}
                                     </div>
                                   )}
+                                  {(a.groups?.length ?? 0) > 0 && <GroupsPanel groups={a.groups!} />}
                                   <dl className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1">
                                     {[
                                       ["E-mail", a.email], ["UPN", a.upn], ["Société", a.company],
