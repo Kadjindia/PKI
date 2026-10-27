@@ -336,14 +336,21 @@ function median(values: number[]): number {
  * Alertes au nombre d'événements anormalement élevé (≥ 5 fois la médiane de
  * la période, et au moins 50) : activité massive (suppression, chiffrement, copie).
  */
-export function eventSpikes(alerts: VaronisAlert[], limit = 5): { threshold: number; spikes: VaronisAlert[] } {
+/** Nombre d'événements enregistrés par alerte au-delà duquel Varonis plafonne (5 000). */
+export const EVENTS_CAP = 5000;
+
+/** Vrai si le nombre d'événements d'une alerte a atteint le plafond Varonis (vrai volume inconnu). */
+export const eventsCapped = (a: VaronisAlert) => (a.eventsCount ?? 0) >= EVENTS_CAP;
+
+export function eventSpikes(alerts: VaronisAlert[], limit = 5): { threshold: number; spikes: VaronisAlert[]; capped: number } {
   const counts = alerts.map((a) => a.eventsCount ?? 0).filter((c) => c > 0);
   const threshold = Math.max(50, Math.ceil(median(counts) * 5));
-  const spikes = alerts
-    .filter((a) => (a.eventsCount ?? 0) >= threshold)
-    .sort((a, b) => (b.eventsCount ?? 0) - (a.eventsCount ?? 0))
+  const all = alerts.filter((a) => (a.eventsCount ?? 0) >= threshold);
+  // Plus gros volume d'abord ; à égalité (souvent au plafond), la plus récente d'abord
+  const spikes = all
+    .sort((a, b) => (b.eventsCount ?? 0) - (a.eventsCount ?? 0) || (alertDate(b)?.getTime() ?? 0) - (alertDate(a)?.getTime() ?? 0))
     .slice(0, limit);
-  return { threshold, spikes };
+  return { threshold, spikes, capped: all.filter(eventsCapped).length };
 }
 
 export interface PolicyNoise {

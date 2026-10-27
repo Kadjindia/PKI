@@ -24,7 +24,7 @@ import {
   summarizeAlerts, normalizeSeverity, formatStatus, alertDate, isOpen,
   computeRange, previousRange, filterByRange, dataCoverage,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
-  threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
+  threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, eventsCapped, EVENTS_CAP, policyNoise,
   verdictStats, dataSourceStats, closedByStats, openEscalations, safeAlertUrl,
   VERDICT_LABELS, ESCALATION_LABELS, type Verdict, type EscalationType,
   SEVERITY_LABELS, type ThreatFamily,
@@ -781,6 +781,7 @@ export default function VaronisPanel() {
                 </CardTitle>
                 <p className="text-[11px] text-muted-foreground">
                   Alertes avec au moins {view.spikes.threshold} événements (activité massive : suppression, chiffrement, copie)
+                  {view.spikes.capped > 0 && <> · {view.spikes.capped} au plafond Varonis de {EVENTS_CAP.toLocaleString("fr-FR")} événements enregistrés par alerte (volume réel supérieur)</>}
                 </p>
               </CardHeader>
               <CardContent className="pt-3">
@@ -794,7 +795,7 @@ export default function VaronisPanel() {
                           <div className="truncate font-medium text-foreground" title={a.policy?.name ?? ""}>{a.policy?.name ?? "—"}</div>
                           <div className="text-[11px] text-muted-foreground">{formatDate(alertDate(a))} · {formatStatus(a.status)}</div>
                         </div>
-                        <span className="font-mono font-black text-red-500 shrink-0">{(a.eventsCount ?? 0).toLocaleString("fr-FR")}</span>
+                        <span className="font-mono font-black text-red-500 shrink-0">{(a.eventsCount ?? 0).toLocaleString("fr-FR")}{eventsCapped(a) ? " et +" : ""}</span>
                       </li>
                     ))}
                   </ul>
