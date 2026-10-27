@@ -746,12 +746,13 @@ const STEP_LEASE_MS = 120_000; // verrou pendant une étape (évite deux étapes
 const RATE_LIMIT_BACKOFF_MS = 120_000; // pause après un refus « trop de requêtes »
 const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
 // Recherche que Varonis n'a pas terminée dans ce délai : relancée une seule fois.
-// Varonis laisse parfois un job en attente indéfiniment, sans erreur.
-const JOB_TIMEOUT_MS = 10 * 60 * 1000;
+// Les recherches sur les dossiers prennent plus de 5 min chez Varonis (millions de
+// dossiers) : le délai ne doit couper qu'une recherche réellement bloquée.
+const JOB_TIMEOUT_MS = 30 * 60 * 1000;
 const TIMEOUT_ATTEMPTS = 2;
 // Calcul manuel (rapide) : plus de recherches en parallèle, pas de relance d'une
 // recherche bloquée (la valeur précédente est reprise)
-const MANUAL_JOB_TIMEOUT_MS = 5 * 60 * 1000;
+const MANUAL_JOB_TIMEOUT_MS = 20 * 60 * 1000;
 const MANUAL_TIMEOUT_ATTEMPTS = 1;
 const MANUAL_MAX_RUNNING_JOBS = 6;
 const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000; // au-delà, ce qui reste est abandonné (une recherche par source de données)
@@ -951,7 +952,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
           const rows = (job.results ?? []) as Row[];
           const seconds = entry.startedAt ? Math.round((now - new Date(entry.startedAt).getTime()) / 1000) : null;
-          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, seconds, ...q.summarize(rows, ref) };
+          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, seconds, doneAt: new Date(now).toISOString(), ...q.summarize(rows, ref) };
         } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
           results[key] = failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
         } else {
@@ -1081,11 +1082,19 @@ const INVENTORY_LISTS: Record<string, (r: Record<string, Row>) => Row[] | undefi
 async function postureInventory(admin: Admin, list: string) {
   const pick = INVENTORY_LISTS[list];
   if (!pick) return jsonResponse({ error: "Liste inconnue" }, 400);
-  const { data, error } = await admin.from("varonis_posture_snapshots").select("started_at, results")
-    .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
-  if (error) throw new Error(error.message);
-  const items = data ? pick(data.results ?? {}) : undefined;
-  return jsonResponse({ date: data?.started_at ?? null, available: Boolean(items), items: items ?? [] });
+  // Calcul en cours : sa liste dès qu'elle est prête (non reprise), sinon la dernière photo
+  for (const status of ["running", "done"]) {
+    const { data, error } = await admin.from("varonis_posture_snapshots").select("started_at, results")
+      .eq("status", status).order("started_at", { ascending: false }).limit(1).maybeSingle();
+    if (error) throw new Error(error.message);
+    const all = (data?.results ?? {}) as Record<string, Row>;
+    // Calcul en cours : seulement les recherches terminées et non reprises d'une photo antérieure
+    const results = status === "done" ? all
+      : Object.fromEntries(Object.entries(all).filter(([, v]) => v.status === "done" && !v.carriedFrom));
+    const items = data ? pick(results) : undefined;
+    if (items) return jsonResponse({ date: data!.started_at, running: status === "running", available: true, items });
+  }
+  return jsonResponse({ date: null, available: false, items: [] });
 }
 
 /**

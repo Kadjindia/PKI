@@ -17,7 +17,7 @@ import {
 
 type Item = AccountItem | OwnerItem;
 
-async function fetchInventory(list: InventoryList): Promise<{ date: string | null; available: boolean; items: Item[] }> {
+async function fetchInventory(list: InventoryList): Promise<{ date: string | null; running?: boolean; available: boolean; items: Item[] }> {
   const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action: "posture-inventory", list } });
   if (error) {
     if (error instanceof FunctionsHttpError) {
@@ -99,6 +99,8 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
     queryFn: () => fetchInventory(list),
     staleTime: 30 * 60 * 1000,
     retry: false,
+    // Liste issue d'un calcul en cours : rafraîchie toutes les minutes
+    refetchInterval: (q) => (q.state.data?.running ? 60_000 : false),
   });
 
   const rows = useMemo(() => {
@@ -137,7 +139,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
           <Users className="w-6 h-6 text-primary" /> Inventaire des comptes
         </h3>
         <p className="text-sm text-muted-foreground">
-          Listes détaillées issues de la dernière photo de posture{data?.date ? ` (${new Date(data.date).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })})` : ""} : à filtrer, trier et exporter.
+          Listes détaillées issues {data?.running ? "du calcul en cours, lancé le" : "de la dernière photo de posture"}{data?.date ? ` ${data.running ? "" : "("}${new Date(data.date).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}${data.running ? "" : ")"}` : ""} : à filtrer, trier et exporter.
         </p>
       </div>
 

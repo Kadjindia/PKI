@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
-  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, seriesFor, compareSeries, ouFromDn, matchesSearch, toCsv,
+  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, seriesFor, compareSeries, ouFromDn, matchesSearch, toCsv, mergeRunning,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -118,5 +118,30 @@ describe("posture Varonis : mise en forme", () => {
     expect(matchesSearch({ name: "Jean" }, "paul")).toBe(false);
     const csv = toCsv([{ name: 'A;B', n: 2 }, { name: 'C"D' }], [{ key: "name", label: "Nom" }, { key: "n", label: "N" }]);
     expect(csv).toBe('\uFEFFNom;N\r\n"A;B";2\r\n"C""D";');
+  });
+
+  it("met à jour au fil de l'eau sans mélanger deux calculs du total", () => {
+    const latest = {
+      zonesStale: { status: "done" as const, count: 600 },
+      privileged: { status: "done" as const, count: 10, admins: 235 },
+      dataSources: { status: "done" as const, expanded: true },
+      "zonesTotal:1": { status: "done" as const, count: 100 },
+    };
+    const running = {
+      zonesStale: { status: "pending" as const },
+      privileged: { status: "done" as const, count: 11, admins: 236, doneAt: "2026-10-27T15:00:00Z" },
+      zonesStaleOwner: { status: "done" as const, count: 1, carriedFrom: "2026-10-27T04:00:00Z" },
+      dataSources: { status: "done" as const, expanded: true },
+      "zonesTotal:1": { status: "done" as const, count: 90 },
+      "zonesTotal:2": { status: "pending" as const },
+    };
+    const m = mergeRunning(latest, running);
+    expect(m.zonesStale?.count).toBe(600); // pas encore recalculé
+    expect(m.privileged).toMatchObject({ admins: 236, fresh: true });
+    expect(m.zonesStaleOwner).toBeUndefined(); // valeur reprise : pas une mise à jour
+    expect(m["zonesTotal:1"]?.count).toBe(100); // total incomplet : on garde l'ancien
+    const done = mergeRunning(latest, { ...running, "zonesTotal:2": { status: "done" as const, count: 5 } });
+    expect(done["zonesTotal:1"]).toMatchObject({ count: 90, fresh: true });
+    expect(mergeRunning(undefined, undefined)).toEqual({});
   });
 });

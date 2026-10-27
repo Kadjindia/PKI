@@ -10,7 +10,7 @@ import {
   RefreshCw, Loader2, AlertTriangle, Info, Clock,
 } from "lucide-react";
 import {
-  formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal, zoneTotal,
+  formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal, zoneTotal, mergeRunning,
   allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
   type PostureResults, type PostureState, type ZoneIssueKey, type ZoneResult, type InventoryList,
 } from "@/lib/varonisPosture";
@@ -37,7 +37,7 @@ const formatDay = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateStri
 
 /** État d'une requête : chargement, erreur ou contenu. */
 function Status({ r, children }: {
-  readonly r?: { status: string; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
+  readonly r?: { status: string; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string; fresh?: boolean; doneAt?: string };
   readonly children: React.ReactNode;
 }) {
   if (!r) return <span className="text-sm text-muted-foreground">—</span>;
@@ -55,6 +55,9 @@ function Status({ r, children }: {
   return (
     <>
       {children}
+      {r.fresh && r.doneAt && (
+        <div className="text-[11px] text-emerald-600 mt-1">Mis à jour à {new Date(r.doneAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} (calcul en cours)</div>
+      )}
       {r.carriedFrom && (
         <div className="text-[11px] text-amber-600 mt-1" title={r.lastError}>
           Valeur du {formatDateTime(r.carriedFrom)}{r.lastError ? " : le dernier calcul n'a pas abouti pour cet indicateur" : " (calcul complet de la nuit)"}
@@ -76,7 +79,7 @@ function Help({ children }: { readonly children: React.ReactNode }) {
   );
 }
 
-type KpiValue = { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string };
+type KpiValue = { status: string; count?: number; capped?: boolean; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string; fresh?: boolean; doneAt?: string };
 
 /** Chiffre clé : titre court, grand nombre, une ligne de contexte, définition dans ⓘ. */
 function Kpi({ title, help, icon: Icon, color, r, sub, onClick, active }: {
@@ -178,7 +181,8 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
   const latest = state?.latest ?? null;
   const running = state?.running ?? null;
   // Sans photo terminée, on montre la photo en cours (les blocs se remplissent au fur et à mesure)
-  const r: PostureResults = latest?.results ?? running?.results ?? {};
+  // Pendant un calcul : chaque indicateur terminé remplace aussitôt l'ancien
+  const r: PostureResults = mergeRunning(latest?.results, running?.results);
 
   // Horloge pour la durée du calcul en cours
   const [now, setNow] = useState(() => Date.now());
