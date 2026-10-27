@@ -366,3 +366,13 @@ describe("filtres croisés", () => {
     expect(isFiltered(applyFilterPatch(patched, { state: "open", severity: ["high"] }))).toBe(false);
   });
 });
+
+describe("pics d'activité au plafond Varonis", () => {
+  it("signale le plafond et départage par date", () => {
+    const mk = (id: string, n: number, d: string) => ({ id, status: "Closed", eventsCount: n, generationTime: { dateTimeUtc: d } }) as VaronisAlert;
+    const list = [mk("a", 5000, "2026-10-06T10:00:00Z"), mk("b", 5000, "2026-10-20T10:00:00Z"), ...Array.from({ length: 6 }, (_, i) => mk(`n${i}`, 3, "2026-10-01T10:00:00Z"))];
+    const r = eventSpikes(list);
+    expect(r.spikes.map((a) => a.id)).toEqual(["b", "a"]);
+    expect(r.capped).toBe(2);
+  });
+});
