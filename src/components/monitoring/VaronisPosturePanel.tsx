@@ -20,8 +20,8 @@ import {
 // calcul, l'écran revient toutes les 20 s, ce qui fait aussi avancer le calcul.
 const RUNNING_POLL_MS = 20_000;
 
-async function callPosture(action: "posture-status" | "posture-refresh"): Promise<PostureState> {
-  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action } });
+async function callPosture(action: "posture-status" | "posture-refresh", full = false): Promise<PostureState> {
+  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action, full } });
   if (error) {
     if (error instanceof FunctionsHttpError) {
       const errBody = await error.context.json().catch(() => null);
@@ -57,7 +57,7 @@ function Status({ r, children }: {
       {children}
       {r.carriedFrom && (
         <div className="text-[11px] text-amber-600 mt-1" title={r.lastError}>
-          Valeur du {formatDateTime(r.carriedFrom)} : le dernier calcul n&apos;a pas abouti pour cet indicateur
+          Valeur du {formatDateTime(r.carriedFrom)}{r.lastError ? " : le dernier calcul n'a pas abouti pour cet indicateur" : " (calcul complet de la nuit)"}
         </div>
       )}
     </>
@@ -171,7 +171,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
     refetchInterval: (q) => (q.state.data?.running ? RUNNING_POLL_MS : false),
   });
   const refresh = useMutation({
-    mutationFn: () => callPosture("posture-refresh"),
+    mutationFn: (full: boolean) => callPosture("posture-refresh", full),
     onSuccess: (next) => queryClient.setQueryData(["varonis-posture"], next),
   });
 
@@ -232,15 +232,26 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               : isLoading ? "Chargement…" : "Aucune photo terminée pour l'instant"}
           </p>
         </div>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
         <button
           type="button"
-          onClick={() => refresh.mutate()}
+          onClick={() => refresh.mutate(false)}
           disabled={isLoading || refresh.isPending || Boolean(running)}
-          title={running ? "Un calcul est déjà en cours" : "Recalculer la posture maintenant (quelques minutes)"}
-          className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 self-start sm:self-auto"
+          title={running ? "Un calcul est déjà en cours" : "Calcul rapide : tous les indicateurs et l'inventaire ; le total des dossiers sensibles reprend la valeur du calcul de la nuit"}
+          className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 "
         >
-          <RefreshCw className={`w-4 h-4 ${refresh.isPending || running ? "animate-spin" : ""}`} /> Recalculer
+          <RefreshCw className={`w-4 h-4 ${refresh.isPending || running ? "animate-spin" : ""}`} /> Recalcul rapide
         </button>
+          <button
+            type="button"
+            onClick={() => refresh.mutate(true)}
+            disabled={isLoading || refresh.isPending || Boolean(running)}
+            title={running ? "Un calcul est déjà en cours" : "Tout recalculer maintenant, y compris le total des dossiers sensibles (plus long)"}
+            className="text-sm font-semibold px-3 py-2.5 rounded-xl border border-border text-muted-foreground hover:bg-muted disabled:opacity-50"
+          >
+            Calcul complet
+          </button>
+        </div>
       </div>
 
       {running && (
@@ -251,7 +262,9 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               Calcul en cours depuis {formatElapsed(now - new Date(running.started_at).getTime())} : {snapshotProgress(running.results).done} / {snapshotProgress(running.results).total} recherches terminées
             </div>
             <p className="text-muted-foreground">
-              Les recherches Varonis sont lancées quelques-unes à la fois pour ne pas dépasser la limite de requêtes : comptez de quelques minutes à une demi-heure.
+              {running.trigger === "manual" && running.results.dataSources?.carriedFrom
+                ? "Calcul rapide : tous les indicateurs et l'inventaire sont recalculés ; le total des dossiers sensibles reprend la valeur du dernier calcul complet."
+                : "Calcul complet : les recherches Varonis sont lancées quelques-unes à la fois pour ne pas dépasser la limite de requêtes."}
               {latest && ` Les chiffres affichés restent ceux du ${formatDateTime(latest.started_at)} jusqu'à la fin du calcul.`}
               {state?.scheduled ? " Vous pouvez quitter la page : le calcul continue sur le serveur." : " Gardez la page ouverte pour que le calcul avance."}
             </p>
@@ -271,7 +284,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
       {!isLoading && !latest && !running && !error && (
         <Card>
           <CardContent className="p-6 text-sm text-muted-foreground">
-            La posture n&apos;a encore jamais été calculée. Cliquez sur « Recalculer » pour lancer le premier calcul.
+            La posture n&apos;a encore jamais été calculée. Cliquez sur « Calcul complet » pour lancer le premier calcul.
           </CardContent>
         </Card>
       )}

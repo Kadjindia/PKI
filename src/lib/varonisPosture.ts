@@ -109,6 +109,8 @@ export function zoneTotal(r: PostureResults, topSize = 15): ZoneResult {
     files: parts.reduce((t, p) => t + (p.files ?? 0), 0),
     capped: parts.some((p) => p.capped),
     top: parts.flatMap((p) => p.top ?? []).sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0)).slice(0, topSize),
+    // Calcul manuel rapide : total repris du dernier calcul complet
+    carriedFrom: parts.find((p) => p.carriedFrom)?.carriedFrom,
   };
 }
 
