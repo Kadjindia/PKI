@@ -433,8 +433,15 @@ function ownersOf(rows: Row[]) {
 const ownerStale = (r: Row) => Boolean(r.resourceOwner?.isStale);
 const ownerDisabled = (r: Row) => Boolean(r.resourceOwner?.isDisabled);
 
+/**
+ * Champs réduits pour la recherche « droits inutilisés » : avec les champs
+ * complets (propriétaire détaillé, indicateurs calculés), Varonis ne la termine
+ * pas. Le filtre garantit déjà que ces dossiers ont des droits inutilisés.
+ */
+const LIGHT_ZONE_FIELDS = "id name path sharePaths dataSource { id name type } sizeOfResourceAndNestedResources numberOfNestedFiles";
+
 /** Les plus volumineux d'une liste de dossiers, au format affiché par l'écran. */
-function topZones(rows: Row[], size = 15) {
+function topZones(rows: Row[], size = 15, known: Row = {}) {
   return [...rows]
     .sort((a, b) => (b.sizeOfResourceAndNestedResources ?? 0) - (a.sizeOfResourceAndNestedResources ?? 0))
     .slice(0, size)
@@ -445,19 +452,20 @@ function topZones(rows: Row[], size = 15) {
       isStale: Boolean(r.isStaleIncludingSubfolders), staleAccess: Boolean(r.hasStaleAccess),
       staleOwner: ownerStale(r), disabledOwner: ownerDisabled(r),
       ownerIssue: ownerStale(r) || ownerDisabled(r),
+      ...known, // ce que le filtre de la recherche garantit
     }));
 }
 
 /** Dossiers sensibles de niveau 3 présentant un point à traiter : nombre, volume et les plus gros. */
-function zoneIssueQuery(extra: Record<string, unknown>, withOwners = false): PostureQuery {
+function zoneIssueQuery(extra: Record<string, unknown>, withOwners = false, light: Row | null = null): PostureQuery {
   return {
     asyncName: "resourcesAsync",
     jobName: "resourcesQueryJob",
     where: { isSensitive: yes, pathDepth: { eq: ZONE_DEPTH }, ...extra },
-    fields: ZONE_FIELDS,
+    fields: light ? LIGHT_ZONE_FIELDS : ZONE_FIELDS,
     summarize: (all) => {
       const rows = uniqueResources(all);
-      return { ...zoneTotals(rows), lines: all.length, top: topZones(rows), ...(withOwners ? { owners: ownersOf(rows) } : {}) };
+      return { ...zoneTotals(rows), lines: all.length, top: topZones(rows, 15, light ?? {}), ...(withOwners ? { owners: ownersOf(rows) } : {}) };
     },
   };
 }
@@ -535,7 +543,7 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
   // Dossiers sensibles de niveau 3, une recherche par point à traiter (filtrée
   // chez Varonis : chaque résultat reste loin du plafond)
   zonesStale: zoneIssueQuery({ isStaleIncludingSubfolders: yes }),
-  zonesStaleAccess: zoneIssueQuery({ hasStaleAccess: yes }),
+  zonesStaleAccess: zoneIssueQuery({ hasStaleAccess: yes }, false, { staleAccess: true }),
   // Propriétaire du dossier (compte du système de fichiers) inactif ou désactivé,
   // comme « Stale / Disabled account (Resource owner) » dans la console
   zonesStaleOwner: zoneIssueQuery({ resourceOwner: { isStale: yes } }, true), // « eq » ici, « in » pour isDisabled
