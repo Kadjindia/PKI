@@ -169,13 +169,16 @@ export default function VaronisPanel() {
     const { bucket, ...rest } = filters;
     const scoped = applyFilters(all, rest);
     const range = computeRange(timePrefix, timeValue, timeUnit);
-    const inRange = filterByRange(scoped, range);
+    // Filtres issus des blocs « toutes périodes » (arriéré, escalades, prise en charge) :
+    // la période choisie ne s'applique pas, sinon l'arriéré ancien serait toujours vide
+    const allPeriods = Boolean(rest.age || rest.escalation || rest.handling);
+    const inRange = allPeriods ? scoped : filterByRange(scoped, range);
     const current = bucket ? applyFilters(inRange, { bucket }) : inRange;
     const prevRange = previousRange(range);
     const previous = filterByRange(scoped, prevRange);
     const coverage = dataCoverage(all);
     // Pas de comparaison si la période précédente commence avant les données reçues
-    const canCompare = coverage !== null && prevRange.from >= coverage.oldest.getTime();
+    const canCompare = !allPeriods && coverage !== null && prevRange.from >= coverage.oldest.getTime();
     const granularity = granularityFor(range);
     const summary = summarizeAlerts(current, 50);
     const offHours = current.filter((a) => { const d = alertDate(a); return d ? isOffHours(d) : false; }).length;
@@ -199,6 +202,7 @@ export default function VaronisPanel() {
       insights: buildInsights(current, canCompare ? previous : [], scoped).slice(0, 6),
       threats: threatTracking(current, canCompare ? previous : []),
       canCompare,
+      allPeriods,
       ages: openAgeBuckets(scoped),
       handling: handlingSplit(scoped),
       escalation: escalationRate(current),
@@ -328,7 +332,17 @@ export default function VaronisPanel() {
       {header}
       {showDiag && <VaronisSchemaDiagnostic />}
 
-      {periodStartsBeforeData && coverage && (
+      {view.allPeriods && (
+        <div className="flex items-start gap-2 p-3 rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-600 text-sm">
+          <Info className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>
+            Filtre sur l&apos;arriéré (ancienneté, escalade ou prise en charge) : toutes les périodes sont prises en compte,
+            la période choisie est ignorée tant que ce filtre est actif.
+          </span>
+        </div>
+      )}
+
+      {periodStartsBeforeData && coverage && !view.allPeriods && (
         <div className="flex items-start gap-2 p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-500 text-sm">
           <Info className="w-4 h-4 mt-0.5 shrink-0" />
           <span>
