@@ -676,6 +676,9 @@ const STEP_INTERVAL_MS = 15_000;
 const STEP_LEASE_MS = 120_000; // verrou pendant une étape (évite deux étapes simultanées)
 const RATE_LIMIT_BACKOFF_MS = 120_000; // pause après un refus « trop de requêtes »
 const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
+// Recherche que Varonis n'a pas terminée dans ce délai : relancée (dans la limite de
+// MAX_ATTEMPTS). Varonis laisse parfois un job en attente indéfiniment, sans erreur.
+const JOB_TIMEOUT_MS = 20 * 60 * 1000;
 const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000; // au-delà, ce qui reste est abandonné (une recherche par source de données)
 const MANUAL_COOLDOWN_MS = 15 * 60 * 1000; // délai minimal entre deux calculs demandés
 // Durée de travail d'un passage de la tâche planifiée (sous la limite d'exécution
@@ -845,7 +848,11 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
           results[key] = failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
         } else {
-          results[key] = { ...entry, progress: job.jobProgress ?? null };
+          // Heure de lancement inconnue (photo antérieure) : début de la photo
+          const launched = new Date(entry.startedAt ?? claimed.started_at).getTime();
+          results[key] = now - launched > JOB_TIMEOUT_MS
+            ? failOrRetry(entry, new Error(`Varonis n'a pas terminé la recherche en ${JOB_TIMEOUT_MS / 60000} min`))
+            : { ...entry, progress: job.jobProgress ?? null };
         }
       } catch (e) {
         if (isRateLimited(e)) throw e;
@@ -883,7 +890,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         const q = queryFor(key);
         if (!q) { results[key] = { status: "error", error: "Indicateur inconnu" }; continue; }
         const jobId = await startPostureJob(baseUrl, token, q, ref);
-        results[key] = { status: "pending", jobId, attempts: entry.attempts ?? 0, progress: null };
+        results[key] = { status: "pending", jobId, attempts: entry.attempts ?? 0, progress: null, startedAt: new Date().toISOString() };
       } catch (e) {
         if (isRateLimited(e)) throw e;
         results[key] = failOrRetry(entry, e);
