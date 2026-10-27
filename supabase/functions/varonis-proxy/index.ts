@@ -678,6 +678,10 @@ const RATE_LIMIT_BACKOFF_MS = 120_000; // pause après un refus « trop de requ�
 const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
 const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000; // au-delà, ce qui reste est abandonné (une recherche par source de données)
 const MANUAL_COOLDOWN_MS = 15 * 60 * 1000; // délai minimal entre deux calculs demandés
+// Durée de travail d'un passage de la tâche planifiée (sous la limite d'exécution
+// des Edge Functions, 150 s) et marge laissée pour finir une étape
+const CRON_BUDGET_MS = 100_000;
+const STEP_MARGIN_MS = 30_000;
 const SNAPSHOT_COLUMNS = "id, status, trigger, results, last_error, started_at, finished_at";
 
 // deno-lint-ignore no-explicit-any
@@ -703,6 +707,14 @@ async function latestSnapshots(admin: Admin): Promise<{ latest: Snapshot | null;
   if (done.error) throw new Error(done.error.message);
   if (running.error) throw new Error(running.error.message);
   return { latest: done.data, running: running.data };
+}
+
+/** Photo en cours (id et début seulement, sans les résultats volumineux). */
+async function runningSnapshot(admin: Admin): Promise<Snapshot | null> {
+  const { data, error } = await admin.from("varonis_posture_snapshots").select("id, status, started_at")
+    .eq("status", "running").limit(1).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data;
 }
 
 /** Démarre une nouvelle photo (tous les indicateurs en attente). Une seule à la fois. */
@@ -800,14 +812,17 @@ const shortReason = (r: Row) => r.code === "timeout" ? "Délai dépassé" : (r.e
  * de nouveaux dans la limite autorisée, puis enregistre. Ne fait rien si une
  * autre étape est en cours ou trop récente.
  */
-async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, snap: Snapshot): Promise<void> {
+/** Résultat d'une étape : avancée, ou rien fait (étape en cours ailleurs, pause « trop de requêtes »). */
+type StepOutcome = "advanced" | "skipped" | "backoff";
+
+async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, snap: Snapshot): Promise<StepOutcome> {
   const now = Date.now();
   const { data: claimed, error: claimError } = await admin.from("varonis_posture_snapshots")
     .update({ step_lock_until: new Date(now + STEP_LEASE_MS).toISOString() })
     .eq("id", snap.id).eq("status", "running").lt("step_lock_until", new Date(now).toISOString())
     .select(SNAPSHOT_COLUMNS).maybeSingle();
   if (claimError) throw new Error(claimError.message);
-  if (!claimed) return; // étape déjà en cours ailleurs, ou trop tôt
+  if (!claimed) return "skipped"; // étape déjà en cours ailleurs, ou trop tôt
 
   const results: Record<string, Row> = { ...claimed.results };
   const ref = new Date(claimed.started_at).getTime(); // référence commune des dates de la photo
@@ -900,6 +915,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
   }).eq("id", snap.id);
   if (error) throw new Error(error.message);
   if (finished) await pruneOldLists(admin, snap.id);
+  return nextStepIn === RATE_LIMIT_BACKOFF_MS ? "backoff" : "advanced";
 }
 
 /** Listes de l'inventaire, chargées à part (action posture-inventory) : retirées ailleurs. */
@@ -989,12 +1005,24 @@ async function handlePosture(action: string, body: Row, baseUrl: string, apiKey:
     state = await latestSnapshots(admin);
   }
 
+  if (action === "posture-cron") {
+    // Tâche planifiée (toutes les 2 min) : enchaîne les étapes pendant CRON_BUDGET_MS,
+    // à STEP_INTERVAL_MS d'intervalle, au lieu d'une seule étape par passage
+    const deadline = Date.now() + CRON_BUDGET_MS;
+    let running = state.running;
+    while (running) {
+      const outcome = await advanceSnapshot(admin, baseUrl, apiKey, running);
+      running = await runningSnapshot(admin);
+      // Pause « trop de requêtes » ou étape tenue ailleurs : le passage suivant reprendra
+      if (outcome !== "advanced" || !running || Date.now() + STEP_INTERVAL_MS + STEP_MARGIN_MS > deadline) break;
+      await new Promise((r) => setTimeout(r, STEP_INTERVAL_MS + 500));
+    }
+    return jsonResponse({ running: Boolean(running) });
+  }
+
   if (state.running) {
     await advanceSnapshot(admin, baseUrl, apiKey, state.running);
     state = await latestSnapshots(admin);
-  }
-  if (action === "posture-cron") {
-    return jsonResponse({ running: Boolean(state.running), latest: state.latest?.started_at ?? null });
   }
   return jsonResponse(publicState(state));
 }
