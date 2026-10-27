@@ -809,14 +809,14 @@ const ACCOUNT_KEYS = ["privileged", "inactive90", "inactive180", "inactive365", 
  * terminée, avec leur date. Le calcul complet (manuel ou de nuit) refait tout.
  */
 async function quickReuse(admin: Admin): Promise<Record<string, Row>> {
-  const { data } = await admin.from("varonis_posture_snapshots").select("started_at, results")
+  const { data } = await admin.from("varonis_posture_snapshots").select("id, started_at, results")
     .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
   const prev = (data?.results ?? {}) as Record<string, Row>;
   if (prev.dataSources?.status !== "done") return {}; // pas de photo complète exploitable : calcul complet
   const reused: Record<string, Row> = {};
   for (const [k, v] of Object.entries(prev)) {
     if (ACCOUNT_KEYS.includes(k) || v.status !== "done" || v.split) continue;
-    reused[k] = { ...v, carriedFrom: v.carriedFrom ?? data!.started_at };
+    reused[k] = { ...await storeLists(admin, data!.id, k, v), carriedFrom: v.carriedFrom ?? data!.started_at };
   }
   reused.dataSources = { ...reused.dataSources, expanded: true };
   return reused;
@@ -919,11 +919,14 @@ async function postureHistory(admin: Admin) {
 async function carryOverFailures(admin: Admin, results: Record<string, Row>) {
   const failed = Object.keys(results).filter((k) => results[k].status === "error" && results[k].code !== "unauthorized");
   if (failed.length === 0) return;
-  const { data } = await admin.from("varonis_posture_snapshots").select("results, started_at")
+  const { data } = await admin.from("varonis_posture_snapshots").select("id, results, started_at")
     .eq("status", "done").order("started_at", { ascending: false }).limit(10);
   for (const key of failed) {
     const prev = (data ?? []).find((s: Row) => s.results?.[key]?.status === "done" && !s.results[key].carriedFrom);
-    if (prev) results[key] = { ...prev.results[key], carriedFrom: prev.started_at, lastError: shortReason(results[key]) };
+    if (prev) {
+      const kept = await storeLists(admin, prev.id, key, prev.results[key]);
+      results[key] = { ...kept, carriedFrom: prev.started_at, lastError: shortReason(results[key]) };
+    }
   }
 }
 
@@ -978,7 +981,8 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
           const rows = (job.results ?? []) as Row[];
           const seconds = entry.startedAt ? Math.round((now - new Date(entry.startedAt).getTime()) / 1000) : null;
-          results[key] = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, seconds, doneAt: new Date(now).toISOString(), ...q.summarize(rows, ref) };
+          const done: Row = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, seconds, doneAt: new Date(now).toISOString(), ...q.summarize(rows, ref) };
+          results[key] = await storeLists(admin, snap.id, key, done);
         } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
           results[key] = failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
         } else {
@@ -1076,6 +1080,51 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
 /** Listes de l'inventaire, chargées à part (action posture-inventory) : retirées ailleurs. */
 const LIST_FIELDS = ["items", "serviceItems", "owners", "groupsByAdmin"];
 
+/**
+ * Range les listes d'un résultat dans varonis_posture_lists et ne laisse dans la
+ * photo qu'une référence : { lists: [champs], listsFrom: id de la photo }. Une
+ * valeur reprise d'une photo antérieure garde ainsi sa référence d'origine.
+ */
+async function storeLists(admin: Admin, snapshotId: string, key: string, entry: Row): Promise<Row> {
+  const fields = LIST_FIELDS.filter((f) => entry[f] !== undefined);
+  if (fields.length === 0) return entry;
+  const rows = fields.map((field) => ({ snapshot_id: snapshotId, key, field, items: entry[field] }));
+  const { error } = await admin.from("varonis_posture_lists").upsert(rows);
+  if (error) throw new Error(`Enregistrement des listes (${key}) : ${error.message}`);
+  const light: Row = { ...entry, lists: fields, listsFrom: snapshotId };
+  for (const f of fields) delete light[f];
+  return light;
+}
+
+/**
+ * Recharge dans une copie des résultats les listes demandées ([recherche, champ]) :
+ * depuis la table dédiée, ou telles quelles si la photo les contient encore (photos
+ * antérieures à la table).
+ */
+async function withLists(admin: Admin, results: Record<string, Row>, wanted: [string, string][]): Promise<Record<string, Row>> {
+  const out: Record<string, Row> = { ...results };
+  for (const [key, field] of wanted) {
+    const entry = results[key];
+    if (!entry || entry[field] !== undefined || !entry.lists?.includes(field)) continue;
+    const { data, error } = await admin.from("varonis_posture_lists").select("items")
+      .eq("snapshot_id", entry.listsFrom).eq("key", key).eq("field", field).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (data) out[key] = { ...out[key], [field]: data.items };
+  }
+  return out;
+}
+
+/** Listes nécessaires à chaque liste de l'inventaire. */
+const INVENTORY_SOURCES: Record<string, [string, string][]> = {
+  admins: [["privileged", "items"], ["adminMemberships", "groupsByAdmin"]],
+  adminsInactive: [["privileged", "items"], ["adminMemberships", "groupsByAdmin"]],
+  services: [["privileged", "serviceItems"]],
+  expired: [["expiredEnabled", "items"]],
+  inactive: INACTIVE_BUCKETS.map((b) => [b.key, "items"] as [string, string]),
+  ownersStale: [["zonesStaleOwner", "owners"]],
+  ownersDisabled: [["zonesDisabledOwner", "owners"]],
+};
+
 /** Rattache à chaque administrateur ses groupes et les applications connectées. */
 function withGroups(r: Record<string, Row>, items: Row[] | undefined): Row[] | undefined {
   const byAdmin = r.adminMemberships?.groupsByAdmin as Record<string, Row[]> | undefined;
@@ -1120,21 +1169,37 @@ async function postureInventory(admin: Admin, list: string) {
     // Calcul en cours : seulement les recherches terminées et non reprises d'une photo antérieure
     const results = status === "done" ? all
       : Object.fromEntries(Object.entries(all).filter(([, v]) => v.status === "done" && !v.carriedFrom));
-    const items = data ? pick(results) : undefined;
+    const items = data ? pick(await withLists(admin, results, INVENTORY_SOURCES[list])) : undefined;
     if (items) return jsonResponse({ date: data!.started_at, running: status === "running", available: true, items });
   }
   return jsonResponse({ date: null, available: false, items: [] });
 }
 
 /**
- * Les listes de l'inventaire ne sont gardées que sur les 3 dernières photos :
- * la 4e plus récente est allégée à chaque fin de calcul (ses chiffres restent).
+ * Les listes de l'inventaire ne sont gardées que pour les 3 dernières photos (et
+ * les photos d'où elles reprennent des valeurs). Les photos antérieures à la table
+ * des listes sont allégées de la même façon (leurs chiffres restent).
  */
 async function pruneOldLists(admin: Admin, keepId: string) {
+  // Table des listes : on garde celles référencées par les 3 dernières photos terminées
+  // et le calcul en cours (une valeur reprise pointe vers sa photo d'origine)
+  const { data: recent } = await admin.from("varonis_posture_snapshots").select("id, results")
+    .in("status", ["done", "running"]).order("started_at", { ascending: false }).limit(4);
+  const keep = new Set<string>([keepId]);
+  for (const row of (recent ?? []) as Row[]) {
+    keep.add(row.id);
+    for (const v of Object.values(row.results ?? {}) as Row[]) if (v?.listsFrom) keep.add(v.listsFrom);
+  }
+  if (keep.size > 0) {
+    await admin.from("varonis_posture_lists").delete().not("snapshot_id", "in", `(${[...keep].join(",")})`);
+  }
+
   const { data } = await admin.from("varonis_posture_snapshots").select("id, results")
     .eq("status", "done").order("started_at", { ascending: false }).range(3, 3);
   for (const row of (data ?? []) as Row[]) {
     if (row.id === keepId) continue; // garde-fou : jamais la photo qui vient de se terminer
+    const inline = Object.values(row.results ?? {}).some((v) => LIST_FIELDS.some((f) => (v as Row)?.[f] !== undefined));
+    if (!inline) continue; // photos récentes : listes déjà rangées à part
     const results = Object.fromEntries(Object.entries(row.results ?? {}).map(([k, v]) => {
       const copy = { ...(v as Row) };
       for (const f of LIST_FIELDS) delete copy[f];

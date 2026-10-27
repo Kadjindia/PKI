@@ -115,7 +115,7 @@ La posture (10 recherches Varonis sur des millions d'objets) n'est pas calculée
 
 Mise en place :
 
-1. appliquer les migrations `20261023090000_varonis_posture_snapshots.sql` et `20261027090000_varonis_posture_summary.sql` (résumé de chaque photo, pour l'évolution dans le temps) ;
+1. appliquer les migrations `20261023090000_varonis_posture_snapshots.sql` et `20261027090000_varonis_posture_summary.sql` (résumé de chaque photo, pour l'évolution dans le temps) et `20261028090000_varonis_posture_lists.sql` (listes de l'inventaire rangées à part, pour des photos légères) ;
 2. ajouter le secret `POSTURE_CRON_SECRET` et redéployer `varonis-proxy` ;
 3. exécuter une fois `supabase/sql/planification_posture_varonis.sql` (pg_cron + pg_net) après y avoir renseigné l'URL de la fonction, la clé anon et le secret : calcul chaque nuit à 4 h UTC, avancement toutes les 2 minutes.
 
