@@ -4,6 +4,7 @@ import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import VaronisPostureHistory from "./VaronisPostureHistory";
 import {
   Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users, X,
   RefreshCw, Loader2, AlertTriangle, Info, Clock,
@@ -342,6 +343,9 @@ export default function VaronisPosturePanel() {
             : `sur ${formatCount(priv.admins)} : ${formatCount(priv.staleOld)} sans connexion depuis ${INACTIVE_DAYS} j · ${formatCount(priv.staleNoLogon)} sans date de connexion`)}
         />
       </div>
+
+      {/* ÉVOLUTION DANS LE TEMPS */}
+      <VaronisPostureHistory />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* DOSSIERS SENSIBLES À TRAITER */}

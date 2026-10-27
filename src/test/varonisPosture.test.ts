@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
-  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal,
+  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, seriesFor, compareSeries,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -90,5 +90,23 @@ describe("posture Varonis : mise en forme", () => {
     });
     expect(t).toMatchObject({ status: "done", count: 5, sizeBytes: 40, files: 6, capped: true });
     expect(t.top?.map((z) => z.name)).toEqual(["B", "A"]);
+  });
+
+  it("construit l'évolution d'un indicateur et la compare", () => {
+    const pts = [
+      { date: "2026-10-27T04:00:00Z", values: { zonesStale: 600, exposed: null } },
+      { date: "2026-11-10T04:00:00Z", values: { zonesStale: 580 } },
+      { date: "2026-11-27T04:00:00Z", values: { zonesStale: 550, exposed: 12 } },
+    ];
+    expect(seriesFor(pts, "exposed")).toHaveLength(1);
+    const s = seriesFor(pts, "zonesStale");
+    expect(s.map((p) => p.value)).toEqual([600, 580, 550]);
+    // il y a 30 jours : photo du 27/10
+    expect(compareSeries(s, 30)).toMatchObject({ delta: -50, sinceStart: false, ref: { value: 600 } });
+    // il y a 7 jours : photo du 10/11
+    expect(compareSeries(s, 7)?.ref.value).toBe(580);
+    // historique trop court pour 90 jours : comparaison avec la première photo
+    expect(compareSeries(s, 90)).toMatchObject({ sinceStart: true, ref: { value: 600 } });
+    expect(compareSeries(seriesFor(pts, "exposed"), 30)).toBeNull();
   });
 });

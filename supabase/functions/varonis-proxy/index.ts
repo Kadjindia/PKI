@@ -669,6 +669,66 @@ function failOrRetry(entry: Row, e: unknown): Row {
 }
 
 /** Reprend, pour un indicateur en échec, la dernière valeur connue (avec sa date). */
+// ---------------------------------------------------------------------------
+// Évolution dans le temps : chiffres clés de chaque photo terminée
+// ---------------------------------------------------------------------------
+
+/**
+ * Début de l'historique : définitions des indicateurs stabilisées (dédoublonnage,
+ * propriétaires, tranches d'ancienneté, comptes expirés). Les photos antérieures
+ * ne sont pas comparables.
+ */
+const HISTORY_FROM = "2026-10-27T00:00:00Z";
+
+/** Valeur exploitable d'un indicateur : terminé, non plafonné, non reprise d'une photo antérieure. */
+function reliable(r: Row | undefined, field = "count"): number | null {
+  if (!r || r.status !== "done" || r.capped || r.carriedFrom) return null;
+  const v = r[field];
+  return typeof v === "number" ? v : null;
+}
+
+/** Chiffres clés d'une photo (null quand la valeur n'est pas fiable). */
+function snapshotSummary(results: Record<string, Row>): Record<string, number | null> {
+  const parts = Object.entries(results).filter(([k, v]) => k.startsWith(ZONES_TOTAL_PREFIX) && !v.split).map(([, v]) => v);
+  const zonesTotal = results.dataSources?.status === "done" && parts.length > 0 && parts.every((p) => reliable(p) !== null)
+    ? parts.reduce((t, p) => t + (p.count ?? 0), 0)
+    : null;
+  const buckets = INACTIVE_BUCKETS.map((b) => reliable(results[b.key]));
+  return {
+    exposed: reliable(results.sensitiveExposed),
+    zonesTotal,
+    zonesStale: reliable(results.zonesStale),
+    zonesStaleAccess: reliable(results.zonesStaleAccess),
+    zonesStaleOwner: reliable(results.zonesStaleOwner),
+    zonesDisabledOwner: reliable(results.zonesDisabledOwner),
+    admins: reliable(results.privileged, "admins"),
+    adminsInactive: reliable(results.privileged, "stale"),
+    inactiveAccounts: buckets.every((v) => v !== null) ? buckets.reduce((t, v) => t + (v ?? 0), 0) : null,
+    expired: reliable(results.expiredEnabled),
+  };
+}
+
+/**
+ * Historique : une photo par jour (la dernière), depuis HISTORY_FROM. Le résumé
+ * manquant d'une photo ancienne est calculé puis enregistré au passage.
+ */
+async function postureHistory(admin: Admin) {
+  const { data, error } = await admin.from("varonis_posture_snapshots")
+    .select("id, started_at, summary").eq("status", "done").gte("started_at", HISTORY_FROM)
+    .order("started_at", { ascending: true });
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []) as Row[];
+  for (const row of rows.filter((x) => !x.summary)) {
+    const { data: full, error: e } = await admin.from("varonis_posture_snapshots").select("results").eq("id", row.id).single();
+    if (e) throw new Error(e.message);
+    row.summary = snapshotSummary(full.results ?? {});
+    await admin.from("varonis_posture_snapshots").update({ summary: row.summary }).eq("id", row.id);
+  }
+  const byDay = new Map<string, Row>();
+  for (const row of rows) byDay.set(String(row.started_at).slice(0, 10), row); // la dernière du jour l'emporte
+  return [...byDay.values()].map((row) => ({ date: row.started_at, values: row.summary }));
+}
+
 async function carryOverFailures(admin: Admin, results: Record<string, Row>) {
   const failed = Object.keys(results).filter((k) => results[k].status === "error" && results[k].code !== "unauthorized");
   if (failed.length === 0) return;
@@ -783,7 +843,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
     results,
     last_error: lastError,
     step_lock_until: new Date(Date.now() + nextStepIn).toISOString(),
-    ...(finished ? { status: "done", finished_at: new Date().toISOString() } : {}),
+    ...(finished ? { status: "done", finished_at: new Date().toISOString(), summary: snapshotSummary(results) } : {}),
   }).eq("id", snap.id);
   if (error) throw new Error(error.message);
 }
@@ -886,6 +946,11 @@ Deno.serve(async (req) => {
     }
 
     // Posture des données : lecture de la dernière photo, ou nouveau calcul
+    // Évolution dans le temps : { action: "posture-history" }
+    if (body.action === "posture-history") {
+      return jsonResponse({ from: HISTORY_FROM, points: await postureHistory(adminClient()) });
+    }
+
     if (body.action === "posture-status" || body.action === "posture-refresh") {
       return await handlePosture(body.action, body, baseUrl, VARONIS_API_KEY, user.id);
     }
