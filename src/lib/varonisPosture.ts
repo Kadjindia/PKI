@@ -227,3 +227,48 @@ export function sourceLabel(type?: string | null): string | null {
   if (t.includes("windows") || t.includes("cifs") || t.includes("smb") || t.includes("nas") || t.includes("file")) return "Partage de fichiers";
   return type;
 }
+
+// ---------------------------------------------------------------------------
+// Évolution dans le temps (une photo par jour, chiffres clés)
+// ---------------------------------------------------------------------------
+
+export type HistoryMetric =
+  | "exposed" | "zonesTotal" | "zonesStale" | "zonesStaleAccess" | "zonesStaleOwner" | "zonesDisabledOwner"
+  | "admins" | "adminsInactive" | "inactiveAccounts" | "expired";
+
+/** Indicateurs suivis ; « lowerIsBetter » : une hausse est une dégradation (rouge). */
+export const HISTORY_METRICS: { key: HistoryMetric; label: string; group: "Données" | "Comptes"; lowerIsBetter: boolean }[] = [
+  { key: "exposed", label: "Dossiers sensibles ouverts à tous", group: "Données", lowerIsBetter: true },
+  { key: "zonesStale", label: "Données sensibles inutilisées", group: "Données", lowerIsBetter: true },
+  { key: "zonesStaleAccess", label: "Droits inutilisés", group: "Données", lowerIsBetter: true },
+  { key: "zonesStaleOwner", label: "Propriétaire inactif", group: "Données", lowerIsBetter: true },
+  { key: "zonesDisabledOwner", label: "Propriétaire désactivé", group: "Données", lowerIsBetter: true },
+  { key: "zonesTotal", label: "Dossiers contenant des données sensibles", group: "Données", lowerIsBetter: false },
+  { key: "adminsInactive", label: "Administrateurs inactifs", group: "Comptes", lowerIsBetter: true },
+  { key: "inactiveAccounts", label: "Comptes activés inactifs", group: "Comptes", lowerIsBetter: true },
+  { key: "expired", label: "Comptes expirés encore actifs", group: "Comptes", lowerIsBetter: true },
+  { key: "admins", label: "Administrateurs", group: "Comptes", lowerIsBetter: false },
+];
+
+export interface HistoryPoint { date: string; values: Partial<Record<HistoryMetric, number | null>> }
+
+/** Série d'un indicateur : points où la valeur est fiable, du plus ancien au plus récent. */
+export function seriesFor(points: HistoryPoint[], key: HistoryMetric): { time: number; value: number }[] {
+  return points
+    .map((p) => ({ time: new Date(p.date).getTime(), value: p.values?.[key] }))
+    .filter((p): p is { time: number; value: number } => typeof p.value === "number" && !Number.isNaN(p.time))
+    .sort((a, b) => a.time - b.time);
+}
+
+/**
+ * Comparaison en clair : dernière valeur contre celle d'il y a « days » jours
+ * (la photo la plus proche à cette date ou avant), sinon contre la première.
+ */
+export function compareSeries(series: { time: number; value: number }[], days: number) {
+  if (series.length < 2) return null;
+  const last = series[series.length - 1];
+  const target = last.time - days * 86400000;
+  const before = series.filter((p) => p.time <= target);
+  const ref = before.length ? before[before.length - 1] : series[0];
+  return { last, ref, delta: last.value - ref.value, sinceStart: before.length === 0 };
+}
