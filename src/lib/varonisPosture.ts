@@ -297,6 +297,10 @@ export interface AccountItem {
   description?: string; dn?: string; lastLogon?: string; lastActivity?: string; pwdLastSet?: string; pwdStatus?: string;
   expiration?: string; expirationStatus?: string; created?: string; stale?: boolean; lockedOut?: boolean;
   privileged?: string[]; mfa?: string[]; type?: string; inactive?: boolean; bucket?: InactiveKey;
+  entraRoles?: string[]; exchangeRoles?: string[];
+  /** Administrateurs : groupes (profondeur d'héritage, applications connectées). */
+  groups?: { name: string; depth?: number | null; inherited?: boolean; description?: string | null; apps?: string[]; type?: string | null }[];
+  groupNames?: string[]; apps?: string[];
 }
 
 /** Propriétaire de dossiers sensibles et ses dossiers (les 50 plus gros). */

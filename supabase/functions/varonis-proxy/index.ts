@@ -344,7 +344,7 @@ const INACTIVE_BUCKETS: { key: string; from: number; to: number | null }[] = [
  */
 const IDENTITY_FIELDS = "id name samAccountName userPrincipalName email department jobTitle company description distinguishedName "
   + "lastLogonTime lastActivityDate passwordLastSet passwordExpirationStatus expirationDate expirationStatus creationDate "
-  + "isDisabled isStale isLockedOut privilegedIdentityType mfaMethod type";
+  + "isDisabled isStale isLockedOut privilegedIdentityType mfaMethod type entraIDRole { name } exoRoleGroup { name }";
 
 function toAccount(r: Row) {
   const out: Row = {
@@ -354,6 +354,9 @@ function toAccount(r: Row) {
     pwdLastSet: r.passwordLastSet, pwdStatus: r.passwordExpirationStatus,
     expiration: r.expirationDate, expirationStatus: r.expirationStatus, created: r.creationDate,
     stale: r.isStale, lockedOut: r.isLockedOut, privileged: r.privilegedIdentityType, mfa: r.mfaMethod, type: r.type,
+    // Rôles d'administration Microsoft 365 (Entra ID) et groupes de rôles Exchange Online
+    entraRoles: (r.entraIDRole ?? []).map((x: Row) => x?.name).filter(Boolean),
+    exchangeRoles: (r.exoRoleGroup ?? []).map((x: Row) => x?.name).filter(Boolean),
   };
   // Champs vides retirés : l'inventaire peut compter des milliers de comptes
   for (const k of Object.keys(out)) if (out[k] === null || out[k] === undefined || (Array.isArray(out[k]) && out[k].length === 0)) delete out[k];
@@ -617,6 +620,38 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
         // Inventaire : administrateurs (avec indicateur d'inactivité) et comptes de service
         items: admins.map((r) => ({ ...toAccount(r), inactive: inactiveSince(r.lastLogonTime) })),
         serviceItems: services.map((r) => ({ ...toAccount(r), inactive: inactiveSince(r.lastLogonTime) })),
+      };
+    },
+  },
+  // Groupes des administrateurs (directs et hérités) et applications connectées
+  adminMemberships: {
+    asyncName: "membershipsAsync",
+    jobName: "membershipsQueryJob",
+    where: { member: { privilegedIdentityType: { includesAny: ["ADMIN"] } } },
+    fields: "inheritanceDepth member { name samAccountName userPrincipalName isDisabled } "
+      + "group { name samAccountName description connectedApp type }",
+    summarize: (rows) => {
+      // Compte administrateur → ses groupes (une entrée par groupe, profondeur la plus faible)
+      const byAdmin: Record<string, Record<string, Row>> = {};
+      for (const r of rows) {
+        const m = r.member ?? {};
+        if (m.isDisabled) continue;
+        const who = String(m.samAccountName || m.userPrincipalName || m.name || "");
+        const g = r.group ?? {};
+        const gname = String(g.name || g.samAccountName || "");
+        if (!who || !gname) continue;
+        const groups = (byAdmin[who] ??= {});
+        const prev = groups[gname];
+        if (!prev || (r.inheritanceDepth ?? 99) < (prev.depth ?? 99)) {
+          groups[gname] = {
+            name: gname, depth: r.inheritanceDepth ?? null, description: g.description ?? null,
+            apps: (g.connectedApp ?? []).filter(Boolean), type: g.type ?? null,
+          };
+        }
+      }
+      return {
+        count: Object.keys(byAdmin).length,
+        groupsByAdmin: Object.fromEntries(Object.entries(byAdmin).map(([k, v]) => [k, Object.values(v).sort((a, b) => (a.depth ?? 99) - (b.depth ?? 99) || a.name.localeCompare(b.name))])),
       };
     },
   },
@@ -1009,7 +1044,21 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
 }
 
 /** Listes de l'inventaire, chargées à part (action posture-inventory) : retirées ailleurs. */
-const LIST_FIELDS = ["items", "serviceItems", "owners"];
+const LIST_FIELDS = ["items", "serviceItems", "owners", "groupsByAdmin"];
+
+/** Rattache à chaque administrateur ses groupes et les applications connectées. */
+function withGroups(r: Record<string, Row>, items: Row[] | undefined): Row[] | undefined {
+  const byAdmin = r.adminMemberships?.groupsByAdmin as Record<string, Row[]> | undefined;
+  if (!items || !byAdmin) return items;
+  return items.map((a) => {
+    const raw: Row[] = byAdmin[a.sam] ?? byAdmin[a.upn] ?? byAdmin[a.name] ?? [];
+    // Appartenance directe = profondeur la plus faible du compte (0 ou 1 selon le tenant)
+    const direct = Math.min(...raw.map((g) => g.depth ?? 99));
+    const groups: Row[] = raw.map((g) => ({ ...g, inherited: (g.depth ?? 99) > direct }));
+    const apps = [...new Set(groups.flatMap((g) => g.apps ?? []))].sort();
+    return { ...a, groups, groupNames: groups.map((g) => g.name), apps };
+  });
+}
 function withoutLists({ jobId: _jobId, ...rest }: Row): Row {
   for (const f of LIST_FIELDS) delete rest[f];
   return rest;
@@ -1017,8 +1066,8 @@ function withoutLists({ jobId: _jobId, ...rest }: Row): Row {
 
 /** Inventaire des comptes : une liste de la dernière photo terminée. */
 const INVENTORY_LISTS: Record<string, (r: Record<string, Row>) => Row[] | undefined> = {
-  admins: (r) => r.privileged?.items,
-  adminsInactive: (r) => r.privileged?.items?.filter((a: Row) => a.inactive),
+  admins: (r) => withGroups(r, r.privileged?.items),
+  adminsInactive: (r) => withGroups(r, r.privileged?.items?.filter((a: Row) => a.inactive)),
   services: (r) => r.privileged?.serviceItems,
   expired: (r) => r.expiredEnabled?.items,
   inactive: (r) => {
