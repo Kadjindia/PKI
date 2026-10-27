@@ -12,7 +12,7 @@ import {
 import {
   formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal, zoneTotal,
   allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
-  type PostureResults, type PostureState, type ZoneIssueKey, type ZoneResult,
+  type PostureResults, type PostureState, type ZoneIssueKey, type ZoneResult, type InventoryList,
 } from "@/lib/varonisPosture";
 
 // La posture est calculée côté serveur (tâche planifiée chaque nuit, ou à la
@@ -159,7 +159,9 @@ function FolderRow({ name, path, source, size, chips }: {
   );
 }
 
-export default function VaronisPosturePanel() {
+export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOpenInventory?: (list: InventoryList) => void } = {}) {
+  // Ouvre l'inventaire des comptes sur une liste (sinon, ne fait rien)
+  const inventory = (list: InventoryList) => (e?: React.MouseEvent) => { e?.stopPropagation(); onOpenInventory?.(list); };
   const queryClient = useQueryClient();
   const { data: state, error, isLoading } = useQuery({
     queryKey: ["varonis-posture"],
@@ -337,7 +339,7 @@ export default function VaronisPosturePanel() {
           icon={Crown}
           color="border-l-violet-500"
           r={priv && { ...priv, count: priv.status === "done" ? priv.stale : undefined }}
-          onClick={() => { setShowAdmins(true); accountsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
+          onClick={onOpenInventory ? inventory("adminsInactive") : () => { setShowAdmins(true); accountsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
           sub={priv?.status === "done" && (priv.staleOld === undefined
             ? `sur ${formatCount(priv.admins)} administrateurs`
             : `sur ${formatCount(priv.admins)} : ${formatCount(priv.staleOld)} sans connexion depuis ${INACTIVE_DAYS} j · ${formatCount(priv.staleNoLogon)} sans date de connexion`)}
@@ -368,10 +370,10 @@ export default function VaronisPosturePanel() {
             {/* Chiffres de référence : total et propriétaires */}
             <div className="grid grid-cols-3 gap-2 mb-3">
               {[
-                { label: "Contenant des données sensibles", view: null, value: zones, help: <>Partages et dossiers personnels où la classification Varonis a trouvé des données sensibles (personnelles, financières, RH…).</> },
-                { label: "Propriétaire inactif", view: "zonesStaleOwner" as const, value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b> : plus personne pour valider qui y a accès.</> },
-                { label: "Propriétaire désactivé", view: "zonesDisabledOwner" as const, value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation) : à réattribuer.</> },
-              ].map(({ label, view, value, help }) => (
+                { label: "Contenant des données sensibles", view: null, owners: null, value: zones, help: <>Partages et dossiers personnels où la classification Varonis a trouvé des données sensibles (personnelles, financières, RH…).</> },
+                { label: "Propriétaire inactif", view: "zonesStaleOwner" as const, owners: "ownersStale" as const, value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b> : plus personne pour valider qui y a accès.</> },
+                { label: "Propriétaire désactivé", view: "zonesDisabledOwner" as const, owners: "ownersDisabled" as const, value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation) : à réattribuer.</> },
+              ].map(({ label, view, owners, value, help }) => (
                 <div
                   key={label}
                   onClick={() => (view ? showZones(view) : setZoneView(null))}
@@ -384,6 +386,11 @@ export default function VaronisPosturePanel() {
                   <Status r={value}>
                     <div className="text-xl font-black text-foreground">{formatCount(value?.count, value?.capped)}</div>
                   </Status>
+                  {owners && onOpenInventory && (
+                    <button type="button" onClick={inventory(owners)} className="text-[11px] font-semibold text-primary hover:underline">
+                      Voir les propriétaires →
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -430,9 +437,9 @@ export default function VaronisPosturePanel() {
           <CardContent className="space-y-4">
             <div>
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+                <button type="button" onClick={inventory("inactive")} disabled={!onOpenInventory} title="Voir la liste des comptes" className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 hover:text-foreground hover:underline">
                   <UserMinus className="w-4 h-4" /> Comptes activés inactifs
-                </span>
+                </button>
                 <Help>Comptes <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, par ancienneté. À désactiver en commençant par les plus anciens.</Help>
               </div>
               {inactiveUnreliable ? (
@@ -462,15 +469,15 @@ export default function VaronisPosturePanel() {
 
             <dl className="border-t border-border pt-3 space-y-2 text-sm">
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={() => setShowAdmins(true)} title="Afficher les administrateurs inactifs">Administrateurs</dt>
+                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={onOpenInventory ? inventory("admins") : () => setShowAdmins(true)} title="Voir la liste des administrateurs">Administrateurs</dt>
                 <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.admins)}</Status></dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground">Comptes de service</dt>
+                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={inventory("services")} title="Voir la liste des comptes de service">Comptes de service</dt>
                 <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.services)}</Status></dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground">Comptes expirés encore actifs</dt>
+                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={inventory("expired")} title="Voir la liste des comptes expirés">Comptes expirés encore actifs</dt>
                 <dd className="font-semibold"><Status r={r.expiredEnabled}>{formatCount(r.expiredEnabled?.count)}</Status></dd>
               </div>
             </dl>

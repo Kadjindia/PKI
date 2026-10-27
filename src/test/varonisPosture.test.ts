@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, privilegedLabel, share, safeUrl, snapshotProgress, formatAge,
-  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, seriesFor, compareSeries,
+  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, seriesFor, compareSeries, ouFromDn, matchesSearch, toCsv,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -108,5 +108,15 @@ describe("posture Varonis : mise en forme", () => {
     // historique trop court pour 90 jours : comparaison avec la première photo
     expect(compareSeries(s, 90)).toMatchObject({ sinceStart: true, ref: { value: 600 } });
     expect(compareSeries(seriesFor(pts, "exposed"), 30)).toBeNull();
+  });
+
+  it("outille l'inventaire : OU, recherche et CSV", () => {
+    expect(ouFromDn("CN=Jean Dupont,OU=Utilisateurs,OU=Paris,DC=corp,DC=local")).toBe("Paris / Utilisateurs");
+    expect(ouFromDn(undefined)).toBe("");
+    expect(matchesSearch({ name: "Jean Dupont", department: "Finance" }, "finan")).toBe(true);
+    expect(matchesSearch({ name: "Jean", privileged: ["ADMIN"] }, "admin")).toBe(true);
+    expect(matchesSearch({ name: "Jean" }, "paul")).toBe(false);
+    const csv = toCsv([{ name: 'A;B', n: 2 }, { name: 'C"D' }], [{ key: "name", label: "Nom" }, { key: "n", label: "N" }]);
+    expect(csv).toBe('\uFEFFNom;N\r\n"A;B";2\r\n"C""D";');
   });
 });

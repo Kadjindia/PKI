@@ -272,3 +272,56 @@ export function compareSeries(series: { time: number; value: number }[], days: n
   const ref = before.length ? before[before.length - 1] : series[0];
   return { last, ref, delta: last.value - ref.value, sinceStart: before.length === 0 };
 }
+
+// ---------------------------------------------------------------------------
+// Inventaire des comptes (listes de la dernière photo)
+// ---------------------------------------------------------------------------
+
+export type InventoryList = "admins" | "adminsInactive" | "services" | "expired" | "inactive" | "ownersStale" | "ownersDisabled";
+
+export const INVENTORY_LISTS: { key: InventoryList; label: string; help: string; owners?: boolean }[] = [
+  { key: "admins", label: "Administrateurs", help: "Tous les comptes administrateurs activés" },
+  { key: "adminsInactive", label: "Administrateurs inactifs", help: "Administrateurs activés sans connexion depuis plus de 90 jours ou sans date de connexion" },
+  { key: "services", label: "Comptes de service", help: "Comptes de service activés (hors comptes aussi administrateurs)" },
+  { key: "expired", label: "Comptes expirés encore actifs", help: "Date d'expiration passée, compte toujours activé" },
+  { key: "inactive", label: "Comptes activés inactifs", help: "Comptes activés sans connexion depuis plus de 90 jours, par ancienneté" },
+  { key: "ownersStale", label: "Propriétaires inactifs", help: "Comptes inactifs propriétaires de dossiers contenant des données sensibles", owners: true },
+  { key: "ownersDisabled", label: "Propriétaires désactivés", help: "Comptes désactivés propriétaires de dossiers contenant des données sensibles", owners: true },
+];
+
+/** Compte de l'inventaire (champs vides absents). */
+export interface AccountItem {
+  name?: string; sam?: string; upn?: string; email?: string; department?: string; jobTitle?: string; company?: string;
+  description?: string; dn?: string; lastLogon?: string; lastActivity?: string; pwdLastSet?: string; pwdStatus?: string;
+  expiration?: string; expirationStatus?: string; created?: string; stale?: boolean; lockedOut?: boolean;
+  privileged?: string[]; mfa?: string[]; type?: string; inactive?: boolean; bucket?: InactiveKey;
+}
+
+/** Propriétaire de dossiers sensibles et ses dossiers (les 50 plus gros). */
+export interface OwnerItem {
+  name?: string; sam?: string; upn?: string; email?: string; department?: string; jobTitle?: string; company?: string;
+  stale?: boolean; disabled?: boolean; folderCount: number; sizeBytes: number;
+  folders: { path?: string | null; sizeBytes?: number | null }[];
+}
+
+/** Unité d'organisation lisible à partir du DN : « Paris / Utilisateurs ». */
+export function ouFromDn(dn?: string): string {
+  if (!dn) return "";
+  return dn.split(/,(?=(?:OU|DC|CN)=)/i).filter((p) => /^OU=/i.test(p)).map((p) => p.slice(3)).reverse().join(" / ");
+}
+
+/** Recherche plein texte dans les champs d'un élément de l'inventaire. */
+export function matchesSearch(item: object, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return Object.values(item).some((v) => (typeof v === "string" ? v : Array.isArray(v) ? v.join(" ") : "").toLowerCase().includes(q));
+}
+
+/** Export CSV (séparateur « ; », compatible Excel français, BOM UTF-8). */
+export function toCsv(rows: Record<string, unknown>[], columns: { key: string; label: string }[]): string {
+  const cell = (v: unknown) => {
+    const s = v === null || v === undefined ? "" : Array.isArray(v) ? v.join(", ") : String(v);
+    return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return "﻿" + [columns.map((c) => cell(c.label)).join(";"), ...rows.map((r) => columns.map((c) => cell(r[c.key])).join(";"))].join("\r\n");
+}
