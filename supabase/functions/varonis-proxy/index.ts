@@ -922,6 +922,20 @@ const shortReason = (r: Row) => r.code === "timeout" ? "Délai dépassé" : (r.e
  * de nouveaux dans la limite autorisée, puis enregistre. Ne fait rien si une
  * autre étape est en cours ou trop récente.
  */
+/**
+ * Priorité de lancement (plus petit = plus tôt), d'après les durées mesurées chez
+ * Varonis : dossiers (plus de 5 min) puis comptes (3 à 6 min), le reste ensuite.
+ */
+const LAUNCH_PRIORITY = [
+  "dataSources", "zonesStaleAccess", "zonesStale", "zonesStaleOwner", "zonesDisabledOwner", "sensitiveExposed",
+  "inactive90", "inactive180", "inactive365", "inactive730", "expiredEnabled", "privileged", "adminMemberships",
+];
+function launchRank(key: string): number {
+  if (key.startsWith(ZONES_TOTAL_PREFIX)) return 5.5; // total par source : avec les dossiers
+  const i = LAUNCH_PRIORITY.indexOf(key);
+  return i === -1 ? LAUNCH_PRIORITY.length : i;
+}
+
 /** Résultat d'une étape : avancée, ou rien fait (étape en cours ailleurs, pause « trop de requêtes »). */
 type StepOutcome = "advanced" | "skipped" | "backoff";
 
@@ -1001,8 +1015,11 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
       results[`${ZONES_TOTAL_PREFIX}${k.source}:${mid}:${hi}`] = { status: "queued", attempts: 0 };
     }
 
-    // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS
-    for (const [key, entry] of Object.entries(results)) {
+    // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS. Les plus longs d'abord
+    // (recherches sur les dossiers, puis les comptes) : les courts se glissent dans les
+    // places libérées pendant que les longs tournent, la photo se termine plus tôt.
+    const launchOrder = Object.entries(results).sort(([a], [b]) => launchRank(a) - launchRank(b));
+    for (const [key, entry] of launchOrder) {
       if (Object.values(results).filter((r) => r.status === "pending").length >= (claimed.trigger === "manual" ? MANUAL_MAX_RUNNING_JOBS : MAX_RUNNING_JOBS)) break;
       if (entry.status !== "queued") continue;
       try {
