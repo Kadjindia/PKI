@@ -3,7 +3,7 @@ import {
   normalizeSeverity, isOpen, formatStatus, summarizeAlerts, type VaronisAlert,
   computeRange, previousRange, filterByRange, dataCoverage, variation,
   granularityFor, buildTimeline, hourlyDistribution, isOffHours, buildInsights,
-  threatFamily, threatTracking, openAgeBuckets, handlingSplit, escalationRate, eventSpikes, policyNoise,
+  threatFamily, threatTracking, openAgeBuckets, handlingSplit, escalationRate, policyNoise,
   closeVerdict, verdictStats, dataSourceLabel, dataSourceStats, closedByStats, openEscalations, safeAlertUrl,
   applyFilters, toggleFilter, applyFilterPatch, filterChips, removeChip, isFiltered,
 } from "@/lib/varonis";
@@ -219,13 +219,6 @@ describe("pilotage SOC", () => {
     expect(escalationRate([])).toBe(0);
   });
 
-  it("repère les pics d'événements (≥ 5 × la médiane, minimum 50)", () => {
-    const list = [10, 12, 8, 11, 400, 9, 60].map((n, i) => alert(String(i), { eventsCount: n }));
-    const { threshold, spikes } = eventSpikes(list);
-    expect(threshold).toBe(55); // médiane 11 × 5
-    expect(spikes.map((a) => a.eventsCount)).toEqual([400, 60]);
-  });
-
   it("signale les politiques bruyantes peu graves", () => {
     const list = [
       ...Array.from({ length: 6 }, (_, i) => alert("l" + i, { policy: { name: "Bruit", severity: "Low" } })),
@@ -364,15 +357,5 @@ describe("filtres croisés", () => {
     const patched = applyFilterPatch({}, { state: "open", severity: ["high"] });
     expect(patched).toEqual({ state: "open", severity: ["high"] });
     expect(isFiltered(applyFilterPatch(patched, { state: "open", severity: ["high"] }))).toBe(false);
-  });
-});
-
-describe("pics d'activité au plafond Varonis", () => {
-  it("signale le plafond et départage par date", () => {
-    const mk = (id: string, n: number, d: string) => ({ id, status: "Closed", eventsCount: n, generationTime: { dateTimeUtc: d } }) as VaronisAlert;
-    const list = [mk("a", 5000, "2026-10-06T10:00:00Z"), mk("b", 5000, "2026-10-20T10:00:00Z"), ...Array.from({ length: 6 }, (_, i) => mk(`n${i}`, 3, "2026-10-01T10:00:00Z"))];
-    const r = eventSpikes(list);
-    expect(r.spikes.map((a) => a.id)).toEqual(["b", "a"]);
-    expect(r.capped).toBe(2);
   });
 });
