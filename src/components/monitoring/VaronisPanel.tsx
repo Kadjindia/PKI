@@ -183,7 +183,6 @@ export default function VaronisPanel() {
     return {
       range,
       coverage,
-      totalReceived: all.length,
       current,
       summary,
       previousCount: previous.length,
@@ -228,7 +227,6 @@ export default function VaronisPanel() {
         </p>
         <p className="text-xs text-muted-foreground mt-1">
           {data?.fetchedAt ? `Synchronisé le ${formatDate(new Date(data.fetchedAt))}` : "Données Varonis"}
-          {coverage && ` · Données disponibles du ${formatDay(coverage.oldest)} au ${formatDay(coverage.newest)} (${view.totalReceived} alertes)`}
           {data?.partial && " · résultats partiels"}
           {refreshing && data?.alerts && (
             <span className="ml-1 text-primary whitespace-nowrap">
@@ -390,12 +388,10 @@ export default function VaronisPanel() {
             {chip.label} <X className="w-3 h-3" />
           </button>
         ))}
-        {isFiltered(filters) ? (
+        {isFiltered(filters) && (
           <button type="button" onClick={() => setFilters({})} className="text-xs font-semibold text-muted-foreground hover:text-foreground underline">
             Tout effacer
           </button>
-        ) : (
-          <span className="text-xs text-muted-foreground">Astuce : cliquez sur un chiffre, une barre, une part ou une ligne pour filtrer tout l&apos;onglet.</span>
         )}
       </div>
 
