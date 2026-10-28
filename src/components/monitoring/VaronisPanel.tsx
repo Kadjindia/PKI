@@ -1,9 +1,7 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
-import { useLocation } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import VaronisSchemaDiagnostic from "./VaronisSchemaDiagnostic";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -29,15 +27,19 @@ import {
   VERDICT_LABELS, ESCALATION_LABELS, type Verdict, type EscalationType,
   SEVERITY_LABELS, type ThreatFamily,
   applyFilters, toggleFilter, applyFilterPatch, filterChips, removeChip, isFiltered, type AlertFilters,
-  type SeverityLevel, type VaronisAlert, type VaronisProxyResponse, type TimePrefix, type TimeUnit, type Granularity, type Insight,
+  type SeverityLevel, type VaronisAlert, type VaronisAlertsResponse, type TimePrefix, type TimeUnit, type Granularity, type Insight,
 } from "@/lib/varonis";
 
-// Le job Varonis peut durer plusieurs minutes : la fonction le lance et répond
-// tout de suite avec son identifiant, puis on l'interroge toutes les 3 s.
-const POLL_INTERVAL_MS = 3000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+// Les alertes sont gardées en cache côté serveur et renouvelées en arrière-plan
+// (Varonis met une à plusieurs minutes à les préparer) : l'écran affiche tout de
+// suite le dernier résultat. Pendant un renouvellement, il revient toutes les 5 s.
+const REFRESHING_POLL_MS = 5000;
+const IDLE_POLL_MS = 5 * 60 * 1000;
+const ALERTS_KEY = ["varonis-alerts"];
 
-async function callVaronisProxy(body: { jobId?: string }): Promise<VaronisProxyResponse> {
+type AlertsData = VaronisAlertsResponse & { alerts: VaronisAlert[] | null };
+
+async function callVaronisProxy(body: { action: "alerts"; force?: boolean; since?: string | null }): Promise<VaronisAlertsResponse> {
   const { data, error } = await supabase.functions.invoke("varonis-proxy", { body });
   if (error) {
     // On remonte le message renvoyé par la fonction plutôt que l'erreur générique
@@ -47,22 +49,13 @@ async function callVaronisProxy(body: { jobId?: string }): Promise<VaronisProxyR
     }
     throw error;
   }
-  return data as VaronisProxyResponse;
+  return data as VaronisAlertsResponse;
 }
 
-async function fetchVaronisAlerts(onProgress: (progress: number | null) => void): Promise<VaronisProxyResponse> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let res = await callVaronisProxy({});
-  while (res.status === "pending" && res.jobId) {
-    onProgress(typeof res.jobProgress === "number" ? res.jobProgress : null);
-    if (Date.now() > deadline) {
-      throw new Error("Varonis n'a pas terminé la préparation des alertes en 5 minutes. Réessayez plus tard.");
-    }
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    res = await callVaronisProxy({ jobId: res.jobId });
-  }
-  onProgress(null);
-  return res;
+/** Interroge le cache ; les alertes ne sont renvoyées que si elles ont changé. */
+async function fetchVaronisAlerts(previous: AlertsData | undefined, force = false): Promise<AlertsData> {
+  const res = await callVaronisProxy({ action: "alerts", force, since: previous?.alerts ? previous.fetchedAt : null });
+  return { ...res, alerts: res.alerts ?? previous?.alerts ?? null };
 }
 
 // --- Présentation -----------------------------------------------------------
@@ -141,7 +134,7 @@ const clickable = (active: boolean, dimmed: boolean) =>
 const countHigh = (list: VaronisAlert[]) => list.filter((a) => normalizeSeverity(a.policy?.severity) === "high").length;
 
 export default function VaronisPanel() {
-  const [progress, setProgress] = useState<number | null>(null);
+  const queryClient = useQueryClient();
   const [timePrefix, setTimePrefix] = useState<TimePrefix>("last");
   const [timeValue, setTimeValue] = useState<number>(30);
   const [timeUnit, setTimeUnit] = useState<TimeUnit>("days");
@@ -154,13 +147,32 @@ export default function VaronisPanel() {
   const patch = (p: AlertFilters) => setFilters((f) => applyFilterPatch(f, p));
   const has = (p: AlertFilters) => Object.entries(p).every(([k, v]) => JSON.stringify(filters[k as keyof AlertFilters]) === JSON.stringify(v));
 
-  const { data, error, isLoading, isFetching, refetch, dataUpdatedAt } = useQuery({
-    queryKey: ["varonis-alerts"],
-    queryFn: () => fetchVaronisAlerts(setProgress),
-    staleTime: 1000 * 60 * 5,
-    refetchInterval: 1000 * 60 * 15,
+  const { data, error: queryError } = useQuery({
+    queryKey: ALERTS_KEY,
+    queryFn: () => fetchVaronisAlerts(queryClient.getQueryData<AlertsData>(ALERTS_KEY)),
+    staleTime: 60 * 1000,
+    refetchInterval: (q) => (q.state.data?.refreshing || !q.state.data?.alerts ? REFRESHING_POLL_MS : IDLE_POLL_MS),
     retry: false,
   });
+  // « Actualiser » : demande une nouvelle préparation à Varonis
+  const [forcing, setForcing] = useState(false);
+  const [forceError, setForceError] = useState<Error | null>(null);
+  const forceRefresh = async () => {
+    setForcing(true);
+    setForceError(null);
+    try {
+      queryClient.setQueryData(ALERTS_KEY, await fetchVaronisAlerts(queryClient.getQueryData<AlertsData>(ALERTS_KEY), true));
+    } catch (e) {
+      setForceError(e as Error);
+    } finally {
+      setForcing(false);
+    }
+  };
+  const refreshing = forcing || Boolean(data?.refreshing);
+  const progress = data?.progress ?? null;
+  // Sans alertes en cache : chargement tant que Varonis les prépare, erreur sinon
+  const isLoading = !data?.alerts && !queryError && !(data && !data.refreshing && data.lastError);
+  const error = data?.alerts ? null : queryError ?? (data && !data.refreshing && data.lastError ? new Error(data.lastError) : null);
 
   const view = useMemo(() => {
     const all = data?.alerts ?? [];
@@ -217,8 +229,6 @@ export default function VaronisPanel() {
   }, [data, timePrefix, timeValue, timeUnit, filters]);
 
   const { summary, coverage } = view;
-  // Outil de diagnostic du schéma Varonis, affiché seulement avec ?diag=1
-  const showDiag = new URLSearchParams(useLocation().search).get("diag") === "1";
   const periodStartsBeforeData = coverage !== null && view.range.from < coverage.oldest.getTime();
 
   const header = (
@@ -231,10 +241,20 @@ export default function VaronisPanel() {
           Alertes de menaces sur les données et suivi de leur traitement
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          {dataUpdatedAt ? `Synchronisé le ${formatDate(new Date(dataUpdatedAt))}` : "Données en direct depuis Varonis"}
+          {data?.fetchedAt ? `Synchronisé le ${formatDate(new Date(data.fetchedAt))}` : "Données Varonis"}
           {coverage && ` · Données disponibles du ${formatDay(coverage.oldest)} au ${formatDay(coverage.newest)} (${view.totalReceived} alertes)`}
-          {data?.jobStatus === "PARTIAL_RESULTS" && " · résultats partiels"}
+          {data?.partial && " · résultats partiels"}
+          {refreshing && data?.alerts && (
+            <span className="ml-1 text-primary whitespace-nowrap">
+              · <Loader2 className="inline w-3 h-3 animate-spin align-[-2px]" /> mise à jour en cours{progress !== null ? ` (${Math.round(progress <= 1 ? progress * 100 : progress)} %)` : ""}
+            </span>
+          )}
         </p>
+        {data?.alerts && !refreshing && (forceError || data.lastError) && (
+          <p className="text-xs text-amber-600 mt-1">
+            Dernière mise à jour impossible : {(forceError ?? new Error(data.lastError!)).message} Les alertes affichées sont celles du {formatDate(data.fetchedAt ? new Date(data.fetchedAt) : null)}.
+          </p>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -272,11 +292,12 @@ export default function VaronisPanel() {
         </div>
         <button
           type="button"
-          onClick={() => refetch()}
-          disabled={isFetching}
+          onClick={forceRefresh}
+          disabled={refreshing}
+          title="Demander à Varonis les dernières alertes (une à plusieurs minutes)"
           className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
         >
-          <RefreshCw className={`w-4 h-4 ${isFetching ? "animate-spin" : ""}`} /> Actualiser
+          <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /> Actualiser
         </button>
       </div>
     </div>
@@ -286,13 +307,12 @@ export default function VaronisPanel() {
     return (
       <div className="space-y-6">
         {header}
-        {showDiag && <VaronisSchemaDiagnostic />}
         <div className="flex flex-col items-center justify-center py-24 space-y-3 text-muted-foreground">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
           <p className="text-sm">
             Varonis prépare les alertes{progress !== null ? ` : ${Math.round(progress <= 1 ? progress * 100 : progress)} %` : "…"}
           </p>
-          <p className="text-xs">Cela peut prendre une à plusieurs minutes selon le volume.</p>
+          <p className="text-xs">Première synchronisation : une à plusieurs minutes. Les prochaines ouvertures seront immédiates.</p>
         </div>
       </div>
     );
@@ -302,19 +322,15 @@ export default function VaronisPanel() {
     return (
       <div className="space-y-6">
         {header}
-        {showDiag && <VaronisSchemaDiagnostic />}
         <Card className="border-destructive/40 bg-destructive/5">
           <CardContent className="p-6 space-y-3">
             <div className="flex items-center gap-2 font-bold text-destructive">
               <AlertTriangle className="w-5 h-5" /> Impossible de récupérer les alertes Varonis
             </div>
-            <p className="font-mono text-xs bg-background/60 border border-border rounded-md p-3 break-all">
-              {(error as Error).message}
-            </p>
             <p className="text-sm text-muted-foreground">
-              Vérifiez que la fonction <code>varonis-proxy</code> est déployée et que les secrets{" "}
-              <code>VARONIS_BASE_URL</code> et <code>VARONIS_API_KEY</code> sont configurés dans Supabase.
+              Réessayez dans quelques minutes. Si le problème persiste, contactez l&apos;administrateur du tableau de bord.
             </p>
+            <p className="font-mono text-[11px] text-muted-foreground break-all">{(error as Error).message}</p>
           </CardContent>
         </Card>
       </div>
@@ -329,7 +345,6 @@ export default function VaronisPanel() {
   return (
     <div className="space-y-6">
       {header}
-      {showDiag && <VaronisSchemaDiagnostic />}
 
       {view.allPeriods && (
         <div className="flex items-start gap-2 p-3 rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-600 text-sm">

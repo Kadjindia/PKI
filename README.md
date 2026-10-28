@@ -111,15 +111,17 @@ docker compose restart functions
 
 ### Posture des données Varonis (calcul planifié)
 
-La posture (10 recherches Varonis sur des millions d'objets) n'est pas calculée à l'ouverture de l'écran : `varonis-proxy` la calcule par petites étapes (3 recherches en parallèle au plus, pause automatique si Varonis signale trop de requêtes) et enregistre chaque photo dans la table `varonis_posture_snapshots`. L'écran affiche la dernière photo terminée ; « Recalculer » lance un nouveau calcul (un seul à la fois, 15 min minimum entre deux).
+La posture (10 recherches Varonis sur des millions d'objets) n'est pas calculée à l'ouverture de l'écran : `varonis-proxy` la calcule par petites étapes (3 recherches en parallèle au plus, pause automatique si Varonis signale trop de requêtes) et enregistre chaque photo dans la table `varonis_posture_snapshots`. L'écran affiche la dernière photo terminée ; « Recalcul rapide » recalcule les comptes et l'inventaire en quelques minutes (un seul calcul à la fois, 15 min minimum entre deux), les indicateurs sur les dossiers étant recalculés chaque nuit.
 
 Mise en place :
 
-1. appliquer les migrations `20261023090000_varonis_posture_snapshots.sql` et `20261027090000_varonis_posture_summary.sql` (résumé de chaque photo, pour l'évolution dans le temps) et `20261028090000_varonis_posture_lists.sql` (listes de l'inventaire rangées à part, pour des photos légères) ;
+1. appliquer les migrations `20261023090000_varonis_posture_snapshots.sql` et `20261027090000_varonis_posture_summary.sql` (résumé de chaque photo, pour l'évolution dans le temps) `20261028090000_varonis_posture_lists.sql` (listes de l'inventaire rangées à part, pour des photos légères) et `20261028100000_varonis_alerts_cache.sql` (cache des alertes) ;
 2. ajouter le secret `POSTURE_CRON_SECRET` et redéployer `varonis-proxy` ;
 3. exécuter une fois `supabase/sql/planification_posture_varonis.sql` (pg_cron + pg_net) après y avoir renseigné l'URL de la fonction, la clé anon et le secret : calcul chaque nuit à 4 h UTC, avancement toutes les 2 minutes.
 
 Sans l'étape 3, le calcul n'avance que lorsque l'écran Posture est ouvert.
+
+**Alertes** : Varonis met une à plusieurs minutes à préparer les alertes. `varonis-proxy` garde le dernier résultat dans `varonis_alerts_cache` et le renouvelle en arrière-plan (tâche planifiée de l'étape 3, ou ouverture de l'onglet) dès qu'il a plus de 15 minutes : l'onglet Alertes s'affiche immédiatement. « Actualiser » demande une nouvelle préparation (au plus une par minute).
 
 Le bloc « Évolution dans le temps » trace une photo par jour (la dernière du jour) depuis le 27/10/2026, date à partir de laquelle les définitions des indicateurs sont stables ; une valeur plafonnée ou reprise d'une photo précédente n'est pas tracée.
 

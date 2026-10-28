@@ -5,8 +5,9 @@
 --
 -- Deux tâches pg_cron appellent la fonction via pg_net :
 --   * chaque nuit à 4 h 00 UTC : démarre une nouvelle photo ;
---   * toutes les 2 minutes : fait avancer la photo en cours (rien à faire = un
---     simple accès à la base, aucun appel à Varonis).
+--   * toutes les 2 minutes : fait avancer la photo en cours, et renouvelle le
+--     cache des alertes quand il a plus de 15 minutes (sinon, simple accès à la
+--     base, aucun appel à Varonis).
 --
 -- Prérequis :
 --   1. Extensions pg_cron et pg_net activées (Database > Extensions) ;

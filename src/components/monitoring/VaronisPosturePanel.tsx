@@ -20,8 +20,8 @@ import {
 // calcul, l'écran revient toutes les 20 s, ce qui fait aussi avancer le calcul.
 const RUNNING_POLL_MS = 20_000;
 
-async function callPosture(action: "posture-status" | "posture-refresh", full = false): Promise<PostureState> {
-  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action, full } });
+async function callPosture(action: "posture-status" | "posture-refresh"): Promise<PostureState> {
+  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action } });
   if (error) {
     if (error instanceof FunctionsHttpError) {
       const errBody = await error.context.json().catch(() => null);
@@ -33,7 +33,6 @@ async function callPosture(action: "posture-status" | "posture-refresh", full = 
 }
 
 const formatDateTime = (iso: string) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
-const formatDay = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString("fr-FR") : "jamais");
 
 /** État d'une requête : chargement, erreur ou contenu. */
 function Status({ r, children }: {
@@ -59,8 +58,8 @@ function Status({ r, children }: {
         <div className="text-[11px] text-emerald-600 mt-1">Mis à jour à {new Date(r.doneAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} (calcul en cours)</div>
       )}
       {r.carriedFrom && (
-        <div className="text-[11px] text-amber-600 mt-1" title={r.lastError}>
-          Valeur du {formatDateTime(r.carriedFrom)}{r.lastError ? " : le dernier calcul n'a pas abouti pour cet indicateur" : " (dernier calcul complet)"}
+        <div className={`text-[11px] mt-1 ${r.lastError ? "text-amber-600" : "text-muted-foreground"}`} title={r.lastError}>
+          Valeur du {formatDateTime(r.carriedFrom)}{r.lastError ? " : le dernier calcul n'a pas abouti pour cet indicateur" : ""}
         </div>
       )}
     </>
@@ -174,7 +173,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
     refetchInterval: (q) => (q.state.data?.running ? RUNNING_POLL_MS : false),
   });
   const refresh = useMutation({
-    mutationFn: (full: boolean) => callPosture("posture-refresh", full),
+    mutationFn: () => callPosture("posture-refresh"),
     onSuccess: (next) => queryClient.setQueryData(["varonis-posture"], next),
   });
 
@@ -214,9 +213,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
   const zoneList = useShowMore(listItems);
   const zonesRef = useRef<HTMLDivElement>(null);
   const exposedRef = useRef<HTMLDivElement>(null);
-  const accountsRef = useRef<HTMLDivElement>(null);
   const exposedList = useShowMore(exposed?.top);
-  const [showAdmins, setShowAdmins] = useState(false);
   const errorMessage = (refresh.error ?? error) as Error | null;
 
   return (
@@ -236,26 +233,15 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               : isLoading ? "Chargement…" : "Aucune photo terminée pour l'instant"}
           </p>
         </div>
-        <div className="flex items-center gap-2 self-start sm:self-auto">
         <button
           type="button"
-          onClick={() => refresh.mutate(false)}
+          onClick={() => refresh.mutate()}
           disabled={isLoading || refresh.isPending || Boolean(running)}
-          title={running ? "Un calcul est déjà en cours" : "Recalcul rapide (quelques minutes) : comptes et inventaire ; les indicateurs sur les dossiers restent ceux du dernier calcul complet"}
-          className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 "
+          title={running ? "Un calcul est déjà en cours" : "Recalcul rapide (quelques minutes) : comptes et inventaire ; les indicateurs sur les dossiers sont recalculés chaque nuit"}
+          className="flex items-center gap-2 self-start sm:self-auto text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
         >
           <RefreshCw className={`w-4 h-4 ${refresh.isPending || running ? "animate-spin" : ""}`} /> Recalcul rapide
         </button>
-          <button
-            type="button"
-            onClick={() => refresh.mutate(true)}
-            disabled={isLoading || refresh.isPending || Boolean(running)}
-            title={running ? "Un calcul est déjà en cours" : "Tout recalculer maintenant, dossiers compris : long (certaines recherches Varonis sur les dossiers dépassent 20 min)"}
-            className="text-sm font-semibold px-3 py-2.5 rounded-xl border border-border text-muted-foreground hover:bg-muted disabled:opacity-50"
-          >
-            Calcul complet
-          </button>
-        </div>
       </div>
 
       {running && (
@@ -267,12 +253,11 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
             </div>
             <p className="text-muted-foreground">
               {running.trigger === "manual" && running.results.dataSources?.carriedFrom
-                ? "Recalcul rapide : les comptes et l'inventaire sont recalculés ; les indicateurs sur les dossiers restent ceux du dernier calcul complet."
-                : "Calcul complet : les recherches Varonis sont lancées quelques-unes à la fois pour ne pas dépasser la limite de requêtes."}
-              {latest && ` Les chiffres affichés restent ceux du ${formatDateTime(latest.started_at)} jusqu'à la fin du calcul.`}
+                ? "Les comptes et l'inventaire sont recalculés ; les indicateurs sur les dossiers restent ceux de la nuit."
+                : "Calcul complet de la posture."}
+              {" "}Chaque chiffre se met à jour dès qu&apos;il est prêt.
               {state?.scheduled ? " Vous pouvez quitter la page : le calcul continue sur le serveur." : " Gardez la page ouverte pour que le calcul avance."}
             </p>
-            {running.last_error && <p className="text-amber-600">{running.last_error}</p>}
           </CardContent>
         </Card>
       )}
@@ -288,7 +273,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
       {!isLoading && !latest && !running && !error && (
         <Card>
           <CardContent className="p-6 text-sm text-muted-foreground">
-            La posture n&apos;a encore jamais été calculée. Cliquez sur « Calcul complet » pour lancer le premier calcul.
+            La posture n&apos;a encore jamais été calculée. Elle le sera la nuit prochaine, ou maintenant avec « Recalcul rapide » (le premier calcul est complet et peut prendre plus d&apos;une heure).
           </CardContent>
         </Card>
       )}
@@ -299,14 +284,9 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
             <div className="flex items-center gap-2 font-bold text-amber-600">
               <AlertTriangle className="w-5 h-5" /> La clé d&apos;API Varonis n&apos;a pas accès aux données de posture
             </div>
-            <p className="text-foreground">
-              Elle permet de lire les alertes, mais Varonis refuse la lecture des ressources, identités, appartenances et permissions
-              (« AUTH_NOT_AUTHORIZED »). Ce n&apos;est pas un problème de l&apos;application.
-            </p>
             <p className="text-muted-foreground">
-              À demander à l&apos;administrateur Varonis : étendre le rôle associé à la clé d&apos;API utilisée par le tableau de bord
-              (secret <code>VARONIS_API_KEY</code>) à la <b>lecture</b> des ressources (classification, exposition), des identités,
-              des appartenances aux groupes et des permissions. Aucun droit d&apos;écriture n&apos;est nécessaire.
+              Varonis refuse la lecture des dossiers et des comptes au tableau de bord. À signaler à l&apos;administrateur Varonis :
+              le rôle de la clé d&apos;API doit inclure la <b>lecture</b> des ressources, des identités, des groupes et des permissions.
             </p>
           </CardContent>
         </Card>
@@ -356,7 +336,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
           icon={Crown}
           color="border-l-violet-500"
           r={priv && { ...priv, count: priv.status === "done" ? priv.stale : undefined }}
-          onClick={onOpenInventory ? inventory("adminsInactive") : () => { setShowAdmins(true); accountsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
+          onClick={inventory("adminsInactive")}
           sub={priv?.status === "done" && (priv.staleOld === undefined
             ? `sur ${formatCount(priv.admins)} administrateurs`
             : `sur ${formatCount(priv.admins)} : ${formatCount(priv.staleOld)} sans connexion depuis ${INACTIVE_DAYS} j · ${formatCount(priv.staleNoLogon)} sans date de connexion`)}
@@ -445,7 +425,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
         </Card>
 
         {/* COMPTES */}
-        <Card ref={accountsRef} className="scroll-mt-4">
+        <Card>
           <CardHeader className="pb-1">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <Users className="w-4 h-4 text-sky-500" /> Comptes
@@ -461,7 +441,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               </div>
               {inactiveUnreliable ? (
                 <p className="text-sm text-amber-600 mt-1">
-                  Chiffre non fiable : Varonis a plafonné la recherche. Correction en cours.
+                  Chiffre indisponible pour ce calcul : il sera recalculé au prochain passage.
                 </p>
               ) : (
               <Status r={inactiveStatus ?? { status: "done" }}>
@@ -486,7 +466,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
 
             <dl className="border-t border-border pt-3 space-y-2 text-sm">
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={onOpenInventory ? inventory("admins") : () => setShowAdmins(true)} title="Voir la liste des administrateurs">Administrateurs</dt>
+                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={inventory("admins")} title="Voir la liste des administrateurs">Administrateurs</dt>
                 <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.admins)}</Status></dd>
               </div>
               <div className="flex justify-between gap-2">
@@ -499,26 +479,6 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               </div>
             </dl>
 
-            {(priv?.staleList?.length ?? 0) > 0 && (
-              <div>
-                <button type="button" onClick={() => setShowAdmins(!showAdmins)} className="text-xs font-semibold text-primary hover:underline">
-                  {showAdmins ? "Masquer" : "Voir"} les administrateurs inactifs
-                </button>
-                {showAdmins && (
-                  <ul className="mt-2 space-y-1">
-                    {priv!.staleList!.map((u, i) => (
-                      <li key={`${u.name}-${i}`} className="flex justify-between gap-3 text-xs">
-                        <span className="font-mono truncate text-foreground" title={u.name ?? ""}>{u.name}</span>
-                        <span className="text-muted-foreground shrink-0">{formatDay(u.lastLogonTime)}</span>
-                      </li>
-                    ))}
-                    {(priv!.stale ?? 0) > priv!.staleList!.length && (
-                      <li className="text-[11px] text-muted-foreground">… et {formatCount((priv!.stale ?? 0) - priv!.staleList!.length)} autres</li>
-                    )}
-                  </ul>
-                )}
-              </div>
-            )}
           </CardContent>
         </Card>
       </div>

@@ -10,12 +10,12 @@ const POSTURE_CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 const AUTH_ENDPOINT = "/api/authentication/api_keys/token";
 const GRAPHQL_ENDPOINT = "/api/graphql";
 
-// Le job Varonis peut prendre plusieurs minutes : la fonction ne l'attend pas.
-// Elle lance le job (ou vérifie un job existant) et répond tout de suite :
-//   { status: "pending", jobId, jobProgress }   -> le front rappelle avec { jobId }
-//   { status: "done", jobStatus, jobProgress, alerts }
-const JOB_ID_PATTERN = /^[\w-]{1,128}$/;
-const TYPE_NAME_PATTERN = /^[A-Za-z_]\w{0,63}$/;
+// Alertes : la préparation par Varonis prend une à plusieurs minutes. Le résultat
+// est gardé en cache dans varonis_alerts_cache et renouvelé en arrière-plan (tâche
+// planifiée ou ouverture de l'onglet) : l'écran affiche tout de suite le dernier.
+const ALERTS_MAX_AGE_MS = 15 * 60 * 1000; // au-delà, le cache est renouvelé
+const ALERTS_JOB_TIMEOUT_MS = 10 * 60 * 1000; // job Varonis abandonné au-delà
+const ALERTS_FORCE_MIN_MS = 60 * 1000; // « Actualiser » : pas plus d'une fois par minute
 
 // IMPORTANT (confirmé par le support Varonis) : les champs doivent être
 // demandés dans alertsAsync ET dans alertsQueryJob, sinon ils reviennent
@@ -65,8 +65,15 @@ function isRateLimited(e: unknown): boolean {
   return (e instanceof VaronisError && e.status === 429) || /too many requests|rate.?limit|throttl|quota/i.test(msg);
 }
 
+// Jeton réutilisé entre deux appels (même instance de la fonction) : évite une
+// authentification Varonis à chaque vérification de job.
+let cachedToken: { key: string; value: string; until: number } | null = null;
+const TOKEN_REUSE_MS = 5 * 60 * 1000;
+
 /** Étape 1 : échange la clé API Varonis contre un bearer token de courte durée. */
 async function getVaronisAccessToken(baseUrl: string, apiKey: string): Promise<string> {
+  const key = `${baseUrl}|${apiKey}`;
+  if (cachedToken && cachedToken.key === key && cachedToken.until > Date.now()) return cachedToken.value;
   const res = await fetch(`${baseUrl}${AUTH_ENDPOINT}`, {
     method: "POST",
     headers: {
@@ -85,6 +92,9 @@ async function getVaronisAccessToken(baseUrl: string, apiKey: string): Promise<s
   if (!data.access_token) {
     throw new Error("Réponse d'authentification Varonis sans access_token");
   }
+  // Durée de vie annoncée (expires_in, en secondes), moins une marge
+  const lifetime = Number(data.expires_in) > 0 ? Number(data.expires_in) * 1000 - 60_000 : TOKEN_REUSE_MS;
+  cachedToken = { key, value: data.access_token, until: Date.now() + Math.min(TOKEN_REUSE_MS, lifetime) };
   return data.access_token as string;
 }
 
@@ -102,6 +112,7 @@ async function callVaronisGraphQL(baseUrl: string, token: string, query: string,
   const data = await res.json().catch(() => ({ errors: [`Réponse HTTP ${res.status} illisible`] }));
 
   if (!res.ok || data.errors) {
+    if (res.status === 401) cachedToken = null; // jeton refusé : nouvelle authentification au prochain appel
     throw new VaronisError(`Erreur GraphQL Varonis: ${JSON.stringify(data.errors ?? data)}`, res.status);
   }
 
@@ -129,99 +140,6 @@ async function startAlertsJob(baseUrl: string, token: string): Promise<string> {
   return data.alertsAsync.jobId;
 }
 
-/**
- * Mode diagnostic (lecture seule) : liste les champs d'un type GraphQL
- * Varonis (ex. "Alert"), pour connaître les noms exacts avant de les
- * demander dans les requêtes d'alertes.
- */
-async function describeType(baseUrl: string, token: string, typeName: string) {
-  const query = `
-    query describe($name: String!) {
-      __type(name: $name) {
-        name
-        kind
-        fields {
-          name
-          description
-          type { name kind ofType { name kind ofType { name kind } } }
-          args { name type { name kind ofType { name kind ofType { name kind } } } }
-        }
-        inputFields { name type { name kind ofType { name kind ofType { name kind } } } }
-        enumValues { name }
-      }
-    }
-  `;
-  const data = await callVaronisGraphQL(baseUrl, token, query, { name: typeName });
-  return data.__type;
-}
-
-/**
- * Mode diagnostic (lecture seule) : recherches planifiées Varonis et résultat
- * de leur dernière exécution (nombre de lignes exact). Le lien de
- * téléchargement (dataUrl, utilisable sans jeton) n'est volontairement pas lu.
- */
-async function listScheduledSearches(baseUrl: string, token: string) {
-  const query = `
-    query scheduled {
-      scheduledSearches {
-        id
-        name
-        enabled
-        nextExecutionTime
-        lastExecution {
-          id
-          status
-          time
-          results {
-            id
-            name
-            status
-            rowCount
-            size
-            containsData
-            time
-            linkedSavedSearch { id name }
-          }
-        }
-      }
-    }
-  `;
-  const data = await callVaronisGraphQL(baseUrl, token, query, {});
-  const searches: Row[] = data.scheduledSearches ?? [];
-
-  // Détail des exécutions (les résultats ne sont pas toujours fournis par lastExecution)
-  const ids = searches.map((s) => String(s.id)).filter((id) => /^[\w-]{1,64}$/.test(id));
-  let executions: unknown = null;
-  if (ids.length > 0) {
-    try {
-      const execQuery = `
-        query executions {
-          scheduledSearchExecutions(scheduledSearchIds: ${JSON.stringify(ids)}) {
-            id
-            status
-            time
-            scheduledSearch { id name }
-            results {
-              id
-              name
-              status
-              rowCount
-              size
-              containsData
-              time
-              linkedSavedSearch { id name }
-            }
-          }
-        }
-      `;
-      executions = (await callVaronisGraphQL(baseUrl, token, execQuery, {})).scheduledSearchExecutions;
-    } catch (e) {
-      executions = { error: (e as Error).message.slice(0, 500) };
-    }
-  }
-  return { searches, executions };
-}
-
 /** Étape 3 : interroge une fois l'état du job (sans attendre). */
 async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
   const query = `
@@ -244,6 +162,87 @@ async function checkAlertsJob(baseUrl: string, token: string, jobId: string) {
     throw new Error(`Le job Varonis a échoué (statut: ${job.jobStatus})`);
   }
   return job;
+}
+
+// ---------------------------------------------------------------------------
+// Cache des alertes (table varonis_alerts_cache, une seule ligne)
+// ---------------------------------------------------------------------------
+
+const ALERTS_STATE_COLUMNS = "fetched_at, job_id, job_started_at, job_progress, partial, last_error";
+
+/**
+ * Fait avancer le renouvellement du cache : lance un job Varonis si le cache est
+ * trop ancien (ou si « Actualiser » est demandé), sinon vérifie une fois le job en
+ * cours et enregistre les alertes quand il est terminé. Renvoie l'état du cache.
+ */
+async function refreshAlerts(admin: Admin, baseUrl: string, apiKey: string, force: boolean): Promise<Row> {
+  const { data, error } = await admin.from("varonis_alerts_cache").select(ALERTS_STATE_COLUMNS).eq("id", 1).maybeSingle();
+  if (error) throw new Error(error.message);
+  let state: Row = data ?? {};
+  const now = Date.now();
+  const age = state.fetched_at ? now - new Date(state.fetched_at).getTime() : Infinity;
+  const jobActive = Boolean(state.job_id) && now - new Date(state.job_started_at).getTime() < ALERTS_JOB_TIMEOUT_MS;
+
+  if (!jobActive && (age > ALERTS_MAX_AGE_MS || (force && age > ALERTS_FORCE_MIN_MS))) {
+    const token = await getVaronisAccessToken(baseUrl, apiKey);
+    const jobId = await startAlertsJob(baseUrl, token);
+    state = { ...state, job_id: jobId, job_started_at: new Date().toISOString(), job_progress: null };
+    const { error: e } = await admin.from("varonis_alerts_cache").upsert({ id: 1, job_id: jobId, job_started_at: state.job_started_at, job_progress: null });
+    if (e) throw new Error(e.message);
+  } else if (!jobActive && state.job_id) {
+    // Job abandonné (délai dépassé) : le prochain passage en relancera un
+    state = { ...state, job_id: null, last_error: "Varonis n'a pas terminé la préparation des alertes à temps." };
+    await admin.from("varonis_alerts_cache").update({ job_id: null, last_error: state.last_error }).eq("id", 1);
+    return state;
+  }
+  if (!state.job_id) return state;
+
+  try {
+    const token = await getVaronisAccessToken(baseUrl, apiKey);
+    const job = await checkAlertsJob(baseUrl, token, state.job_id);
+    if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
+      const done = {
+        alerts: job.results ?? [], fetched_at: new Date().toISOString(), partial: job.jobStatus === "PARTIAL_RESULTS",
+        job_id: null, job_progress: null, last_error: null,
+      };
+      // Un autre appel a pu lancer un job plus récent entre-temps : on n'écrit que pour le nôtre
+      const { error: e } = await admin.from("varonis_alerts_cache").update(done).eq("id", 1).eq("job_id", state.job_id);
+      if (e) throw new Error(e.message);
+      const { alerts: _alerts, ...rest } = done;
+      return { ...state, ...rest };
+    }
+    if (job.jobProgress !== state.job_progress) {
+      await admin.from("varonis_alerts_cache").update({ job_progress: job.jobProgress }).eq("id", 1).eq("job_id", state.job_id);
+    }
+    return { ...state, job_progress: job.jobProgress };
+  } catch (e) {
+    // Job en échec : on garde les alertes déjà en cache et on note l'erreur
+    const message = (e as Error).message.slice(0, 300);
+    await admin.from("varonis_alerts_cache").update({ job_id: null, last_error: message }).eq("id", 1).eq("job_id", state.job_id);
+    return { ...state, job_id: null, last_error: message };
+  }
+}
+
+/**
+ * Réponse à l'écran : état du cache, et les alertes seulement si l'écran ne les a
+ * pas déjà (since = date des alertes qu'il affiche).
+ */
+async function handleAlerts(admin: Admin, baseUrl: string, apiKey: string, opts: { force: boolean; since: string | null }) {
+  const state = await refreshAlerts(admin, baseUrl, apiKey, opts.force);
+  const fetchedAt = state.fetched_at ? new Date(state.fetched_at).toISOString() : null;
+  const body: Row = {
+    fetchedAt,
+    refreshing: Boolean(state.job_id),
+    progress: state.job_progress ?? null,
+    partial: Boolean(state.partial),
+    lastError: state.last_error ?? null,
+  };
+  if (fetchedAt && fetchedAt !== opts.since) {
+    const { data, error } = await admin.from("varonis_alerts_cache").select("alerts").eq("id", 1).maybeSingle();
+    if (error) throw new Error(error.message);
+    body.alerts = data?.alerts ?? [];
+  }
+  return jsonResponse(body);
 }
 
 // ---------------------------------------------------------------------------
@@ -602,25 +601,17 @@ const POSTURE_QUERIES: Record<string, PostureQuery> = {
     summarize: (all) => {
       const rows = all.filter((r) => !r.isDisabled);
       const types = (r: Row) => (r.privilegedIdentityType ?? []) as string[];
-      const byType = new Map<string, number>();
-      for (const r of rows) for (const t of types(r)) byType.set(t, (byType.get(t) ?? 0) + 1);
       const admins = rows.filter((r) => types(r).includes("ADMIN"));
       const services = rows.filter((r) => types(r).includes("SERVICE") && !types(r).includes("ADMIN"));
       const inactiveAdmins = admins.filter((r) => inactiveSince(r.lastLogonTime));
       const noLogonAdmins = count(admins, (r) => !r.lastLogonTime);
       return {
         count: rows.length,
-        byType: [...byType.entries()].map(([type, n]) => ({ type, count: n })).sort((a, b) => b.count - a.count),
         admins: admins.length,
         stale: inactiveAdmins.length,
         staleOld: inactiveAdmins.length - noLogonAdmins, // dernière connexion il y a plus de 90 j
         staleNoLogon: noLogonAdmins, // aucune date de connexion
         services: services.length,
-        servicesStale: count(services, (r) => inactiveSince(r.lastLogonTime)),
-        staleList: inactiveAdmins
-          .sort((a, b) => String(a.lastLogonTime ?? "").localeCompare(String(b.lastLogonTime ?? "")))
-          .slice(0, 10)
-          .map((r) => ({ name: r.name, types: types(r), lastLogonTime: r.lastLogonTime ?? null })),
         // Inventaire : administrateurs (avec indicateur d'inactivité) et comptes de service
         items: admins.map((r) => ({ ...toAccount(r), inactive: inactiveSince(r.lastLogonTime) })),
         serviceItems: services.map((r) => ({ ...toAccount(r), inactive: inactiveSince(r.lastLogonTime) })),
@@ -1275,11 +1266,11 @@ Deno.serve(async (req) => {
   }
 
   try {
-    let body: { jobId?: unknown; action?: unknown; typeName?: unknown; typeNames?: unknown; start?: unknown } = {};
+    let body: { action?: unknown; start?: unknown } = {};
     try {
       body = (await req.json()) ?? {};
     } catch {
-      // corps vide : lancement d'un nouveau job d'alertes
+      // corps vide : alertes
     }
 
     if (!VARONIS_BASE_URL || !VARONIS_API_KEY) {
@@ -1293,6 +1284,9 @@ Deno.serve(async (req) => {
       if (!POSTURE_CRON_SECRET || !sameSecret(given, POSTURE_CRON_SECRET)) {
         return jsonResponse({ error: "Non autorisé" }, 401);
       }
+      // Garde aussi le cache des alertes à jour (sans bloquer la posture en cas d'échec)
+      await refreshAlerts(adminClient(), baseUrl, VARONIS_API_KEY, false)
+        .catch((e) => console.error("Cache des alertes :", (e as Error).message));
       return await handlePosture("posture-cron", body, baseUrl, VARONIS_API_KEY, null);
     }
 
@@ -1313,11 +1307,6 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "Session invalide" }, 401);
     }
 
-    // 2. Lancement du job d'alertes, ou vérification d'un job déjà lancé
-    if (body.jobId !== undefined && (typeof body.jobId !== "string" || !JOB_ID_PATTERN.test(body.jobId))) {
-      return jsonResponse({ error: "Identifiant de job invalide" }, 400);
-    }
-
     // Posture des données : lecture de la dernière photo, ou nouveau calcul
     // Inventaire des comptes : { action: "posture-inventory", list: "admins" | … }
     if (body.action === "posture-inventory") {
@@ -1333,44 +1322,11 @@ Deno.serve(async (req) => {
       return await handlePosture(body.action, body, baseUrl, VARONIS_API_KEY, user.id);
     }
 
-    // Mode diagnostic : { action: "scheduledSearches" }
-    if (body.action === "scheduledSearches") {
-      const scheduledToken = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
-      return jsonResponse({ scheduledSearches: await listScheduledSearches(baseUrl, scheduledToken) });
-    }
-
-    // Mode diagnostic : { action: "schema", typeName: "Alert" }
-    if (body.action === "schema") {
-      // Un type (typeName) ou plusieurs d'un coup (typeNames, 15 au maximum)
-      const names = Array.isArray(body.typeNames)
-        ? body.typeNames
-        : [typeof body.typeName === "string" ? body.typeName : "Alert"];
-      if (names.length === 0 || names.length > 15 || !names.every((n) => typeof n === "string" && TYPE_NAME_PATTERN.test(n))) {
-        return jsonResponse({ error: "Noms de type invalides (15 au maximum)" }, 400);
-      }
-      const schemaToken = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
-      const types = [];
-      for (const n of names as string[]) {
-        types.push((await describeType(baseUrl, schemaToken, n)) ?? { name: n, missing: true });
-      }
-      return Array.isArray(body.typeNames) ? jsonResponse({ types }) : jsonResponse({ type: types[0] });
-    }
-
-    const token = await getVaronisAccessToken(baseUrl, VARONIS_API_KEY);
-    const jobId = (body.jobId as string | undefined) ?? await startAlertsJob(baseUrl, token);
-    const job = await checkAlertsJob(baseUrl, token, jobId);
-
-    if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
-      return jsonResponse({
-        status: "done",
-        jobStatus: job.jobStatus,
-        jobProgress: job.jobProgress,
-        alerts: job.results,
-      });
-    }
-
-    // PENDING ou EXECUTING : le front rappellera avec ce jobId
-    return jsonResponse({ status: "pending", jobId, jobStatus: job.jobStatus, jobProgress: job.jobProgress });
+    // Alertes (action par défaut) : { action: "alerts", force?, since? }
+    return await handleAlerts(adminClient(), baseUrl, VARONIS_API_KEY, {
+      force: (body as Row).force === true,
+      since: typeof (body as Row).since === "string" ? (body as Row).since : null,
+    });
   } catch (err: any) {
     console.error("Erreur varonis-proxy:", err.message);
     return jsonResponse({ error: err.message }, 500);
