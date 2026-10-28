@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import VaronisPostureHistory from "./VaronisPostureHistory";
 import {
   Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users, X,
-  RefreshCw, Loader2, AlertTriangle, Info, Clock,
+  Loader2, AlertTriangle, Info, Clock,
 } from "lucide-react";
 import {
   formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal, zoneTotal, mergeRunning,
@@ -15,13 +15,13 @@ import {
   type PostureResults, type PostureState, type ZoneIssueKey, type ZoneResult, type InventoryList,
 } from "@/lib/varonisPosture";
 
-// La posture est calculée côté serveur (tâche planifiée chaque nuit, ou à la
-// demande) et enregistrée : l'écran lit la dernière photo terminée. Pendant un
-// calcul, l'écran revient toutes les 20 s, ce qui fait aussi avancer le calcul.
+// La posture est calculée côté serveur par la tâche planifiée de la nuit et
+// enregistrée : l'écran lit la dernière photo terminée. Pendant un calcul,
+// l'écran revient toutes les 20 s pour afficher chaque chiffre dès qu'il est prêt.
 const RUNNING_POLL_MS = 20_000;
 
-async function callPosture(action: "posture-status" | "posture-refresh"): Promise<PostureState> {
-  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action } });
+async function fetchPosture(): Promise<PostureState> {
+  const { data, error } = await supabase.functions.invoke("varonis-proxy", { body: { action: "posture-status" } });
   if (error) {
     if (error instanceof FunctionsHttpError) {
       const errBody = await error.context.json().catch(() => null);
@@ -164,17 +164,12 @@ function FolderRow({ name, path, source, size, chips }: {
 export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOpenInventory?: (list: InventoryList) => void } = {}) {
   // Ouvre l'inventaire des comptes sur une liste (sinon, ne fait rien)
   const inventory = (list: InventoryList) => (e?: React.MouseEvent) => { e?.stopPropagation(); onOpenInventory?.(list); };
-  const queryClient = useQueryClient();
   const { data: state, error, isLoading } = useQuery({
     queryKey: ["varonis-posture"],
-    queryFn: () => callPosture("posture-status"),
+    queryFn: fetchPosture,
     staleTime: 5 * 60 * 1000,
     retry: false,
     refetchInterval: (q) => (q.state.data?.running ? RUNNING_POLL_MS : false),
-  });
-  const refresh = useMutation({
-    mutationFn: () => callPosture("posture-refresh"),
-    onSuccess: (next) => queryClient.setQueryData(["varonis-posture"], next),
   });
 
   const latest = state?.latest ?? null;
@@ -214,12 +209,11 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
   const zonesRef = useRef<HTMLDivElement>(null);
   const exposedRef = useRef<HTMLDivElement>(null);
   const exposedList = useShowMore(exposed?.top);
-  const errorMessage = (refresh.error ?? error) as Error | null;
+  const errorMessage = error as Error | null;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
-        <div>
+      <div>
           <h3 className="text-xl font-black text-foreground flex items-center gap-2">
             <FolderOpen className="w-6 h-6 text-primary" /> Posture des données
           </h3>
@@ -232,16 +226,6 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               ? <>Photo du {formatDateTime(latest.started_at)} ({formatAge(latest.finished_at ?? latest.started_at)}) · {latest.trigger === "schedule" ? "calcul automatique de la nuit" : "calcul demandé"}</>
               : isLoading ? "Chargement…" : "Aucune photo terminée pour l'instant"}
           </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => refresh.mutate()}
-          disabled={isLoading || refresh.isPending || Boolean(running)}
-          title={running ? "Un calcul est déjà en cours" : "Recalcul rapide (quelques minutes) : comptes et inventaire ; les indicateurs sur les dossiers sont recalculés chaque nuit"}
-          className="flex items-center gap-2 self-start sm:self-auto text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${refresh.isPending || running ? "animate-spin" : ""}`} /> Recalcul rapide
-        </button>
       </div>
 
       {running && (
@@ -252,10 +236,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               Calcul en cours depuis {formatElapsed(now - new Date(running.started_at).getTime())} : {snapshotProgress(running.results).done} / {snapshotProgress(running.results).total} recherches terminées
             </div>
             <p className="text-muted-foreground">
-              {running.trigger === "manual" && running.results.dataSources?.carriedFrom
-                ? "Les comptes et l'inventaire sont recalculés ; les indicateurs sur les dossiers restent ceux de la nuit."
-                : "Calcul complet de la posture."}
-              {" "}Chaque chiffre se met à jour dès qu&apos;il est prêt.
+              Chaque chiffre se met à jour dès qu&apos;il est prêt.
               {state?.scheduled ? " Vous pouvez quitter la page : le calcul continue sur le serveur." : " Gardez la page ouverte pour que le calcul avance."}
             </p>
           </CardContent>
@@ -273,7 +254,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
       {!isLoading && !latest && !running && !error && (
         <Card>
           <CardContent className="p-6 text-sm text-muted-foreground">
-            La posture n&apos;a encore jamais été calculée. Elle le sera la nuit prochaine, ou maintenant avec « Recalcul rapide » (le premier calcul est complet et peut prendre plus d&apos;une heure).
+            La posture n&apos;a encore jamais été calculée : elle le sera automatiquement la nuit prochaine.
           </CardContent>
         </Card>
       )}
@@ -441,7 +422,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               </div>
               {inactiveUnreliable ? (
                 <p className="text-sm text-amber-600 mt-1">
-                  Chiffre indisponible pour ce calcul : il sera recalculé au prochain passage.
+                  Chiffre indisponible pour ce calcul : il sera recalculé la nuit prochaine.
                 </p>
               ) : (
               <Status r={inactiveStatus ?? { status: "done" }}>

@@ -8,7 +8,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  ShieldAlert, AlertOctagon, Database, Bell, RefreshCw, Loader2, AlertTriangle, Inbox,
+  ShieldAlert, AlertOctagon, Database, Bell, Loader2, AlertTriangle, Inbox,
   Calendar, TrendingUp, TrendingDown, Minus, Clock, Lightbulb, Info, ListChecks,
   Lock, Upload, UserCog, Trash2, Hourglass, Users, Tag, Volume2,
   ShieldCheck, Server, UserCheck, ExternalLink, ChevronDown, ChevronUp, Filter, X,
@@ -39,7 +39,7 @@ const ALERTS_KEY = ["varonis-alerts"];
 
 type AlertsData = VaronisAlertsResponse & { alerts: VaronisAlert[] | null };
 
-async function callVaronisProxy(body: { action: "alerts"; force?: boolean; since?: string | null }): Promise<VaronisAlertsResponse> {
+async function callVaronisProxy(body: { action: "alerts"; since?: string | null }): Promise<VaronisAlertsResponse> {
   const { data, error } = await supabase.functions.invoke("varonis-proxy", { body });
   if (error) {
     // On remonte le message renvoyé par la fonction plutôt que l'erreur générique
@@ -53,8 +53,8 @@ async function callVaronisProxy(body: { action: "alerts"; force?: boolean; since
 }
 
 /** Interroge le cache ; les alertes ne sont renvoyées que si elles ont changé. */
-async function fetchVaronisAlerts(previous: AlertsData | undefined, force = false): Promise<AlertsData> {
-  const res = await callVaronisProxy({ action: "alerts", force, since: previous?.alerts ? previous.fetchedAt : null });
+async function fetchVaronisAlerts(previous: AlertsData | undefined): Promise<AlertsData> {
+  const res = await callVaronisProxy({ action: "alerts", since: previous?.alerts ? previous.fetchedAt : null });
   return { ...res, alerts: res.alerts ?? previous?.alerts ?? null };
 }
 
@@ -154,21 +154,7 @@ export default function VaronisPanel() {
     refetchInterval: (q) => (q.state.data?.refreshing || !q.state.data?.alerts ? REFRESHING_POLL_MS : IDLE_POLL_MS),
     retry: false,
   });
-  // « Actualiser » : demande une nouvelle préparation à Varonis
-  const [forcing, setForcing] = useState(false);
-  const [forceError, setForceError] = useState<Error | null>(null);
-  const forceRefresh = async () => {
-    setForcing(true);
-    setForceError(null);
-    try {
-      queryClient.setQueryData(ALERTS_KEY, await fetchVaronisAlerts(queryClient.getQueryData<AlertsData>(ALERTS_KEY), true));
-    } catch (e) {
-      setForceError(e as Error);
-    } finally {
-      setForcing(false);
-    }
-  };
-  const refreshing = forcing || Boolean(data?.refreshing);
+  const refreshing = Boolean(data?.refreshing);
   const progress = data?.progress ?? null;
   // Sans alertes en cache : chargement tant que Varonis les prépare, erreur sinon
   const isLoading = !data?.alerts && !queryError && !(data && !data.refreshing && data.lastError);
@@ -250,9 +236,9 @@ export default function VaronisPanel() {
             </span>
           )}
         </p>
-        {data?.alerts && !refreshing && (forceError || data.lastError) && (
+        {data?.alerts && !refreshing && data.lastError && (
           <p className="text-xs text-amber-600 mt-1">
-            Dernière mise à jour impossible : {(forceError ?? new Error(data.lastError!)).message} Les alertes affichées sont celles du {formatDate(data.fetchedAt ? new Date(data.fetchedAt) : null)}.
+            Dernière mise à jour impossible : {data.lastError} Les alertes affichées sont celles du {formatDate(data.fetchedAt ? new Date(data.fetchedAt) : null)}.
           </p>
         )}
       </div>
@@ -290,15 +276,7 @@ export default function VaronisPanel() {
             <option value="years">{timePrefix === "this" ? "Année" : "Année(s)"}</option>
           </select>
         </div>
-        <button
-          type="button"
-          onClick={forceRefresh}
-          disabled={refreshing}
-          title="Demander à Varonis les dernières alertes (une à plusieurs minutes)"
-          className="flex items-center gap-2 text-sm font-semibold px-4 py-2.5 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /> Actualiser
-        </button>
+
       </div>
     </div>
   );

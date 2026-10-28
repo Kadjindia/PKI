@@ -111,7 +111,7 @@ docker compose restart functions
 
 ### Posture des données Varonis (calcul planifié)
 
-La posture (10 recherches Varonis sur des millions d'objets) n'est pas calculée à l'ouverture de l'écran : `varonis-proxy` la calcule par petites étapes (3 recherches en parallèle au plus, pause automatique si Varonis signale trop de requêtes) et enregistre chaque photo dans la table `varonis_posture_snapshots`. L'écran affiche la dernière photo terminée ; « Recalcul rapide » recalcule les comptes et l'inventaire en quelques minutes (un seul calcul à la fois, 15 min minimum entre deux), les indicateurs sur les dossiers étant recalculés chaque nuit.
+La posture (10 recherches Varonis sur des millions d'objets) n'est pas calculée à l'ouverture de l'écran : `varonis-proxy` la calcule par petites étapes (3 recherches en parallèle au plus, pause automatique si Varonis signale trop de requêtes) et enregistre chaque photo dans la table `varonis_posture_snapshots`. L'écran affiche la dernière photo terminée ; le calcul est lancé uniquement par la tâche planifiée de la nuit (pas de bouton de calcul à l'écran).
 
 Mise en place :
 
@@ -121,7 +121,7 @@ Mise en place :
 
 Sans l'étape 3, le calcul n'avance que lorsque l'écran Posture est ouvert.
 
-**Alertes** : Varonis met une à plusieurs minutes à préparer les alertes. `varonis-proxy` garde le dernier résultat dans `varonis_alerts_cache` et le renouvelle en arrière-plan (tâche planifiée de l'étape 3, ou ouverture de l'onglet) dès qu'il a plus de 15 minutes : l'onglet Alertes s'affiche immédiatement. « Actualiser » demande une nouvelle préparation (au plus une par minute).
+**Alertes** : Varonis met une à plusieurs minutes à préparer les alertes. `varonis-proxy` garde le dernier résultat dans `varonis_alerts_cache` et le renouvelle en arrière-plan (tâche planifiée de l'étape 3, ou ouverture de l'onglet) dès qu'il a plus de 15 minutes : l'onglet Alertes s'affiche immédiatement et se met à jour seul (pas de bouton « Actualiser »).
 
 Le bloc « Évolution dans le temps » trace une photo par jour (la dernière du jour) depuis le 27/10/2026, date à partir de laquelle les définitions des indicateurs sont stables ; une valeur plafonnée ou reprise d'une photo précédente n'est pas tracée.
 

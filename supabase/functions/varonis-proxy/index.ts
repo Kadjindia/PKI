@@ -12,10 +12,10 @@ const GRAPHQL_ENDPOINT = "/api/graphql";
 
 // Alertes : la préparation par Varonis prend une à plusieurs minutes. Le résultat
 // est gardé en cache dans varonis_alerts_cache et renouvelé en arrière-plan (tâche
-// planifiée ou ouverture de l'onglet) : l'écran affiche tout de suite le dernier.
+// planifiée ou ouverture de l'onglet) : l'écran affiche tout de suite le dernier
+// et se met à jour seul, sans bouton.
 const ALERTS_MAX_AGE_MS = 15 * 60 * 1000; // au-delà, le cache est renouvelé
 const ALERTS_JOB_TIMEOUT_MS = 10 * 60 * 1000; // job Varonis abandonné au-delà
-const ALERTS_FORCE_MIN_MS = 60 * 1000; // « Actualiser » : pas plus d'une fois par minute
 
 // IMPORTANT (confirmé par le support Varonis) : les champs doivent être
 // demandés dans alertsAsync ET dans alertsQueryJob, sinon ils reviennent
@@ -172,10 +172,10 @@ const ALERTS_STATE_COLUMNS = "fetched_at, job_id, job_started_at, job_progress, 
 
 /**
  * Fait avancer le renouvellement du cache : lance un job Varonis si le cache est
- * trop ancien (ou si « Actualiser » est demandé), sinon vérifie une fois le job en
+ * trop ancien, sinon vérifie une fois le job en
  * cours et enregistre les alertes quand il est terminé. Renvoie l'état du cache.
  */
-async function refreshAlerts(admin: Admin, baseUrl: string, apiKey: string, force: boolean): Promise<Row> {
+async function refreshAlerts(admin: Admin, baseUrl: string, apiKey: string): Promise<Row> {
   const { data, error } = await admin.from("varonis_alerts_cache").select(ALERTS_STATE_COLUMNS).eq("id", 1).maybeSingle();
   if (error) throw new Error(error.message);
   let state: Row = data ?? {};
@@ -183,7 +183,7 @@ async function refreshAlerts(admin: Admin, baseUrl: string, apiKey: string, forc
   const age = state.fetched_at ? now - new Date(state.fetched_at).getTime() : Infinity;
   const jobActive = Boolean(state.job_id) && now - new Date(state.job_started_at).getTime() < ALERTS_JOB_TIMEOUT_MS;
 
-  if (!jobActive && (age > ALERTS_MAX_AGE_MS || (force && age > ALERTS_FORCE_MIN_MS))) {
+  if (!jobActive && age > ALERTS_MAX_AGE_MS) {
     const token = await getVaronisAccessToken(baseUrl, apiKey);
     const jobId = await startAlertsJob(baseUrl, token);
     state = { ...state, job_id: jobId, job_started_at: new Date().toISOString(), job_progress: null };
@@ -227,8 +227,8 @@ async function refreshAlerts(admin: Admin, baseUrl: string, apiKey: string, forc
  * Réponse à l'écran : état du cache, et les alertes seulement si l'écran ne les a
  * pas déjà (since = date des alertes qu'il affiche).
  */
-async function handleAlerts(admin: Admin, baseUrl: string, apiKey: string, opts: { force: boolean; since: string | null }) {
-  const state = await refreshAlerts(admin, baseUrl, apiKey, opts.force);
+async function handleAlerts(admin: Admin, baseUrl: string, apiKey: string, since: string | null) {
+  const state = await refreshAlerts(admin, baseUrl, apiKey);
   const fetchedAt = state.fetched_at ? new Date(state.fetched_at).toISOString() : null;
   const body: Row = {
     fetchedAt,
@@ -237,7 +237,7 @@ async function handleAlerts(admin: Admin, baseUrl: string, apiKey: string, opts:
     partial: Boolean(state.partial),
     lastError: state.last_error ?? null,
   };
-  if (fetchedAt && fetchedAt !== opts.since) {
+  if (fetchedAt && fetchedAt !== since) {
     const { data, error } = await admin.from("varonis_alerts_cache").select("alerts").eq("id", 1).maybeSingle();
     if (error) throw new Error(error.message);
     body.alerts = data?.alerts ?? [];
@@ -745,13 +745,7 @@ const MAX_ATTEMPTS = 3; // essais par indicateur en cas d'erreur passagère
 // dossiers) : le délai ne doit couper qu'une recherche réellement bloquée.
 const JOB_TIMEOUT_MS = 60 * 60 * 1000; // « données / droits inutilisés » dépassent 20 min
 const TIMEOUT_ATTEMPTS = 2;
-// Recalcul rapide (comptes) : toutes ses recherches lancées ensemble, pas de relance
-// d'une recherche bloquée (la valeur précédente est reprise)
-const MANUAL_JOB_TIMEOUT_MS = 20 * 60 * 1000;
-const MANUAL_TIMEOUT_ATTEMPTS = 1;
-const MANUAL_MAX_RUNNING_JOBS = 7;
 const RUN_TIMEOUT_MS = 4 * 60 * 60 * 1000; // au-delà, ce qui reste est abandonné (une recherche par source de données)
-const MANUAL_COOLDOWN_MS = 15 * 60 * 1000; // délai minimal entre deux calculs demandés
 // Durée de travail d'un passage de la tâche planifiée (sous la limite d'exécution
 // des Edge Functions, 150 s) et marge laissée pour finir une étape
 const CRON_BUDGET_MS = 100_000;
@@ -791,37 +785,13 @@ async function runningSnapshot(admin: Admin): Promise<Snapshot | null> {
   return data;
 }
 
-/** Recherches sur les comptes : seules refaites par le recalcul rapide (3 à 6 min seules). */
-const ACCOUNT_KEYS = ["privileged", "inactive90", "inactive180", "inactive365", "inactive730", "expiredEnabled", "adminMemberships"];
-
 /**
- * Recalcul rapide = les comptes. Les recherches sur les dossiers prennent de 8 à
- * plus de 20 min chez Varonis : leurs résultats sont repris de la dernière photo
- * terminée, avec leur date. Le calcul complet (manuel ou de nuit) refait tout.
+ * Démarre une nouvelle photo (tous les indicateurs en attente). Une seule à la fois.
+ * Seule la tâche planifiée de la nuit en lance : l'écran n'a pas de bouton de calcul.
  */
-async function quickReuse(admin: Admin): Promise<Record<string, Row>> {
-  const { data } = await admin.from("varonis_posture_snapshots").select("id, started_at, results")
-    .eq("status", "done").order("started_at", { ascending: false }).limit(1).maybeSingle();
-  const prev = (data?.results ?? {}) as Record<string, Row>;
-  if (prev.dataSources?.status !== "done") return {}; // pas de photo complète exploitable : calcul complet
-  const reused: Record<string, Row> = {};
-  for (const [k, v] of Object.entries(prev)) {
-    if (ACCOUNT_KEYS.includes(k) || v.status !== "done" || v.split) continue;
-    reused[k] = { ...await storeLists(admin, data!.id, k, v), carriedFrom: v.carriedFrom ?? data!.started_at };
-  }
-  reused.dataSources = { ...reused.dataSources, expanded: true };
-  return reused;
-}
-
-/** Recalcul rapide : photo manuelle dont les dossiers sont repris (dataSources repris). */
-const isQuick = (snap: { trigger: string; results: Record<string, Row> }) =>
-  snap.trigger === "manual" && Boolean(snap.results.dataSources?.carriedFrom);
-
-/** Démarre une nouvelle photo (tous les indicateurs en attente). Une seule à la fois. */
-async function createSnapshot(admin: Admin, trigger: "manual" | "schedule", userId: string | null, full = false) {
+async function createSnapshot(admin: Admin) {
   const results: Record<string, Row> = Object.fromEntries(Object.keys(POSTURE_QUERIES).map((k) => [k, { status: "queued", attempts: 0 }]));
-  if (trigger === "manual" && !full) Object.assign(results, await quickReuse(admin));
-  const { error } = await admin.from("varonis_posture_snapshots").insert({ trigger, requested_by: userId, results });
+  const { error } = await admin.from("varonis_posture_snapshots").insert({ trigger: "schedule", requested_by: null, results });
   // 23505 : une photo est déjà en cours (index unique), rien à faire
   if (error && error.code !== "23505") throw new Error(error.message);
 }
@@ -979,10 +949,10 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
         } else {
           // Heure de lancement inconnue (photo antérieure) : début de la photo
           const launched = new Date(entry.startedAt ?? claimed.started_at).getTime();
-          if (now - launched > (isQuick(claimed) ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS)) {
+          if (now - launched > JOB_TIMEOUT_MS) {
             const attempts = (entry.attempts ?? 0) + 1;
-            const error = `Varonis n'a pas terminé la recherche en ${(isQuick(claimed) ? MANUAL_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS) / 60000} min`;
-            results[key] = attempts < (isQuick(claimed) ? MANUAL_TIMEOUT_ATTEMPTS : TIMEOUT_ATTEMPTS)
+            const error = `Varonis n'a pas terminé la recherche en ${JOB_TIMEOUT_MS / 60000} min`;
+            results[key] = attempts < TIMEOUT_ATTEMPTS
               ? { status: "queued", attempts, lastError: error }
               : { status: "error", code: "timeout", attempts, error };
           } else {
@@ -1027,7 +997,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
     // places libérées pendant que les longs tournent, la photo se termine plus tôt.
     const launchOrder = Object.entries(results).sort(([a], [b]) => launchRank(a) - launchRank(b));
     for (const [key, entry] of launchOrder) {
-      if (Object.values(results).filter((r) => r.status === "pending").length >= (isQuick(claimed) ? MANUAL_MAX_RUNNING_JOBS : MAX_RUNNING_JOBS)) break;
+      if (Object.values(results).filter((r) => r.status === "pending").length >= MAX_RUNNING_JOBS) break;
       if (entry.status !== "queued") continue;
       try {
         const q = queryFor(key);
@@ -1217,24 +1187,13 @@ function sameSecret(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** Actions de posture : posture-status, posture-refresh (utilisateur) et posture-cron (tâche planifiée). */
-async function handlePosture(action: string, body: Row, baseUrl: string, apiKey: string, userId: string | null) {
+/** Actions de posture : posture-status (écran) et posture-cron (tâche planifiée). */
+async function handlePosture(action: string, body: Row, baseUrl: string, apiKey: string) {
   const admin = adminClient();
   let state = await latestSnapshots(admin);
 
-  if (action === "posture-refresh" && !state.running) {
-    const last = state.latest ? new Date(state.latest.started_at).getTime() : 0;
-    const wait = last + MANUAL_COOLDOWN_MS - Date.now();
-    if (wait > 0) {
-      return jsonResponse({
-        error: `Dernier calcul lancé il y a moins de ${MANUAL_COOLDOWN_MS / 60000} min : nouveau calcul possible dans ${Math.ceil(wait / 60000)} min (limite de requêtes Varonis).`,
-      }, 429);
-    }
-    await createSnapshot(admin, "manual", userId, body.full === true); // full : calcul complet demandé
-    state = await latestSnapshots(admin);
-  }
   if (action === "posture-cron" && body.start === true && !state.running) {
-    await createSnapshot(admin, "schedule", null);
+    await createSnapshot(admin);
     state = await latestSnapshots(admin);
   }
 
@@ -1285,9 +1244,9 @@ Deno.serve(async (req) => {
         return jsonResponse({ error: "Non autorisé" }, 401);
       }
       // Garde aussi le cache des alertes à jour (sans bloquer la posture en cas d'échec)
-      await refreshAlerts(adminClient(), baseUrl, VARONIS_API_KEY, false)
+      await refreshAlerts(adminClient(), baseUrl, VARONIS_API_KEY)
         .catch((e) => console.error("Cache des alertes :", (e as Error).message));
-      return await handlePosture("posture-cron", body, baseUrl, VARONIS_API_KEY, null);
+      return await handlePosture("posture-cron", body, baseUrl, VARONIS_API_KEY);
     }
 
     // 1. Authentification Supabase (JWT de l'utilisateur connecté)
@@ -1318,15 +1277,13 @@ Deno.serve(async (req) => {
       return jsonResponse({ from: HISTORY_FROM, points: await postureHistory(adminClient()) });
     }
 
-    if (body.action === "posture-status" || body.action === "posture-refresh") {
-      return await handlePosture(body.action, body, baseUrl, VARONIS_API_KEY, user.id);
+    if (body.action === "posture-status") {
+      return await handlePosture(body.action, body, baseUrl, VARONIS_API_KEY);
     }
 
-    // Alertes (action par défaut) : { action: "alerts", force?, since? }
-    return await handleAlerts(adminClient(), baseUrl, VARONIS_API_KEY, {
-      force: (body as Row).force === true,
-      since: typeof (body as Row).since === "string" ? (body as Row).since : null,
-    });
+    // Alertes (action par défaut) : { action: "alerts", since? }
+    const since = (body as Row).since;
+    return await handleAlerts(adminClient(), baseUrl, VARONIS_API_KEY, typeof since === "string" ? since : null);
   } catch (err: any) {
     console.error("Erreur varonis-proxy:", err.message);
     return jsonResponse({ error: err.message }, 500);
