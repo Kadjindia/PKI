@@ -68,8 +68,6 @@ export interface PostureResults {
   privileged?: Base & {
     admins?: number;
     stale?: number;
-    staleOld?: number;
-    staleNoLogon?: number;
     services?: number;
   };
   inactive90?: Base;
@@ -185,15 +183,6 @@ export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(total / 60), sec = total % 60;
   return m === 0 ? `${sec} s` : `${m} min ${String(sec).padStart(2, "0")} s`;
-}
-
-/** Ancienneté lisible : « il y a 5 min », « il y a 3 h », « il y a 2 j ». */
-export function formatAge(iso: string, now = Date.now()): string {
-  const min = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 60000));
-  if (min < 1) return "à l'instant";
-  if (min < 60) return `il y a ${min} min`;
-  if (min < 48 * 60) return `il y a ${Math.floor(min / 60)} h`;
-  return `il y a ${Math.floor(min / 1440)} j`;
 }
 
 /** Libellé lisible du type de source Varonis (SharePoint, OneDrive, partage de fichiers…). */

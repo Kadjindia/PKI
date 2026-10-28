@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  formatCount, formatBytes, share, snapshotProgress, formatAge,
+  formatCount, formatBytes, share, snapshotProgress,
   allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, seriesFor, compareSeries, ouFromDn, matchesSearch, toCsv, mergeRunning,
 } from "@/lib/varonisPosture";
 
@@ -51,15 +51,10 @@ describe("posture Varonis : mise en forme", () => {
     expect(displayPath({ path: "D:\\Users" })).toBe("D:\\Users");
   });
 
-  it("affiche les durées et l'ancienneté d'une photo", () => {
+  it("affiche les durées et les erreurs", () => {
     expect(shortError({ code: "timeout" })).toBe("Varonis n'a pas répondu à temps");
     expect(formatElapsed(45_000)).toBe("45 s");
     expect(formatElapsed(185_000)).toBe("3 min 05 s");
-    const now = Date.parse("2026-10-23T12:00:00Z");
-    expect(formatAge("2026-10-23T11:59:30Z", now)).toBe("à l'instant");
-    expect(formatAge("2026-10-23T11:55:00Z", now)).toBe("il y a 5 min");
-    expect(formatAge("2026-10-23T08:00:00Z", now)).toBe("il y a 4 h");
-    expect(formatAge("2026-10-20T12:00:00Z", now)).toBe("il y a 3 j");
   });
 
   it("traduit le type de source", () => {
