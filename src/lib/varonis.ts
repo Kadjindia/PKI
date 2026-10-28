@@ -24,12 +24,17 @@ export interface VaronisAlert {
   url?: string | null;
 }
 
-export interface VaronisProxyResponse {
-  status?: "pending" | "done";
-  jobId?: string;
-  jobStatus?: string;
-  jobProgress?: number;
-  alerts?: VaronisAlert[] | null;
+/**
+ * Réponse de varonis-proxy pour les alertes : état du cache côté serveur, et les
+ * alertes seulement quand elles diffèrent de celles déjà affichées (since).
+ */
+export interface VaronisAlertsResponse {
+  fetchedAt: string | null;
+  refreshing: boolean;
+  progress: number | null;
+  partial: boolean;
+  lastError: string | null;
+  alerts?: VaronisAlert[];
 }
 
 // Mêmes niveaux que la console Varonis (High, Medium, Low, Informational)

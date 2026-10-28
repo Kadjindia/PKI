@@ -63,7 +63,7 @@ export default function VaronisPostureHistory() {
           <LineIcon className="w-4 h-4 text-primary" /> Évolution dans le temps
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Une photo par jour, depuis le {data ? formatFullDay(new Date(data.from).getTime()) : "…"} (définitions des indicateurs stabilisées). Cliquez sur un indicateur.
+          Une photo par jour, depuis le {data ? formatFullDay(new Date(data.from).getTime()) : "…"}. Cliquez sur un indicateur.
         </p>
       </CardHeader>
       <CardContent className="space-y-3">

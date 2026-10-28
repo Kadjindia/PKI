@@ -24,9 +24,6 @@ export const INACTIVE_BUCKETS: { key: InactiveKey; label: string }[] = [
   { key: "inactive730", label: "Plus de 2 ans" },
 ];
 
-/** Profondeur des zones (dossiers de niveau 3 : partages métier, dossiers personnels). */
-export const ZONE_DEPTH = 3;
-
 /** Seuil d'inactivité utilisé par le proxy pour les comptes (jours sans connexion). */
 export const INACTIVE_DAYS = 90;
 
@@ -69,14 +66,11 @@ export interface PostureResults {
   zonesDisabledOwner?: ZoneResult;
   dataSources?: Base & { sources?: { id: string; name?: string | null; type?: string | null }[]; expanded?: boolean };
   privileged?: Base & {
-    byType?: { type: string; count: number }[];
     admins?: number;
     stale?: number;
     staleOld?: number;
     staleNoLogon?: number;
     services?: number;
-    servicesStale?: number;
-    staleList?: { name?: string | null; types: string[]; lastLogonTime?: string | null }[];
   };
   inactive90?: Base;
   inactive180?: Base;
@@ -142,28 +136,10 @@ export function formatBytes(bytes?: number | null): string {
   return `${v.toLocaleString("fr-FR", { maximumFractionDigits: v < 10 ? 1 : 0 })} ${units[i]}`;
 }
 
-const PRIVILEGED_LABELS: Record<string, string> = {
-  ADMIN: "Administrateurs",
-  ADMINISTRATOR: "Administrateurs",
-  SERVICE: "Comptes de service",
-  SERVICE_ACCOUNT: "Comptes de service",
-  EXECUTIVE: "Dirigeants",
-  EXECUTIVES: "Dirigeants",
-};
-
-export function privilegedLabel(type: string): string {
-  return PRIVILEGED_LABELS[type.toUpperCase()] ?? type.charAt(0) + type.slice(1).toLowerCase().replace(/_/g, " ");
-}
-
 /** Part en %, arrondie (null si total nul). */
 export function share(part?: number, total?: number): number | null {
   if (!total || part === undefined) return null;
   return Math.round((part / total) * 100);
-}
-
-/** Lien externe utilisable seulement s'il est en http(s). */
-export function safeUrl(u?: string | null): string | null {
-  return u && /^https?:\/\//i.test(u) ? u : null;
 }
 
 /** Photo de posture enregistrée côté serveur (table varonis_posture_snapshots). */
