@@ -49,7 +49,6 @@ export default function VaronisPostureHistory() {
   const def = HISTORY_METRICS.find((m) => m.key === metric)!;
   const series = seriesFor(data?.points ?? [], metric);
   const cmp = compareSeries(series, period);
-  const days = new Set((data?.points ?? []).map((p) => p.date.slice(0, 10))).size;
 
   const tone = !cmp || cmp.delta === 0 || !def.lowerIsBetter
     ? "text-muted-foreground"
@@ -62,9 +61,6 @@ export default function VaronisPostureHistory() {
         <CardTitle className="text-sm font-bold flex items-center gap-2">
           <LineIcon className="w-4 h-4 text-primary" /> Évolution dans le temps
         </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Une photo par jour, depuis le {data ? formatFullDay(new Date(data.from).getTime()) : "…"}. Cliquez sur un indicateur.
-        </p>
       </CardHeader>
       <CardContent className="space-y-3">
         {/* Choix de l'indicateur */}
@@ -92,9 +88,7 @@ export default function VaronisPostureHistory() {
           <p className="text-sm text-destructive">{(error as Error).message}</p>
         ) : series.length < 2 ? (
           <p className="text-sm text-muted-foreground py-6 text-center">
-            L&apos;historique se construit : {days} jour{days > 1 ? "s" : ""} de photo pour l&apos;instant
-            {series.length === 1 && <> ({def.label} : <b className="text-foreground">{series[0].value.toLocaleString("fr-FR")}</b>)</>}.
-            La courbe apparaîtra dès la deuxième journée de calcul.
+            La courbe apparaîtra après deux nuits de calcul.
           </p>
         ) : (
           <>

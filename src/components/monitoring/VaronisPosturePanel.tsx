@@ -7,10 +7,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import VaronisPostureHistory from "./VaronisPostureHistory";
 import {
   Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users, X,
-  Loader2, AlertTriangle, Info, Clock,
+  Loader2, AlertTriangle, Info,
 } from "lucide-react";
 import {
-  formatCount, formatBytes, share, sourceLabel, snapshotProgress, formatAge, inactiveTotal, zoneTotal, mergeRunning,
+  formatCount, formatBytes, share, sourceLabel, snapshotProgress, inactiveTotal, zoneTotal, mergeRunning,
   allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
   type PostureResults, type PostureState, type ZoneIssueKey, type ZoneResult, type InventoryList,
 } from "@/lib/varonisPosture";
@@ -217,15 +217,6 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
           <h3 className="text-xl font-black text-foreground flex items-center gap-2">
             <FolderOpen className="w-6 h-6 text-primary" /> Posture des données
           </h3>
-          <p className="text-sm text-muted-foreground">
-            Où sont les données sensibles, qui peut y accéder, et l&apos;hygiène des comptes et des droits
-          </p>
-          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5" />
-            {latest
-              ? <>Photo du {formatDateTime(latest.started_at)} ({formatAge(latest.finished_at ?? latest.started_at)}) · {latest.trigger === "schedule" ? "calcul automatique de la nuit" : "calcul demandé"}</>
-              : isLoading ? "Chargement…" : "Aucune photo terminée pour l'instant"}
-          </p>
       </div>
 
       {running && (
@@ -235,10 +226,6 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
               <Loader2 className="w-4 h-4 animate-spin text-primary" />
               Calcul en cours depuis {formatElapsed(now - new Date(running.started_at).getTime())} : {snapshotProgress(running.results).done} / {snapshotProgress(running.results).total} recherches terminées
             </div>
-            <p className="text-muted-foreground">
-              Chaque chiffre se met à jour dès qu&apos;il est prêt.
-              {state?.scheduled ? " Vous pouvez quitter la page : le calcul continue sur le serveur." : " Gardez la page ouverte pour que le calcul avance."}
-            </p>
           </CardContent>
         </Card>
       )}
@@ -277,12 +264,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Kpi
           title="Dossiers sensibles ouverts à tous"
-          help={<>
-            Dossiers contenant des données sensibles (personnelles, financières, RH…) accessibles à <b>tous les salariés</b> :
-            soit par un droit « Tout le monde » / « Utilisateurs du domaine », soit, sur SharePoint et OneDrive, par un
-            <b> lien de partage « toute personne de l&apos;organisation »</b>. Dans ce cas, quiconque reçoit le lien ouvre le
-            document, même si l&apos;adresse du site lui reste fermée. C&apos;est le premier risque de fuite.
-          </>}
+          help={<>Dossiers contenant des données sensibles que <b>tous les salariés</b> peuvent ouvrir : droit « Tout le monde » ou « Utilisateurs du domaine », ou lien de partage valable pour toute l&apos;organisation (SharePoint, OneDrive).</>}
           icon={Globe2}
           color="border-l-red-500"
           r={exposed}
@@ -291,17 +273,17 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
         />
         <Kpi
           title="Données sensibles inutilisées"
-          help={<>Partages et dossiers personnels contenant des données sensibles que <b>plus personne n&apos;ouvre ni ne modifie</b> (durée réglée dans Varonis). À archiver ou supprimer : moins de données, moins de risque.</>}
+          help={<>Dossiers contenant des données sensibles que <b>plus personne n&apos;ouvre ni ne modifie</b> depuis longtemps (durée définie dans Varonis).</>}
           icon={Archive}
           color="border-l-amber-500"
           r={r.zonesStale}
           onClick={() => showZones("zonesStale")}
           active={zoneView === "zonesStale"}
-          sub={r.zonesStale?.status === "done" && `dossiers · ${formatBytes(r.zonesStale.sizeBytes)} à archiver`}
+          sub={r.zonesStale?.status === "done" && `dossiers · ${formatBytes(r.zonesStale.sizeBytes)}`}
         />
         <Kpi
           title="Droits inutilisés"
-          help={<>Partages et dossiers personnels sensibles où des personnes ont <b>un droit d&apos;accès dont elles ne se servent jamais</b> (ancien poste, projet terminé…). À retirer : si l&apos;un de ces comptes est piraté, les données sont exposées.</>}
+          help={<>Dossiers sensibles où des personnes ont un <b>droit d&apos;accès qu&apos;elles n&apos;utilisent jamais</b>.</>}
           icon={KeyRound}
           color="border-l-orange-500"
           r={r.zonesStaleAccess}
@@ -313,14 +295,12 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
         />
         <Kpi
           title="Administrateurs inactifs"
-          help={<>Comptes administrateurs <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, ou sans aucune date de connexion (jamais utilisés ou date non remontée). Personne ne les surveille : ce sont des cibles de choix. À désactiver ou justifier.</>}
+          help={<>Comptes administrateurs <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, ou sans aucune connexion connue.</>}
           icon={Crown}
           color="border-l-violet-500"
           r={priv && { ...priv, count: priv.status === "done" ? priv.stale : undefined }}
           onClick={inventory("adminsInactive")}
-          sub={priv?.status === "done" && (priv.staleOld === undefined
-            ? `sur ${formatCount(priv.admins)} administrateurs`
-            : `sur ${formatCount(priv.admins)} : ${formatCount(priv.staleOld)} sans connexion depuis ${INACTIVE_DAYS} j · ${formatCount(priv.staleNoLogon)} sans date de connexion`)}
+          sub={priv?.status === "done" && `sur ${formatCount(priv.admins)} administrateurs`}
         />
       </div>
 
@@ -340,17 +320,14 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
                 </button>
               )}
             </CardTitle>
-            <p className="text-xs text-muted-foreground">
-              Partages et dossiers personnels (ex. D:\Shares\Partage_Finance, D:\Users\ALEX). Cliquez sur un chiffre ou une pastille pour filtrer la liste.
-            </p>
           </CardHeader>
           <CardContent>
             {/* Chiffres de référence : total et propriétaires */}
             <div className="grid grid-cols-3 gap-2 mb-3">
               {[
-                { label: "Contenant des données sensibles", view: null, owners: null, value: zones, help: <>Partages et dossiers personnels où la classification Varonis a trouvé des données sensibles (personnelles, financières, RH…).</> },
-                { label: "Propriétaire inactif", view: "zonesStaleOwner" as const, owners: "ownersStale" as const, value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b> : plus personne pour valider qui y a accès.</> },
-                { label: "Propriétaire désactivé", view: "zonesDisabledOwner" as const, owners: "ownersDisabled" as const, value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation) : à réattribuer.</> },
+                { label: "Contenant des données sensibles", view: null, owners: null, value: zones, help: <>Partages et dossiers personnels dans lesquels Varonis a détecté des données sensibles (personnelles, financières, RH…).</> },
+                { label: "Propriétaire inactif", view: "zonesStaleOwner" as const, owners: "ownersStale" as const, value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b>.</> },
+                { label: "Propriétaire désactivé", view: "zonesDisabledOwner" as const, owners: "ownersDisabled" as const, value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation…).</> },
               ].map(({ label, view, owners, value, help }) => (
                 <div
                   key={label}
@@ -418,7 +395,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
                 <button type="button" onClick={inventory("inactive")} disabled={!onOpenInventory} title="Voir la liste des comptes" className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5 hover:text-foreground hover:underline">
                   <UserMinus className="w-4 h-4" /> Comptes activés inactifs
                 </button>
-                <Help>Comptes <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, par ancienneté. À désactiver en commençant par les plus anciens.</Help>
+                <Help>Comptes <b>encore activés</b> sans connexion depuis plus de {INACTIVE_DAYS} jours, répartis par ancienneté.</Help>
               </div>
               {inactiveUnreliable ? (
                 <p className="text-sm text-amber-600 mt-1">
@@ -470,7 +447,6 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à tous : les plus volumineux
           </CardTitle>
-          <p className="text-xs text-muted-foreground">Retirer l&apos;accès « tout le monde » en commençant par ceux-ci</p>
         </CardHeader>
         <CardContent>
           <Status r={exposed}>
@@ -496,12 +472,6 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
           </Status>
         </CardContent>
       </Card>
-
-      <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-        <Info className="w-3.5 h-3.5 shrink-0" />
-        Chiffres exacts calculés par Varonis. Cliquez sur ⓘ pour la définition de chaque indicateur.
-        {state?.scheduled ? " Mise à jour automatique chaque nuit." : ""}
-      </p>
     </div>
   );
 }
