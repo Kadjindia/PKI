@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCount, formatBytes, share, snapshotProgress,
-  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, seriesFor, compareSeries, ouFromDn, matchesSearch, toCsv, mergeRunning,
+  allUnauthorized, shortError, inactiveTotal, displayPath, formatElapsed, sourceLabel, zoneTotal, priorityZones, seriesFor, compareSeries, ouFromDn, matchesSearch, toCsv, mergeRunning,
 } from "@/lib/varonisPosture";
 
 describe("posture Varonis : mise en forme", () => {
@@ -77,6 +77,19 @@ describe("posture Varonis : mise en forme", () => {
     });
     expect(t).toMatchObject({ status: "done", count: 5, sizeBytes: 40, files: 6, capped: true });
     expect(t.top?.map((z) => z.name)).toEqual(["B", "A"]);
+  });
+
+  it("classe les dossiers prioritaires par problèmes cumulés puis par volume", () => {
+    const zone = (name: string, sizeBytes: number) => ({ name, path: `D:\\${name}`, sizeBytes, isStale: false, staleAccess: false, ownerIssue: false });
+    const list = priorityZones({
+      dataSources: { status: "done", expanded: true },
+      "zonesTotal:1": { status: "done", count: 4, top: [zone("Gros", 100), zone("Petit", 1), { ...zone("Mixte", 5), isStale: true }] },
+      // Problèmes connus par la recherche (le filtre le garantit), cumulés par chemin
+      zonesStaleAccess: { status: "done", count: 2, top: [zone("Mixte", 5), zone("Droits", 50)] },
+      zonesDisabledOwner: { status: "done", count: 1, top: [zone("Mixte", 5)] },
+    });
+    expect(list.map((z) => z.name)).toEqual(["Mixte", "Droits"]); // « Gros » et « Petit » : rien à signaler
+    expect(list[0]).toMatchObject({ isStale: true, staleAccess: true, disabledOwner: true, staleOwner: false, ownerIssue: true });
   });
 
   it("construit l'évolution d'un indicateur et la compare", () => {
