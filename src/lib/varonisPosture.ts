@@ -108,6 +108,46 @@ export function zoneTotal(r: PostureResults, topSize = 15): ZoneResult {
   };
 }
 
+/** Problème que signale chaque recherche de dossiers (ce que son filtre garantit). */
+const ZONE_FLAGS: Record<ZoneIssueKey, "isStale" | "staleAccess" | "staleOwner" | "disabledOwner"> = {
+  zonesStale: "isStale", zonesStaleAccess: "staleAccess", zonesStaleOwner: "staleOwner", zonesDisabledOwner: "disabledOwner",
+};
+
+/** Nombre de problèmes d'un dossier sensible. */
+export function zoneIssueCount(z: Zone): number {
+  return Number(z.isStale) + Number(z.staleAccess) + Number(Boolean(z.staleOwner)) + Number(Boolean(z.disabledOwner));
+}
+
+/**
+ * Dossiers sensibles à traiter en priorité : les plus volumineux de chaque recherche
+ * (total et chaque problème) réunis, chaque dossier cumulant les problèmes connus,
+ * puis classés par nombre de problèmes et par volume. Les dossiers sans problème
+ * ne sont pas retenus.
+ */
+export function priorityZones(r: PostureResults, size = 15): Zone[] {
+  const byPath = new Map<string, Zone>();
+  const add = (z: Zone, flag?: keyof Zone) => {
+    const key = displayPath(z) || z.name || "";
+    const cur = byPath.get(key);
+    const next: Zone = { ...z, ...(flag ? { [flag]: true } : {}) };
+    byPath.set(key, cur ? {
+      ...cur, ...next,
+      isStale: cur.isStale || next.isStale, staleAccess: cur.staleAccess || next.staleAccess,
+      staleOwner: Boolean(cur.staleOwner || next.staleOwner), disabledOwner: Boolean(cur.disabledOwner || next.disabledOwner),
+    } : next);
+  };
+  for (const z of zoneTotal(r).top ?? []) add(z);
+  for (const [key, flag] of Object.entries(ZONE_FLAGS) as [ZoneIssueKey, keyof Zone][]) {
+    const res = r[key];
+    if (res?.status === "done") for (const z of res.top ?? []) add(z, flag);
+  }
+  return [...byPath.values()]
+    .map((z) => ({ ...z, ownerIssue: Boolean(z.staleOwner || z.disabledOwner) }))
+    .filter((z) => zoneIssueCount(z) > 0)
+    .sort((a, b) => zoneIssueCount(b) - zoneIssueCount(a) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))
+    .slice(0, size);
+}
+
 /** Total des comptes inactifs encore activés (toutes tranches), si toutes sont terminées. */
 export function inactiveTotal(r: PostureResults): { count?: number; capped: boolean } {
   const parts = INACTIVE_BUCKETS.map((b) => r[b.key]);

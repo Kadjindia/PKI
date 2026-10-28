@@ -6,11 +6,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import VaronisPostureHistory from "./VaronisPostureHistory";
 import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
+import {
   Globe2, Crown, UserMinus, KeyRound, Archive, FolderOpen, Users, X,
   Loader2, AlertTriangle, Info,
 } from "lucide-react";
 import {
-  formatCount, formatBytes, share, sourceLabel, snapshotProgress, inactiveTotal, zoneTotal, mergeRunning,
+  formatCount, formatBytes, share, sourceLabel, snapshotProgress, inactiveTotal, zoneTotal, priorityZones, mergeRunning,
   allUnauthorized, shortError, displayPath, INACTIVE_DAYS, INACTIVE_BUCKETS, formatElapsed,
   type PostureResults, type PostureState, type ZoneIssueKey, type ZoneResult, type InventoryList,
 } from "@/lib/varonisPosture";
@@ -34,10 +37,11 @@ async function fetchPosture(): Promise<PostureState> {
 
 const formatDateTime = (iso: string) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 
-/** État d'une requête : chargement, erreur ou contenu. */
-function Status({ r, children }: {
+/** État d'une requête : chargement, erreur ou contenu (quiet : sans les mentions de date, pour les blocs compacts). */
+function Status({ r, children, quiet = false }: {
   readonly r?: { status: string; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string; fresh?: boolean; doneAt?: string };
   readonly children: React.ReactNode;
+  readonly quiet?: boolean;
 }) {
   if (!r) return <span className="text-sm text-muted-foreground">—</span>;
   if (r.status === "queued" || r.status === "pending") {
@@ -51,6 +55,7 @@ function Status({ r, children }: {
   if (r.status === "error") {
     return <span className="text-sm font-medium text-destructive" title={r.error}>{shortError(r)}</span>;
   }
+  if (quiet) return <>{children}</>;
   return (
     <>
       {children}
@@ -108,24 +113,20 @@ function Kpi({ title, help, icon: Icon, color, r, sub, onClick, active }: {
   );
 }
 
-/** Pastille d'un point à traiter ; cliquable pour afficher les dossiers concernés. */
-function Chip({ children, tone = "orange", onClick }: { readonly children: React.ReactNode; readonly tone?: "orange" | "red"; readonly onClick?: () => void }) {
+/** Pastille d'un signal sur un dossier. */
+function Chip({ children, tone = "orange" }: { readonly children: React.ReactNode; readonly tone?: "orange" | "red" }) {
   const cls = tone === "red" ? "bg-red-500/10 text-red-600" : "bg-orange-500/10 text-orange-600";
-  return (
-    <button type="button" onClick={onClick} disabled={!onClick} title={onClick ? "Afficher tous les dossiers dans ce cas" : undefined}
-      className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${cls} ${onClick ? "hover:brightness-90 cursor-pointer" : ""}`}>
-      {children}
-    </button>
-  );
+  return <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${cls}`}>{children}</span>;
 }
 
-/** Vues de la liste des dossiers sensibles (filtre par point à traiter). */
-const ZONE_VIEWS: Record<ZoneIssueKey, string> = {
-  zonesStale: "Données sensibles inutilisées",
-  zonesStaleAccess: "Droits inutilisés",
-  zonesStaleOwner: "Propriétaire inactif",
-  zonesDisabledOwner: "Propriétaire désactivé",
-};
+/** Problèmes des dossiers sensibles : libellé, colonne du tableau et définition. */
+const ZONE_ISSUES: { key: ZoneIssueKey; label: string; short: string; flag: "isStale" | "staleAccess" | "staleOwner" | "disabledOwner"; color: string; owners?: InventoryList; help: React.ReactNode }[] = [
+  { key: "zonesStale", label: "Données inutilisées", short: "Inutilisées", flag: "isStale", color: "bg-amber-500", help: <>Plus personne n&apos;ouvre ni ne modifie ces données depuis longtemps.</> },
+  { key: "zonesStaleAccess", label: "Droits inutilisés", short: "Droits", flag: "staleAccess", color: "bg-orange-500", help: <>Des personnes ont un droit d&apos;accès qu&apos;elles n&apos;utilisent jamais.</> },
+  { key: "zonesStaleOwner", label: "Propriétaire inactif", short: "Propr. inactif", flag: "staleOwner", color: "bg-red-500", owners: "ownersStale", help: <>Le propriétaire du dossier ne se connecte plus.</> },
+  { key: "zonesDisabledOwner", label: "Propriétaire désactivé", short: "Propr. désactivé", flag: "disabledOwner", color: "bg-red-700", owners: "ownersDisabled", help: <>Le propriétaire du dossier a un compte désactivé (départ, mutation…).</> },
+];
+const ZONE_VIEWS = Object.fromEntries(ZONE_ISSUES.map((i) => [i.key, i.label])) as Record<ZoneIssueKey, string>;
 
 /** Liste courte (5 lignes) avec un bouton pour afficher le reste. */
 function useShowMore<T>(items: T[] | undefined, initial = 5) {
@@ -141,25 +142,21 @@ function useShowMore<T>(items: T[] | undefined, initial = 5) {
   };
 }
 
-/** Ligne « dossier » : nom, source, chemin, taille et points à traiter. */
-function FolderRow({ name, path, source, size, chips }: {
-  readonly name?: string | null; readonly path: string; readonly source?: string | null; readonly size?: number | null; readonly chips: React.ReactNode;
-}) {
+/** Cellule « dossier » : nom, type de source et chemin. */
+function FolderCell({ name, path, source }: { readonly name?: string | null; readonly path: string; readonly source?: string | null }) {
   const label = sourceLabel(source);
   return (
-    <li className="flex items-center gap-3 py-2 border-b border-border/50 last:border-0">
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium truncate flex items-center gap-2" title={name ?? ""}>
-          <span className="truncate">{name ?? "—"}</span>
-          {label && <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{label}</span>}
-        </div>
-        <div className="text-[11px] text-muted-foreground font-mono truncate" title={path}>{path}</div>
+    <div className="min-w-0">
+      <div className="text-sm font-medium flex items-center gap-2" title={name ?? ""}>
+        <span className="truncate">{name ?? "—"}</span>
+        {label && <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{label}</span>}
       </div>
-      <div className="flex flex-wrap justify-end gap-1 max-w-[50%]">{chips}</div>
-      <div className="text-sm font-semibold text-foreground w-16 text-right shrink-0">{formatBytes(size)}</div>
-    </li>
+      <div className="text-[11px] text-muted-foreground font-mono truncate" title={path}>{path}</div>
+    </div>
   );
 }
+
+const formatDay = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString("fr-FR") : "—");
 
 export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOpenInventory?: (list: InventoryList) => void } = {}) {
   // Ouvre l'inventaire des comptes sur une liste (sinon, ne fait rien)
@@ -194,10 +191,9 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
   // Une tranche plafonnée par Varonis ne donne pas un chiffre fiable : on ne l'affiche pas
   const inactiveUnreliable = INACTIVE_BUCKETS.some((b) => r[b.key]?.status === "done" && r[b.key]?.capped);
   const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => !x || x.status !== "done");
-  // Dossiers sensibles : ceux qui cumulent le plus de points à traiter d'abord, puis les plus gros
-  const issues = (z: { isStale: boolean; staleAccess: boolean; ownerIssue: boolean }) => Number(z.isStale) + Number(z.staleAccess) + Number(z.ownerIssue);
-  const priority = [...(zones?.top ?? [])].sort((a, b) => issues(b) - issues(a) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
-  // Clic sur un chiffre ou une pastille : la liste montre les dossiers de ce cas
+  // Dossiers sensibles : ceux qui cumulent le plus de problèmes d'abord, puis les plus gros
+  const priority = priorityZones(r);
+  // Clic sur une barre ou un chiffre : le tableau montre les dossiers de ce cas
   const [zoneView, setZoneView] = useState<ZoneIssueKey | null>(null);
   const showZones = (v: ZoneIssueKey | null) => {
     setZoneView((cur) => (cur === v ? null : v));
@@ -310,75 +306,102 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* DOSSIERS SENSIBLES À TRAITER */}
         <Card className="lg:col-span-2 scroll-mt-4" ref={zonesRef}>
-          <CardHeader className="pb-1">
-            <CardTitle className="text-sm font-bold flex flex-wrap items-center gap-2">
-              <FolderOpen className="w-4 h-4 text-primary" />
-              {zoneView ? `${ZONE_VIEWS[zoneView]} : les dossiers les plus volumineux` : "Dossiers sensibles à traiter en priorité"}
-              {zoneView && (
-                <button type="button" onClick={() => setZoneView(null)} className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-primary/10 text-primary hover:bg-primary/20">
-                  {ZONE_VIEWS[zoneView]} <X className="w-3 h-3" />
-                </button>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {/* Chiffres de référence : total et propriétaires */}
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              {[
-                { label: "Contenant des données sensibles", view: null, owners: null, value: zones, help: <>Partages et dossiers personnels dans lesquels Varonis a détecté des données sensibles (personnelles, financières, RH…).</> },
-                { label: "Propriétaire inactif", view: "zonesStaleOwner" as const, owners: "ownersStale" as const, value: r.zonesStaleOwner, help: <>Dossiers sensibles dont le propriétaire <b>ne se connecte plus</b>.</> },
-                { label: "Propriétaire désactivé", view: "zonesDisabledOwner" as const, owners: "ownersDisabled" as const, value: r.zonesDisabledOwner, help: <>Dossiers sensibles dont le propriétaire a un <b>compte désactivé</b> (départ, mutation…).</> },
-              ].map(({ label, view, owners, value, help }) => (
-                <div
-                  key={label}
-                  onClick={() => (view ? showZones(view) : setZoneView(null))}
-                  title="Cliquer pour afficher ces dossiers"
-                  className={`rounded-lg bg-muted/50 p-2.5 cursor-pointer hover:bg-muted ${zoneView === view ? "ring-2 ring-primary/60" : ""}`}
-                >
-                  <div className="flex items-start justify-between gap-1 text-[11px] font-semibold text-muted-foreground">
-                    <span>{label}</span><Help>{help}</Help>
-                  </div>
-                  <Status r={value}>
-                    <div className="text-xl font-black text-foreground">{formatCount(value?.count, value?.capped)}</div>
-                  </Status>
-                  {owners && onOpenInventory && (
-                    <button type="button" onClick={inventory(owners)} className="text-[11px] font-semibold text-primary hover:underline">
-                      Voir les propriétaires →
-                    </button>
-                  )}
-                </div>
-              ))}
+          <CardHeader className="pb-2">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                <FolderOpen className="w-4 h-4 text-primary" /> Dossiers sensibles à traiter
+              </CardTitle>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Status r={zones} quiet>
+                  <span><b className="text-foreground">{formatCount(zones.count, zones.capped)}</b> dossiers sensibles · {formatBytes(zones.sizeBytes)}</span>
+                </Status>
+                <Help>Partages et dossiers personnels dans lesquels Varonis a détecté des données sensibles (personnelles, financières, RH…).</Help>
+              </div>
             </div>
-            <Status r={viewResult}>
-              {listItems.length === 0 ? (
-                <p className={`text-sm py-2 ${zoneView && viewResult?.status === "done" && (viewResult.count ?? 0) > 0 ? "text-muted-foreground" : "text-emerald-600"}`}>
-                  {zoneView && viewResult?.status === "done" && (viewResult.count ?? 0) > 0
-                    ? "Liste disponible après le prochain calcul de la posture."
-                    : zoneView ? "Aucun dossier dans ce cas." : "Aucun dossier contenant des données sensibles."}
-                </p>
-              ) : (
-                <>
-                  <ul>
-                    {zoneList.visible.map((z, i) => (
-                      <FolderRow
-                        key={`${displayPath(z)}-${i}`}
-                        name={z.name} path={displayPath(z)} source={z.source} size={z.sizeBytes}
-                        chips={issues(z) === 0
-                          ? <span className="text-[11px] text-muted-foreground">Rien à signaler</span>
-                          : <>
-                              {z.isStale && <Chip onClick={() => showZones("zonesStale")}>Données inutilisées</Chip>}
-                              {z.staleAccess && <Chip onClick={() => showZones("zonesStaleAccess")}>Droits inutilisés</Chip>}
-                              {z.staleOwner && <Chip tone="red" onClick={() => showZones("zonesStaleOwner")}>Propriétaire inactif</Chip>}
-                              {z.disabledOwner && <Chip tone="red" onClick={() => showZones("zonesDisabledOwner")}>Propriétaire désactivé</Chip>}
-                              {z.ownerIssue && z.staleOwner === undefined && <Chip tone="red">Sans responsable</Chip>}
-                            </>}
-                      />
-                    ))}
-                  </ul>
-                  {zoneList.toggle}
-                </>
-              )}
-            </Status>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Part des dossiers sensibles concernés par chaque problème */}
+            <div className="space-y-1">
+              {ZONE_ISSUES.map((issue) => {
+                const v = r[issue.key];
+                const pct = v?.status === "done" ? share(v.count, zones.count) : null;
+                return (
+                  <div
+                    key={issue.key}
+                    onClick={() => showZones(issue.key)}
+                    title="Cliquer pour afficher ces dossiers"
+                    className={`grid grid-cols-[150px_1fr_210px] items-center gap-3 px-2 py-1.5 rounded-md cursor-pointer hover:bg-muted/60 ${zoneView === issue.key ? "ring-2 ring-primary/60 bg-muted/40" : ""} ${zoneView && zoneView !== issue.key ? "opacity-50" : ""}`}
+                  >
+                    <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                      {issue.label} <Help>{issue.help}</Help>
+                    </span>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div className={`h-full ${issue.color}`} style={{ width: `${Math.min(100, pct ?? 0)}%` }} />
+                    </div>
+                    <span className="text-xs text-right whitespace-nowrap">
+                      <Status r={v} quiet>
+                        <b className="text-foreground">{formatCount(v?.count, v?.capped)}</b>
+                        <span className="text-muted-foreground">{pct !== null ? ` · ${pct} %` : ""} · {formatBytes(v?.sizeBytes)}</span>
+                        {issue.owners && onOpenInventory && (
+                          <button type="button" onClick={inventory(issue.owners)} className="ml-2 font-semibold text-primary hover:underline">propriétaires →</button>
+                        )}
+                      </Status>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Dossiers : problèmes cumulés, ou les plus gros d'un problème */}
+            <div>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <span className="text-xs font-bold text-muted-foreground uppercase">
+                  {zoneView ? `${ZONE_VIEWS[zoneView]} : les plus volumineux` : "Dossiers cumulant le plus de problèmes"}
+                </span>
+                {zoneView && (
+                  <button type="button" onClick={() => setZoneView(null)} className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full bg-primary/10 text-primary hover:bg-primary/20">
+                    {ZONE_VIEWS[zoneView]} <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              <Status r={viewResult} quiet>
+                {listItems.length === 0 ? (
+                  <p className="text-sm py-2 text-emerald-600">{zoneView ? "Aucun dossier dans ce cas." : "Aucun dossier sensible à traiter."}</p>
+                ) : (
+                  <>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Dossier</TableHead>
+                            <TableHead className="text-right">Volume</TableHead>
+                            {ZONE_ISSUES.map((issue) => (
+                              <TableHead key={issue.key} className="text-center whitespace-nowrap text-[11px] px-2" title={issue.label}>{issue.short}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {zoneList.visible.map((z, i) => (
+                            <TableRow key={`${displayPath(z)}-${i}`}>
+                              <TableCell className="max-w-[320px] py-2"><FolderCell name={z.name} path={displayPath(z)} source={z.source} /></TableCell>
+                              <TableCell className="text-right text-sm font-semibold whitespace-nowrap py-2">{formatBytes(z.sizeBytes)}</TableCell>
+                              {ZONE_ISSUES.map((issue) => (
+                                <TableCell key={issue.key} className="text-center px-2 py-2">
+                                  {z[issue.flag]
+                                    ? <span className={`inline-block w-2.5 h-2.5 rounded-full ${issue.color}`} title={issue.label} />
+                                    : <span className="text-muted-foreground/40">·</span>}
+                                </TableCell>
+                              ))}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    {zoneList.toggle}
+                  </>
+                )}
+              </Status>
+            </div>
           </CardContent>
         </Card>
 
@@ -443,29 +466,54 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
 
       {/* DOSSIERS OUVERTS À TOUS */}
       <Card ref={exposedRef} className="scroll-mt-4">
-        <CardHeader className="pb-1">
-          <CardTitle className="text-sm font-bold flex items-center gap-2">
-            <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à tous : les plus volumineux
-          </CardTitle>
+        <CardHeader className="pb-2">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <Globe2 className="w-4 h-4 text-red-500" /> Dossiers sensibles ouverts à tous
+            </CardTitle>
+            {exposed?.status === "done" && (exposed.top?.length ?? 0) > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {(exposed.count ?? 0) > (exposed.top?.length ?? 0)
+                  ? <>Les {exposed.top!.length} contenant le plus de fichiers, sur <b className="text-foreground">{formatCount(exposed.count, exposed.capped)}</b></>
+                  : <><b className="text-foreground">{formatCount(exposed.count)}</b> dossier{(exposed.count ?? 0) > 1 ? "s" : ""}</>}
+              </span>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          <Status r={exposed}>
+          <Status r={exposed} quiet>
             {(exposed?.top?.length ?? 0) === 0 ? (
               <p className="text-sm text-emerald-600 py-2">Aucun dossier sensible ouvert à tous.</p>
             ) : (
               <>
-                <ul>
-                  {exposedList.visible.map((f, i) => (
-                    <FolderRow
-                      key={`${displayPath(f)}-${i}`}
-                      name={f.name} path={displayPath(f)} source={f.source} size={f.sizeBytes}
-                      chips={<>
-                        {f.ownerIssue && <Chip tone="red">Sans responsable</Chip>}
-                        {f.isStale && <Chip>Données inutilisées</Chip>}
-                      </>}
-                    />
-                  ))}
-                </ul>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Dossier</TableHead>
+                        <TableHead className="text-right">Fichiers</TableHead>
+                        <TableHead className="text-right">Volume</TableHead>
+                        <TableHead className="whitespace-nowrap">Dernière activité</TableHead>
+                        <TableHead>Signaux</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {exposedList.visible.map((f, i) => (
+                        <TableRow key={`${displayPath(f)}-${i}`}>
+                          <TableCell className="max-w-[360px] py-2"><FolderCell name={f.name} path={displayPath(f)} source={f.source} /></TableCell>
+                          <TableCell className="text-right text-sm font-semibold whitespace-nowrap py-2">{formatCount(f.objects ?? undefined)}</TableCell>
+                          <TableCell className="text-right text-sm whitespace-nowrap py-2">{formatBytes(f.sizeBytes)}</TableCell>
+                          <TableCell className="text-sm whitespace-nowrap py-2">{formatDay(f.lastEventDate)}</TableCell>
+                          <TableCell className="py-2 space-x-1 whitespace-nowrap">
+                            {f.ownerIssue && <Chip tone="red">Sans responsable</Chip>}
+                            {f.isStale && <Chip>Données inutilisées</Chip>}
+                            {!f.ownerIssue && !f.isStale && <span className="text-muted-foreground/40">—</span>}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
                 {exposedList.toggle}
               </>
             )}

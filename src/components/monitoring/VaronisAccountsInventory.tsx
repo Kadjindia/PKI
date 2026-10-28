@@ -231,9 +231,6 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
         <h3 className="text-xl font-black text-foreground flex items-center gap-2">
           <Users className="w-6 h-6 text-primary" /> Inventaire des comptes
         </h3>
-        <p className="text-sm text-muted-foreground">
-          Listes détaillées issues {data?.running ? "du calcul en cours, lancé le" : "de la dernière photo de posture"}{data?.date ? ` ${data.running ? "" : "("}${new Date(data.date).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}${data.running ? "" : ")"}` : ""} : à filtrer, trier et exporter.
-        </p>
       </div>
 
       <div className="flex flex-wrap gap-1.5">
