@@ -122,8 +122,12 @@ describe("Qualys : photo", () => {
     ], NOW);
     expect(r.detections).toMatchObject({ total: 3, vulns: 2 });
     expect(r.severities.find((s) => s.severity === 5)).toMatchObject({ total: 2, overdue: 1, slaDays: 15 });
-    expect(r.kev).toEqual({ detections: 2, vulns: 1 });
-    expect(r.ransomware).toEqual({ detections: 1, vulns: 1 });
+    // Sévérités 4 et 5, et part de sévérité 5 (« dont »), comme les filtres de la console
+    expect(r.kev).toEqual({ detections: 2, vulns: 1, sev5: 2 });
+    expect(r.ransomware).toEqual({ detections: 1, vulns: 1, sev5: 0 });
+    expect(r.detections).toMatchObject({ qdsCritical: 2, qdsCriticalSev5: 1 });
+    expect(r.criticalPatchableSev5).toBe(1);
+    expect(r.hostsWithSev5).toBe(2);
     // QDS >= 90 et correctif disponible : seule la détection QDS 95 de QID 100 (QID 200 sans correctif)
     expect(r.criticalPatchable).toBe(1);
     expect(r.topVulns[0]).toMatchObject({ qid: "100", title: "Vuln 100", hosts: 2, overdue: 1, kev: true, patchable: true, firstFound: new Date(daysAgo(50)).toISOString() });
