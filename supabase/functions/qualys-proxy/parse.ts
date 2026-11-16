@@ -204,7 +204,8 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     }
     return { detections, vulns, sev5 };
   };
-  // « Critical Patchable Vulns » de VMDR : critiques au sens du QDS (>= 90) avec un correctif disponible
+  // Critiques au sens du QDS (>= 90) avec un correctif de l'éditeur. La tuile « Critical Patchable »
+  // de VMDR compte les correctifs Qualys Patch Management (isQualysPatchable), absents de l'API.
   let criticalPatchable = 0, criticalPatchableSev5 = 0, qdsCriticalSev5 = 0;
   for (const [qid, q] of qids) {
     if (q[1] === 5) qdsCriticalSev5 += q[5] ?? 0;
