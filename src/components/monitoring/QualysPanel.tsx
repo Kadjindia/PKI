@@ -64,13 +64,14 @@ function Kpi({ title, help, icon: Icon, color, value, sub }: {
 }
 
 /** Petite tuile chiffrée (ligne secondaire). */
-function Tile({ label, value, help }: { readonly label: string; readonly value: string; readonly help: React.ReactNode }) {
+function Tile({ label, value, help, sub }: { readonly label: string; readonly value: string; readonly help: React.ReactNode; readonly sub?: string | null }) {
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2">
       <div className="flex items-start justify-between gap-1 text-[11px] font-semibold text-muted-foreground">
         <span>{label}</span><Help>{help}</Help>
       </div>
       <div className="text-xl font-black text-foreground">{value}</div>
+      {sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}
     </div>
   );
 }
@@ -151,9 +152,12 @@ export default function QualysPanel() {
   const r = data?.latest ?? null;
 
   const header = (
-    <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
-      <ShieldAlert className="w-7 h-7 text-primary" /> Vulnérabilités — Qualys
-    </h2>
+    <div>
+      <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
+        <ShieldAlert className="w-7 h-7 text-primary" /> Vulnérabilités — Qualys
+      </h2>
+      <p className="text-sm text-muted-foreground mt-1">Vulnérabilités ouvertes de sévérité 4 et 5 (élevées et critiques).</p>
+    </div>
   );
 
   if (isLoading) {
@@ -198,6 +202,8 @@ export default function QualysPanel() {
 
   const sev5 = r.severities.find((s) => s.severity === 5);
   const overdue = r.severities.reduce((t, s) => t + s.overdue, 0);
+  // Part de sévérité 5 (absente des photos plus anciennes)
+  const ofSev5 = (n?: number) => (n === undefined ? null : `dont ${fmt(n)} de sévérité 5`);
   const coverage = pct(r.coverage.scanned, r.coverage.total);
   const trTotal = Math.max(1, r.coverage.trurisk.critical + r.coverage.trurisk.high + r.coverage.trurisk.medium + r.coverage.trurisk.low);
   const vulns = showAll.vulns ? r.topVulns : r.topVulns.slice(0, 8);
@@ -210,25 +216,25 @@ export default function QualysPanel() {
 
       {/* CHIFFRES CLÉS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Kpi title="Vulnérabilités critiques" icon={Bug} color="border-l-red-500" value={fmt(sev5?.total)}
-          help={<>Vulnérabilités de <b>sévérité 5</b> encore ouvertes (nouvelles, actives ou réouvertes), toutes machines confondues.</>}
-          sub={`sur ${fmt(r.hostsWithVulns)} actifs touchés`} />
+        <Kpi title="Vulnérabilités ouvertes" icon={Bug} color="border-l-red-500" value={fmt(r.detections.total)}
+          help={<>Vulnérabilités de sévérité 4 (élevée) et 5 (critique) encore ouvertes : nouvelles, actives ou réouvertes, toutes machines confondues.</>}
+          sub={<>{ofSev5(sev5?.total)} · {fmt(r.hostsWithVulns)} actifs touchés</>} />
         <Kpi title="Exploitées (CISA KEV)" icon={Flame} color="border-l-orange-500" value={fmt(r.kev.detections)}
-          help={<>Vulnérabilités ouvertes de sévérité 4 ou 5 figurant au catalogue de la CISA des failles <b>activement exploitées</b> par des attaquants.</>}
-          sub={`${fmt(r.kev.vulns)} failles distinctes`} />
+          help={<>Vulnérabilités ouvertes figurant au catalogue de la CISA des failles <b>activement exploitées</b> par des attaquants.</>}
+          sub={<>{ofSev5(r.kev.sev5) ?? `${fmt(r.kev.vulns)} failles distinctes`}</>} />
         <Kpi title="Hors délai de correction" icon={Hourglass} color="border-l-amber-500" value={fmt(overdue)}
           help={<>Vulnérabilités ouvertes depuis plus longtemps que le délai cible : {r.severities.map((s) => `${s.slaDays} jours pour la sévérité ${s.severity}`).join(", ")}.</>}
-          sub={`${pct(overdue, r.detections.total) ?? 0} % des vulnérabilités de sévérité 4 et 5`} />
+          sub={<>{ofSev5(sev5?.overdue)} · {pct(overdue, r.detections.total) ?? 0} % des vulnérabilités ouvertes</>} />
         <Kpi title="Couverture des scans" icon={Radar} color="border-l-sky-500" value={coverage === null ? "—" : `${coverage} %`}
           help={<>Part des actifs dont les vulnérabilités ont été analysées (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
           sub={`${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)}`} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Tile label="Liées à des ransomwares" value={fmt(r.ransomware.detections)} help={<>Vulnérabilités ouvertes connues pour être utilisées par des rançongiciels.</>} />
-        <Tile label="Critiques avec correctif disponible" value={fmt(r.criticalPatchable)} help={<>Vulnérabilités de sévérité 5 pour lesquelles l&apos;éditeur a publié un correctif.</>} />
-        <Tile label="QDS ≥ 90" value={fmt(r.detections.qdsCritical)} help={<>Vulnérabilités dont le score de détection Qualys (QDS, de 1 à 100) est critique : gravité, exploitation constatée et exposition réunies.</>} />
-        <Tile label="Réouvertes" value={fmt(r.severities.reduce((t, s) => t + s.reopened, 0))} help={<>Vulnérabilités corrigées puis détectées à nouveau.</>} />
+        <Tile label="Liées à des ransomwares" value={fmt(r.ransomware.detections)} sub={ofSev5(r.ransomware.sev5)} help={<>Vulnérabilités ouvertes connues pour être utilisées par des rançongiciels.</>} />
+        <Tile label="Critiques corrigeables" value={fmt(r.criticalPatchable)} sub={ofSev5(r.criticalPatchableSev5)} help={<>Vulnérabilités critiques (QDS ≥ 90) pour lesquelles l&apos;éditeur a publié un correctif.</>} />
+        <Tile label="QDS ≥ 90" value={fmt(r.detections.qdsCritical)} sub={ofSev5(r.detections.qdsCriticalSev5)} help={<>Vulnérabilités dont le score de détection Qualys (QDS, de 1 à 100) est critique : gravité, exploitation constatée et exposition réunies.</>} />
+        <Tile label="Réouvertes" value={fmt(r.severities.reduce((t, s) => t + s.reopened, 0))} sub={ofSev5(sev5?.reopened)} help={<>Vulnérabilités corrigées puis détectées à nouveau.</>} />
       </div>
 
       <History />

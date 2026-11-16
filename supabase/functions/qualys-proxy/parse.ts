@@ -83,8 +83,8 @@ export function hostsPage(xml: string, now: number) {
   return { total: agg.total, agent: agg.agent, scanned: agg.scanned, neverScanned: agg.neverScanned, trurisk: tr };
 }
 
-/** QID -> [détections, sévérité, hors délai, plus ancienne détection (ms, 0 si inconnue), QDS max]. */
-type QidStat = [number, number, number, number, number];
+/** QID -> [détections, sévérité, hors délai, plus ancienne détection (ms, 0 si inconnue), QDS max, détections QDS >= 90]. */
+type QidStat = [number, number, number, number, number, number];
 
 /** Vulnérabilités ouvertes d'une page d'actifs. */
 export function detectionsPage(xml: string, now: number) {
@@ -92,7 +92,7 @@ export function detectionsPage(xml: string, now: number) {
   for (const s of SEVERITIES) bySev[s] = { total: 0, overdue: 0, ages: [0, 0, 0, 0], reopened: 0 };
   const qids: Record<string, QidStat> = {};
   const hosts: Row[] = [];
-  let hostCount = 0, qdsCritical = 0, potential = 0;
+  let hostCount = 0, hostsWithSev5 = 0, qdsCritical = 0, potential = 0;
 
   for (const h of blocks(xml, "HOST")) {
     hostCount++;
@@ -118,19 +118,21 @@ export function detectionsPage(xml: string, now: number) {
       if (late) host.overdue++;
       const qid = tag(d, "QID");
       if (qid) {
-        const q = qids[qid] ?? (qids[qid] = [0, sev, 0, 0, 0]);
+        const q = qids[qid] ?? (qids[qid] = [0, sev, 0, 0, 0, 0]);
         q[0]++;
         if (late) q[2]++;
         if (first) q[3] = q[3] ? Math.min(q[3], Date.parse(first)) : Date.parse(first);
         q[4] = Math.max(q[4], qds);
+        if (qds >= 90) q[5]++;
       }
     }
     if (host.d5 + host.d4 > 0) hosts.push(host);
+    if (host.d5 > 0) hostsWithSev5++;
   }
   // Actifs les plus exposés de la page : vulnérabilités critiques (QDS >= 90), puis sévérité 5
   const exposure = (x: Row) => x.qdsCritical * 1000 + x.d5 * 10 + x.d4;
   hosts.sort((a, b) => exposure(b) - exposure(a));
-  return { hosts: hostCount, hostsWithVulns: hosts.length, bySev, qdsCritical, potential, qids, topHosts: hosts.slice(0, TOP) };
+  return { hosts: hostCount, hostsWithVulns: hosts.length, hostsWithSev5, bySev, qdsCritical, potential, qids, topHosts: hosts.slice(0, TOP) };
 }
 
 /** Base de connaissances : titre, CVE et indicateurs de menace de chaque vulnérabilité. */
@@ -187,16 +189,29 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     for (const [qid, q] of Object.entries(p.qids as Record<string, QidStat>)) {
       const cur = qids.get(qid);
       if (!cur) { qids.set(qid, [...q] as QidStat); continue; }
-      cur[0] += q[0]; cur[2] += q[2]; cur[3] = cur[3] && q[3] ? Math.min(cur[3], q[3]) : cur[3] || q[3]; cur[4] = Math.max(cur[4], q[4]);
+      cur[0] += q[0]; cur[2] += q[2]; cur[3] = cur[3] && q[3] ? Math.min(cur[3], q[3]) : cur[3] || q[3]; cur[4] = Math.max(cur[4], q[4]); cur[5] = (cur[5] ?? 0) + (q[5] ?? 0);
     }
   }
+  // Chaque chiffre est donné pour les sévérités 4 et 5, et pour la sévérité 5 seule
+  // (sev5), comme les filtres de la console VMDR
   const flagged = (flag: number) => {
-    let detections = 0, vulns = 0;
-    for (const [qid, q] of qids) if ((kb[qid]?.[1] ?? 0) & flag) { detections += q[0]; vulns++; }
-    return { detections, vulns };
+    let detections = 0, vulns = 0, sev5 = 0;
+    for (const [qid, q] of qids) {
+      if (!((kb[qid]?.[1] ?? 0) & flag)) continue;
+      detections += q[0];
+      vulns++;
+      if (q[1] === 5) sev5 += q[0];
+    }
+    return { detections, vulns, sev5 };
   };
-  let criticalPatchable = 0;
-  for (const [qid, q] of qids) if (q[1] === 5 && (kb[qid]?.[1] ?? 0) & KB_FLAGS.patchable) criticalPatchable += q[0];
+  // « Critical Patchable Vulns » de VMDR : critiques au sens du QDS (>= 90) avec un correctif disponible
+  let criticalPatchable = 0, criticalPatchableSev5 = 0, qdsCriticalSev5 = 0;
+  for (const [qid, q] of qids) {
+    if (q[1] === 5) qdsCriticalSev5 += q[5] ?? 0;
+    if (!((kb[qid]?.[1] ?? 0) & KB_FLAGS.patchable)) continue;
+    criticalPatchable += q[5] ?? 0;
+    if (q[1] === 5) criticalPatchableSev5 += q[5] ?? 0;
+  }
 
   const topVulns = [...qids.entries()]
     .sort((a, b) => b[1][0] - a[1][0])
@@ -220,12 +235,14 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     generatedAt: new Date(now).toISOString(),
     coverage,
     hostsWithVulns: sum(detPages, (p) => p.hostsWithVulns),
-    detections: { total, potential: sum(detPages, (p) => p.potential), qdsCritical: sum(detPages, (p) => p.qdsCritical), vulns: qids.size },
+    hostsWithSev5: sum(detPages, (p) => p.hostsWithSev5),
+    detections: { total, potential: sum(detPages, (p) => p.potential), qdsCritical: sum(detPages, (p) => p.qdsCritical), qdsCriticalSev5, vulns: qids.size },
     severities,
     kev: flagged(KB_FLAGS.kev),
     ransomware: flagged(KB_FLAGS.ransomware),
     activeAttacks: flagged(KB_FLAGS.activeAttacks),
     criticalPatchable,
+    criticalPatchableSev5,
     topVulns,
     topHosts,
   };

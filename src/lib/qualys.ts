@@ -44,12 +44,15 @@ export interface QualysResults {
     trurisk: { critical: number; high: number; medium: number; low: number };
   };
   hostsWithVulns: number;
-  detections: { total: number; potential: number; qdsCritical: number; vulns: number };
+  /** Les champs « sev5 » sont la part de sévérité 5 (absents des photos d'avant le 17/11/2026). */
+  hostsWithSev5?: number;
+  detections: { total: number; potential: number; qdsCritical: number; qdsCriticalSev5?: number; vulns: number };
   severities: QualysSeverity[];
-  kev: { detections: number; vulns: number };
-  ransomware: { detections: number; vulns: number };
-  activeAttacks: { detections: number; vulns: number };
+  kev: { detections: number; vulns: number; sev5?: number };
+  ransomware: { detections: number; vulns: number; sev5?: number };
+  activeAttacks: { detections: number; vulns: number; sev5?: number };
   criticalPatchable: number;
+  criticalPatchableSev5?: number;
   topVulns: QualysVuln[];
   topHosts: QualysHost[];
 }
