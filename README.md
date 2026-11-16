@@ -65,6 +65,7 @@ npm run dev             # http://localhost:8080
 | `cortex-proxy` | `CORTEX_FQDN` (sans `https://`), `CORTEX_API_KEY_ID` (ID numérique), `CORTEX_API_KEY` (clé **Advanced**) |
 | `bitsight-proxy` | `BITSIGHT_TOKEN`, `BITSIGHT_COMPANY_GUID` |
 | `varonis-proxy` | `VARONIS_BASE_URL`, `VARONIS_API_KEY`, `POSTURE_CRON_SECRET` (secret partagé avec la tâche planifiée, ex. `openssl rand -hex 32`) |
+| `qualys-proxy` | `QUALYS_USERNAME`, `QUALYS_PASSWORD` (compte d'API Qualys en lecture seule, rôle Reader), `QUALYS_BASE_URL` (facultatif, par défaut `https://qualysapi.qg2.apps.qualys.eu`), `POSTURE_CRON_SECRET` (le même que pour Varonis) |
 | toutes | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (fournis automatiquement par Supabase) |
 
 ## Build et image Docker
@@ -124,6 +125,18 @@ Sans l'étape 3, le calcul n'avance que lorsque l'écran Posture est ouvert.
 **Alertes** : Varonis met une à plusieurs minutes à préparer les alertes. `varonis-proxy` garde le dernier résultat dans `varonis_alerts_cache` et le renouvelle en arrière-plan (tâche planifiée de l'étape 3, ou ouverture de l'onglet) dès qu'il a plus de 15 minutes : l'onglet Alertes s'affiche immédiatement et se met à jour seul (pas de bouton « Actualiser »).
 
 Le bloc « Évolution dans le temps » trace une photo par jour (la dernière du jour) depuis le 27/10/2026, date à partir de laquelle les définitions des indicateurs sont stables ; une valeur plafonnée ou reprise d'une photo précédente n'est pas tracée.
+
+### Vulnérabilités Qualys VMDR (calcul planifié)
+
+Qualys met environ 1 min 30 à préparer chaque page de résultats (100 actifs, ~10 Mo). Le calcul est donc fait chaque nuit, côté serveur : la base appelle Qualys elle-même (`pg_net`, sans la limite de 150 s des fonctions), et `qualys-proxy` lit chaque réponse, n'en garde que les chiffres (table `qualys_pages`) puis enregistre une photo dans `qualys_snapshots`. Un seul appel à Qualys à la fois (l'abonnement en autorise 2 simultanés et 300 par heure). Étapes : liste des actifs (couverture, TruRisk), vulnérabilités de sévérité 4 et 5 ouvertes, base de connaissances (titres, CISA KEV, ransomware, correctif disponible).
+
+Mise en place :
+
+1. appliquer la migration `20261116090000_qualys_snapshots.sql` ;
+2. ajouter les secrets `QUALYS_USERNAME` et `QUALYS_PASSWORD`, puis déployer `qualys-proxy` ;
+3. exécuter une fois `supabase/sql/planification_qualys.sql` après y avoir renseigné l'URL de la fonction : calcul chaque nuit à 1 h UTC, avancement toutes les 2 minutes.
+
+Délais de correction cibles : 15 jours (sévérité 5), 30 jours (sévérité 4), à modifier dans `supabase/functions/qualys-proxy/parse.ts` (`SLA_DAYS`).
 
 ### Liste blanche des proxys
 
