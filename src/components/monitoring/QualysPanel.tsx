@@ -1,403 +1,385 @@
-import React from "react";
-
-// Imports originaux mis en commentaire temporairement pour éviter les erreurs "unused variables"
-/*
-import {
-  Accordion, AccordionContent, AccordionItem, AccordionTrigger
-} from "@/components/ui/accordion";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { FunctionsHttpError } from "@supabase/supabase-js";
+import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
-  ServerCrash, ShieldCheck, Activity, TrendingDown,
-  FileWarning, ShieldAlert, Clock, AlertTriangle,
-  CheckCircle2, Target
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
+import {
+  ShieldAlert, Flame, Hourglass, Radar, Info, Loader2, AlertTriangle, Bug, Server, LineChart as LineIcon,
 } from "lucide-react";
-
 import {
-  ResponsiveContainer, BarChart, Bar, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, Cell
+  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
 } from "recharts";
-*/
+import {
+  AGE_LABELS, SEVERITY_LABELS, HISTORY_METRICS, fmt, pct, daysSince, progressLabel,
+  type QualysState, type QualysHistoryPoint, type QualysVuln,
+} from "@/lib/qualys";
 
-export default function QualysPanel() {
+// Vulnérabilités Qualys VMDR : photo calculée chaque nuit côté serveur (qualys-proxy).
+// L'écran lit la dernière photo ; pendant un calcul, il revient toutes les minutes.
 
-  // --- NOUVEAU RENDU (PLACEHOLDER GRISÉ) ---
+async function callQualys<T>(action?: "history"): Promise<T> {
+  const { data, error } = await supabase.functions.invoke("qualys-proxy", { body: action ? { action } : {} });
+  if (error) {
+    if (error instanceof FunctionsHttpError) {
+      const errBody = await error.context.json().catch(() => null);
+      throw new Error(errBody?.error ?? `Erreur HTTP ${error.context.status}`);
+    }
+    throw error;
+  }
+  return data as T;
+}
+
+/** Définition d'un indicateur, au clic sur ⓘ. */
+function Help({ children }: { readonly children: React.ReactNode }) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-[50vh] mt-8 space-y-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-muted/10 p-8 text-center shadow-sm opacity-80">
-      <h2 className="text-4xl md:text-5xl font-black text-muted-foreground tracking-tight">
-        🚧 À venir
-      </h2>
-      <p className="text-lg text-muted-foreground/70 max-w-md">
-        Le panneau Qualys est encore en cours de développement.
-      </p>
+    <Popover>
+      <PopoverTrigger aria-label="Définition" className="text-muted-foreground hover:text-foreground shrink-0">
+        <Info className="w-4 h-4" />
+      </PopoverTrigger>
+      <PopoverContent className="text-xs leading-relaxed">{children}</PopoverContent>
+    </Popover>
+  );
+}
+
+function Kpi({ title, help, icon: Icon, color, value, sub }: {
+  readonly title: string; readonly help: React.ReactNode; readonly icon: typeof Info; readonly color: string;
+  readonly value: string; readonly sub?: React.ReactNode;
+}) {
+  return (
+    <Card className={`border-l-4 ${color}`}>
+      <CardContent className="p-4 space-y-1">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"><Icon className="w-4 h-4 shrink-0" /> {title}</div>
+          <Help>{help}</Help>
+        </div>
+        <div className="text-3xl font-black text-foreground">{value}</div>
+        {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Petite tuile chiffrée (ligne secondaire). */
+function Tile({ label, value, help }: { readonly label: string; readonly value: string; readonly help: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2">
+      <div className="flex items-start justify-between gap-1 text-[11px] font-semibold text-muted-foreground">
+        <span>{label}</span><Help>{help}</Help>
+      </div>
+      <div className="text-xl font-black text-foreground">{value}</div>
     </div>
   );
+}
 
-  /* =========================================================================
-     ANCIEN CODE SAUVEGARDÉ EN COMMENTAIRE
-     =========================================================================
+function Badge({ children, tone }: { readonly children: React.ReactNode; readonly tone: "red" | "orange" | "violet" | "muted" }) {
+  const cls = { red: "bg-red-500/10 text-red-600", orange: "bg-orange-500/10 text-orange-600", violet: "bg-violet-500/10 text-violet-600", muted: "bg-muted text-muted-foreground" }[tone];
+  return <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap ${cls}`}>{children}</span>;
+}
 
-  // --- FONCTIONS UTILITAIRES (Évite les ternaires imbriqués) ---
-  const getScoreBadgeVariant = (score: number): "destructive" | "default" | "secondary" => {
-    if (score >= 8) return 'destructive';
-    if (score >= 6) return 'default';
-    return 'secondary';
-  };
+const AGE_COLORS = ["bg-emerald-500", "bg-amber-400", "bg-orange-500", "bg-red-600"];
+const formatDay = (t: number) => new Date(t).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
+const TOOLTIP_STYLE = {
+  contentStyle: { background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 },
+  labelStyle: { color: "hsl(var(--foreground))", fontWeight: 700 },
+  itemStyle: { color: "hsl(var(--foreground))" },
+};
+const AXIS_TICK = { fontSize: 11, fill: "hsl(var(--muted-foreground))" };
 
-  const getAgingColor = (index: number): string => {
-    if (index > 3) return '#7f1d1d';
-    if (index > 2) return '#b91c1c';
-    return '#ef4444';
-  };
+function VulnBadges({ v }: { readonly v: QualysVuln }) {
+  return (
+    <span className="space-x-1">
+      {v.kev && <Badge tone="red">CISA KEV</Badge>}
+      {v.ransomware && <Badge tone="violet">Ransomware</Badge>}
+      {v.activeAttacks && !v.kev && <Badge tone="orange">Attaques actives</Badge>}
+      {v.patchable && <Badge tone="muted">Correctif dispo.</Badge>}
+    </span>
+  );
+}
 
-  // --- MOCK DATA ENTERPRISE (Scale : 4000 utilisateurs / 4850 actifs) ---
-  const data = {
-    // 1. KPI Globaux
-    kpis: {
-      totalAssets: 4850,
-      scanCoverage: 94,
-      criticalVulns: 3450,
-      highVulns: 12400,
-      compliancePCI: 88,
-      complianceCIS: 75
-    },
+function History() {
+  const [metric, setMetric] = useState<(typeof HISTORY_METRICS)[number]["key"]>("sev5");
+  const { data } = useQuery({ queryKey: ["qualys-history"], queryFn: () => callQualys<{ points: QualysHistoryPoint[] }>("history"), staleTime: 60 * 60 * 1000, retry: false });
+  const def = HISTORY_METRICS.find((m) => m.key === metric)!;
+  const series = (data?.points ?? []).filter((p) => p[metric] !== null).map((p) => ({ time: Date.parse(p.date), value: p[metric] as number }));
+  return (
+    <Card>
+      <CardHeader className="pb-1">
+        <CardTitle className="text-sm font-bold flex items-center gap-2"><LineIcon className="w-4 h-4 text-primary" /> Évolution dans le temps</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-1.5">
+          {HISTORY_METRICS.map((m) => (
+            <button key={m.key} type="button" onClick={() => setMetric(m.key)}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${metric === m.key ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+        {series.length < 2 ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">La courbe apparaîtra après deux nuits de calcul.</p>
+        ) : (
+          <div className="h-[200px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={series} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} scale="time" tickFormatter={formatDay} tick={AXIS_TICK} tickLine={false} axisLine={false} minTickGap={24} />
+                <YAxis tick={AXIS_TICK} tickLine={false} axisLine={false} domain={["auto", "auto"]} />
+                <RechartsTooltip {...TOOLTIP_STYLE} labelFormatter={(t) => new Date(Number(t)).toLocaleDateString("fr-FR")} formatter={(v) => [`${Number(v).toLocaleString("fr-FR")}${def.unit ? ` ${def.unit}` : ""}`, def.label]} />
+                <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-    // 2. Tendances & Aging
-    trends: {
-      agingData: [
-        { range: "0-15j", vulns: 1200 },
-        { range: "16-30j", vulns: 950 },
-        { range: "31-60j", vulns: 600 },
-        { range: "61-90j", vulns: 400 },
-        { range: ">90j", vulns: 300 }
-      ],
-      vulnEvolution: [
-        { month: 'Jan', critical: 3800, high: 14000 },
-        { month: 'Fév', critical: 3650, high: 13500 },
-        { month: 'Mar', critical: 3500, high: 13000 },
-        { month: 'Avr', critical: 3550, high: 12800 },
-        { month: 'Mai', critical: 3400, high: 12500 },
-        { month: 'Juin', critical: 3450, high: 12400 }
-      ]
-    },
+export default function QualysPanel() {
+  const { data, error, isLoading } = useQuery({
+    queryKey: ["qualys"],
+    queryFn: () => callQualys<QualysState>(),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+    refetchInterval: (q) => (q.state.data?.running ? 60_000 : false),
+  });
+  const [showAll, setShowAll] = useState({ vulns: false, hosts: false });
+  const r = data?.latest ?? null;
 
-    // 3. Dérive des SLA (MTTR)
-    slaBreaches: [
-      { severity: "Critique (CVSS 9.0-10)", mttrReal: "18 jours", slaTarget: "14 jours", diff: "+4j", status: "Hors SLA" },
-      { severity: "Élevé (CVSS 7.0-8.9)", mttrReal: "35 jours", slaTarget: "30 jours", diff: "+5j", status: "Hors SLA" },
-      { severity: "Moyen (CVSS 4.0-6.9)", mttrReal: "65 jours", slaTarget: "60 jours", diff: "+5j", status: "Hors SLA" },
-      { severity: "Faible (CVSS 0-3.9)", mttrReal: "110 jours", slaTarget: "120 jours", diff: "-10j", status: "Conforme" }
-    ],
+  const header = (
+    <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
+      <ShieldAlert className="w-7 h-7 text-primary" /> Vulnérabilités — Qualys
+    </h2>
+  );
 
-    // 4. Score de Risque par Groupe d'actifs
-    assetRiskGroups: [
-      { group: "Serveurs Web Externes (DMZ)", score: 9.2, activeCritical: 450, desc: "Exposition directe sur Internet." },
-      { group: "Active Directory / Core IT", score: 8.5, activeCritical: 25, desc: "Cœur de réseau, risque de mouvement latéral." },
-      { group: "Postes Utilisateurs (LAN)", score: 6.8, activeCritical: 1800, desc: "Vecteur principal d'hameçonnage." },
-      { group: "Serveurs Bases de Données", score: 4.1, activeCritical: 15, desc: "Ségrégation réseau forte, non exposé." },
-      { group: "Systèmes Industriels (OT)", score: 9.5, activeCritical: 110, desc: "Systèmes non patchables (Legacy)." }
-    ],
+  if (isLoading) {
+    return <div className="space-y-6">{header}<div className="flex items-center justify-center gap-2 py-24 text-muted-foreground"><Loader2 className="w-6 h-6 animate-spin text-primary" /> Chargement…</div></div>;
+  }
 
-    // 5. Dette Technique (Top Récurrentes)
-    topRecurringDette: [
-      { cve: "CVE-2017-0144 (MS17-010 / EternalBlue)", age: 3150, affectedAssets: 12, reason: "OS Legacy Windows 7/2008" },
-      { cve: "CVE-2021-44228 (Log4Shell)", age: 950, affectedAssets: 45, reason: "Application métier propriétaire (non maintenue)" },
-      { cve: "CVE-2022-26809 (RabbitMQ)", age: 800, affectedAssets: 3, reason: "Défaut de responsabilité (Pas de propriétaire de l'actif)" }
-    ],
+  const banners = (
+    <>
+      {error && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="p-4 flex items-center gap-2 text-sm text-destructive"><AlertTriangle className="w-4 h-4 shrink-0" /> {(error as Error).message}</CardContent>
+        </Card>
+      )}
+      {data?.lastError && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardContent className="p-4 flex items-center gap-2 text-sm text-amber-600">
+            <AlertTriangle className="w-4 h-4 shrink-0" /> Le dernier calcul n&apos;a pas abouti : {data.lastError}
+          </CardContent>
+        </Card>
+      )}
+      {data?.running && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="p-4 flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Loader2 className="w-4 h-4 animate-spin text-primary" /> Calcul en cours : {progressLabel(data.running)}
+          </CardContent>
+        </Card>
+      )}
+    </>
+  );
 
-    // 6. Vulnérabilités Critiques Actionnables
-    actionableVulns: [
-      { cve: "CVE-2024-21412", title: "Windows Defender SmartScreen Bypass", cvss: 9.8, affected: 850, cisaKev: true, exploitStatus: "Exploité in the wild" },
-      { cve: "CVE-2023-46805", title: "Ivanti Connect Secure Authentication Bypass", cvss: 9.1, affected: 4, cisaKev: true, exploitStatus: "Exploité in the wild" },
-      { cve: "CVE-2024-27198", title: "JetBrains TeamCity Auth Bypass", cvss: 9.8, affected: 12, cisaKev: true, exploitStatus: "PoC Public Disponible" },
-      { cve: "CVE-2024-3094", title: "XZ Utils Backdoor", cvss: 10.0, affected: 0, cisaKev: false, exploitStatus: "Corrigé préventivement" },
-      { cve: "CVE-2023-3519", title: "Citrix NetScaler ADC RCE", cvss: 9.8, affected: 2, cisaKev: true, exploitStatus: "Exploité in the wild" }
-    ]
-  };
+  if (!r) {
+    return (
+      <div className="space-y-6">
+        {header}
+        {banners}
+        {!error && !data?.running && (
+          <Card><CardContent className="p-6 text-sm text-muted-foreground">Les vulnérabilités n&apos;ont pas encore été calculées : elles le seront automatiquement la nuit prochaine.</CardContent></Card>
+        )}
+      </div>
+    );
+  }
+
+  const sev5 = r.severities.find((s) => s.severity === 5);
+  const overdue = r.severities.reduce((t, s) => t + s.overdue, 0);
+  const coverage = pct(r.coverage.scanned, r.coverage.total);
+  const trTotal = Math.max(1, r.coverage.trurisk.critical + r.coverage.trurisk.high + r.coverage.trurisk.medium + r.coverage.trurisk.low);
+  const vulns = showAll.vulns ? r.topVulns : r.topVulns.slice(0, 8);
+  const hosts = showAll.hosts ? r.topHosts : r.topHosts.slice(0, 8);
 
   return (
     <div className="space-y-6">
+      {header}
+      {banners}
 
-      {/* ==============================================================================
-          1. BANDEAU SUPÉRIEUR PERMANENT (EXECUTIVE SUMMARY QUALYS)
-          ============================================================================== * /}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-
-        <Card className="border-l-4 border-l-emerald-500 bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Couverture Scan</CardTitle>
-            <ShieldCheck className="w-5 h-5 text-emerald-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-black tracking-tight text-foreground">{data.kpis.scanCoverage}%</span>
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-2">Basé sur {data.kpis.totalAssets} actifs connus</p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Conformité Régalienne</CardTitle>
-            <CheckCircle2 className="w-5 h-5 text-blue-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col gap-2 mt-1 text-sm">
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground font-medium">PCI-DSS:</span>
-                <span className="font-black text-foreground">{data.kpis.compliancePCI}%</span>
-              </div>
-              <div className="flex justify-between items-center border-t border-border pt-2">
-                <span className="text-muted-foreground font-medium">CIS Benchmarks:</span>
-                <span className="font-black text-orange-500">{data.kpis.complianceCIS}%</span>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-t-4 border-t-orange-500 bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">MTTR (Critiques)</CardTitle>
-            <Clock className="w-5 h-5 text-orange-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-black tracking-tight text-orange-500">18 j</span>
-              <span className="text-xs text-muted-foreground font-medium">Temps moyen</span>
-            </div>
-            <p className="text-[11px] text-destructive font-medium flex items-center mt-2"><AlertTriangle className="w-3.5 h-3.5 mr-1"/> Hors SLA (Cible: 14j)</p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-t-4 border-t-destructive bg-card shadow-sm flex flex-col justify-between">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Dette Critique</CardTitle>
-            <ServerCrash className="w-5 h-5 text-destructive" />
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-black tracking-tight text-destructive">{data.kpis.criticalVulns.toLocaleString()}</span>
-              <span className="text-xs text-muted-foreground font-medium">CVEs ouvertes</span>
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-2">Plus {data.kpis.highVulns.toLocaleString()} vulnérabilités hautes</p>
-          </CardContent>
-        </Card>
-
+      {/* CHIFFRES CLÉS */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Kpi title="Vulnérabilités critiques" icon={Bug} color="border-l-red-500" value={fmt(sev5?.total)}
+          help={<>Vulnérabilités de <b>sévérité 5</b> encore ouvertes (nouvelles, actives ou réouvertes), toutes machines confondues.</>}
+          sub={`sur ${fmt(r.hostsWithVulns)} actifs touchés`} />
+        <Kpi title="Exploitées (CISA KEV)" icon={Flame} color="border-l-orange-500" value={fmt(r.kev.detections)}
+          help={<>Vulnérabilités ouvertes de sévérité 4 ou 5 figurant au catalogue de la CISA des failles <b>activement exploitées</b> par des attaquants.</>}
+          sub={`${fmt(r.kev.vulns)} failles distinctes`} />
+        <Kpi title="Hors délai de correction" icon={Hourglass} color="border-l-amber-500" value={fmt(overdue)}
+          help={<>Vulnérabilités ouvertes depuis plus longtemps que le délai cible : {r.severities.map((s) => `${s.slaDays} jours pour la sévérité ${s.severity}`).join(", ")}.</>}
+          sub={`${pct(overdue, r.detections.total) ?? 0} % des vulnérabilités de sévérité 4 et 5`} />
+        <Kpi title="Couverture des scans" icon={Radar} color="border-l-sky-500" value={coverage === null ? "—" : `${coverage} %`}
+          help={<>Part des actifs dont les vulnérabilités ont été analysées (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
+          sub={`${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)}`} />
       </div>
 
-      {/* ==============================================================================
-          2. SECTION : TENDANCES ET AGING (OUVERTE PAR DÉFAUT)
-          ============================================================================== * /}
-      <Card className="border border-border shadow-sm">
-        <CardHeader className="border-b border-border bg-secondary/10">
-          <CardTitle className="text-base font-bold flex items-center gap-2">
-            <Activity className="w-5 h-5 text-blue-500" /> 2. Évolution de la Dette & Vieillissement (Aging)
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Tile label="Liées à des ransomwares" value={fmt(r.ransomware.detections)} help={<>Vulnérabilités ouvertes connues pour être utilisées par des rançongiciels.</>} />
+        <Tile label="Critiques avec correctif disponible" value={fmt(r.criticalPatchable)} help={<>Vulnérabilités de sévérité 5 pour lesquelles l&apos;éditeur a publié un correctif.</>} />
+        <Tile label="QDS ≥ 90" value={fmt(r.detections.qdsCritical)} help={<>Vulnérabilités dont le score de détection Qualys (QDS, de 1 à 100) est critique : gravité, exploitation constatée et exposition réunies.</>} />
+        <Tile label="Réouvertes" value={fmt(r.severities.reduce((t, s) => t + s.reopened, 0))} help={<>Vulnérabilités corrigées puis détectées à nouveau.</>} />
+      </div>
 
-            {/* Graphique d'évolution des vulnérabilités * /}
-            <div className="space-y-2">
-              <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 text-center">Tendance des Vulnérabilités Actives (6 Mois)</h4>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.trends.vulnEvolution} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#333" opacity={0.1} />
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fontSize: 12}} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12}} />
-                    <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                    <Legend verticalAlign="top" height={36}/>
-                    <Line type="monotone" dataKey="critical" name="Critiques" stroke="#ef4444" strokeWidth={3} dot={{r: 4, fill: '#ef4444'}} />
-                    <Line type="monotone" dataKey="high" name="Hautes" stroke="#f97316" strokeWidth={2} dot={false} strokeDasharray="5 5" />
-                  </LineChart>
-                </ResponsiveContainer>
+      <History />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* ANCIENNETÉ ET DÉLAIS */}
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-bold flex items-center gap-2"><Hourglass className="w-4 h-4 text-amber-500" /> Ancienneté et délais de correction</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {r.severities.map((s) => (
+              <div key={s.severity} className="space-y-1.5">
+                <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+                  <span className="font-semibold text-foreground">{SEVERITY_LABELS[s.severity]} · {fmt(s.total)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    délai cible {s.slaDays} j · <b className={s.overdue ? "text-red-600" : "text-emerald-600"}>{fmt(s.overdue)} hors délai ({pct(s.overdue, s.total) ?? 0} %)</b>
+                  </span>
+                </div>
+                <div className="flex h-3 rounded-full overflow-hidden bg-muted">
+                  {s.ages.map((n, i) => <div key={i} className={AGE_COLORS[i]} style={{ width: `${(n / Math.max(1, s.total)) * 100}%` }} title={`${AGE_LABELS[i]} : ${fmt(n)}`} />)}
+                </div>
               </div>
+            ))}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              {AGE_LABELS.map((l, i) => <span key={l} className="flex items-center gap-1"><span className={`w-2.5 h-2.5 rounded-full ${AGE_COLORS[i]}`} /> {l}</span>)}
+              <span>· depuis la première détection</span>
             </div>
+          </CardContent>
+        </Card>
 
-            {/* Bar Chart Aging * /}
-            <div className="space-y-2">
-              <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4 text-center">Vieillissement des Vulnérabilités Critiques (Aging)</h4>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={data.trends.agingData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#333" opacity={0.2} />
-                    <XAxis dataKey="range" axisLine={false} tickLine={false} tick={{fontSize: 12}} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12}} />
-                    <RechartsTooltip cursor={{fill: 'transparent'}} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                    <Bar dataKey="vulns" name="Nb de Vulnérabilités" fill="#ef4444" radius={[4, 4, 0, 0]}>
-                      {data.trends.agingData.map((entry, index) => (
-                        <Cell key={entry.range} fill={getAgingColor(index)} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ==============================================================================
-          3. SECTION : DÉRIVE DES SLA (OUVERTE PAR DÉFAUT)
-          ============================================================================== * /}
-      <Card className="border border-border shadow-sm">
-        <CardHeader className="border-b border-border bg-secondary/10 flex flex-row items-center justify-between">
-          <CardTitle className="text-base font-bold flex items-center gap-2">
-            <TrendingDown className="w-5 h-5 text-destructive" /> 3. Dérive des SLA de Remédiation (Patch Management)
-          </CardTitle>
-          <Badge variant="destructive">Retard Global Constaté</Badge>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-secondary/5">
-                <TableHead className="pl-6">Niveau de Criticité</TableHead>
-                <TableHead>MTTR Réel (Moyenne)</TableHead>
-                <TableHead>SLA Interne (Objectif)</TableHead>
-                <TableHead>Écart / Dérive</TableHead>
-                <TableHead>Statut de Conformité</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.slaBreaches.map((sla) => (
-                <TableRow key={sla.severity}>
-                  <TableCell className="pl-6 font-bold text-sm">{sla.severity}</TableCell>
-                  <TableCell className={`font-bold ${sla.status === 'Hors SLA' ? 'text-destructive' : 'text-emerald-500'}`}>{sla.mttrReal}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{sla.slaTarget}</TableCell>
-                  <TableCell className="font-mono text-xs">{sla.diff}</TableCell>
-                  <TableCell>
-                    <Badge variant={sla.status === 'Hors SLA' ? 'destructive' : 'outline'} className={sla.status !== 'Hors SLA' ? 'border-emerald-500 text-emerald-500' : ''}>
-                      {sla.status}
-                    </Badge>
-                  </TableCell>
-                </TableRow>
+        {/* COUVERTURE */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-bold flex items-center gap-2"><Radar className="w-4 h-4 text-sky-500" /> Actifs</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <dl className="space-y-1.5">
+              {[
+                ["Actifs suivis par Qualys", fmt(r.coverage.total)],
+                ["Équipés de l'agent", `${fmt(r.coverage.agent)} (${pct(r.coverage.agent, r.coverage.total) ?? 0} %)`],
+                [`Analysés depuis moins de ${r.coverage.recentDays} j`, fmt(r.coverage.scanned)],
+                ["Jamais analysés", fmt(r.coverage.neverScanned)],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-2"><dt className="text-muted-foreground">{k}</dt><dd className="font-semibold">{v}</dd></div>
               ))}
-            </TableBody>
-          </Table>
+            </dl>
+            <div className="border-t border-border pt-3 space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
+                <span>Risque des actifs (TruRisk)</span>
+                <Help>Score de risque Qualys de chaque actif (0 à 1 000), qui combine ses vulnérabilités et son importance. Critique : 850 et plus ; élevé : 700 à 849.</Help>
+              </div>
+              <div className="flex h-2.5 rounded-full overflow-hidden bg-muted">
+                {([["critical", "bg-red-600"], ["high", "bg-orange-500"], ["medium", "bg-amber-400"], ["low", "bg-emerald-500"]] as const).map(([k, c]) => (
+                  <div key={k} className={c} style={{ width: `${(r.coverage.trurisk[k] / trTotal) * 100}%` }} />
+                ))}
+              </div>
+              <div className="grid grid-cols-4 text-center text-[11px] text-muted-foreground">
+                <span><b className="text-foreground">{fmt(r.coverage.trurisk.critical)}</b><br />critique</span>
+                <span><b className="text-foreground">{fmt(r.coverage.trurisk.high)}</b><br />élevé</span>
+                <span><b className="text-foreground">{fmt(r.coverage.trurisk.medium)}</b><br />moyen</span>
+                <span><b className="text-foreground">{fmt(r.coverage.trurisk.low)}</b><br />faible</span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* VULNÉRABILITÉS LES PLUS RÉPANDUES */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold flex items-center gap-2"><Bug className="w-4 h-4 text-red-500" /> Vulnérabilités les plus répandues</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Vulnérabilité</TableHead>
+                  <TableHead className="text-center">Sév.</TableHead>
+                  <TableHead className="text-right">Actifs</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Hors délai</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Présente depuis</TableHead>
+                  <TableHead>Signaux</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {vulns.map((v) => (
+                  <TableRow key={v.qid}>
+                    <TableCell className="max-w-[420px] py-2">
+                      <div className="text-sm font-medium truncate" title={v.title ?? ""}>{v.title ?? `QID ${v.qid}`}</div>
+                      <div className="text-[11px] text-muted-foreground font-mono truncate">QID {v.qid}{v.cves ? ` · ${v.cves}` : ""}</div>
+                    </TableCell>
+                    <TableCell className="text-center py-2"><Badge tone={v.severity === 5 ? "red" : "orange"}>{v.severity}</Badge></TableCell>
+                    <TableCell className="text-right font-semibold py-2">{fmt(v.hosts)}</TableCell>
+                    <TableCell className={`text-right py-2 ${v.overdue ? "text-red-600 font-semibold" : "text-muted-foreground"}`}>{fmt(v.overdue)}</TableCell>
+                    <TableCell className="text-right text-sm whitespace-nowrap py-2">{daysSince(v.firstFound) === null ? "—" : `${fmt(daysSince(v.firstFound))} j`}</TableCell>
+                    <TableCell className="py-2"><VulnBadges v={v} /></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {r.topVulns.length > 8 && (
+            <button type="button" onClick={() => setShowAll((s) => ({ ...s, vulns: !s.vulns }))} className="text-xs font-semibold text-primary hover:underline mt-2">
+              {showAll.vulns ? "Afficher moins" : `Afficher les ${r.topVulns.length}`}
+            </button>
+          )}
         </CardContent>
       </Card>
 
-      {/* ==============================================================================
-          ACCORDÉONS TECHNIQUES (4 À 6)
-          ============================================================================== * /}
-      <Accordion type="multiple" className="w-full space-y-4">
-
-        {/* SECTION 4 : SCORE DE RISQUE PAR GROUPE * /}
-        <AccordionItem value="item-4" className="border border-border rounded-2xl bg-card overflow-hidden">
-          <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
-            <div className="flex items-center gap-3 text-base font-bold">
-              <ShieldAlert className="w-5 h-5 text-blue-500" /> 4. Exposition au Risque par Groupe d'Actifs
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="p-0">
+      {/* ACTIFS LES PLUS EXPOSÉS */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold flex items-center gap-2"><Server className="w-4 h-4 text-primary" /> Actifs les plus exposés</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow className="bg-secondary/5">
-                  <TableHead className="pl-6">Groupe d'Actifs (Asset Group)</TableHead>
-                  <TableHead>Justification de l'Exposition</TableHead>
-                  <TableHead>Score de Risque Pondéré (0-10)</TableHead>
-                  <TableHead>Vulnérabilités Critiques</TableHead>
+                <TableRow>
+                  <TableHead>Actif</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">QDS ≥ 90</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Sévérité 5</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Sévérité 4</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Hors délai</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.assetRiskGroups.map((group) => (
-                  <TableRow key={group.group}>
-                    <TableCell className="pl-6 font-bold text-sm">{group.group}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{group.desc}</TableCell>
-                    <TableCell>
-                      <Badge variant={getScoreBadgeVariant(group.score)} className="text-sm">
-                        {group.score}
-                      </Badge>
+                {hosts.map((h, i) => (
+                  <TableRow key={h.id ?? i}>
+                    <TableCell className="max-w-[360px] py-2">
+                      <div className="text-sm font-medium truncate" title={h.name ?? ""}>{h.name ?? h.ip ?? "—"}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">{[h.ip, h.os].filter(Boolean).join(" · ")}</div>
                     </TableCell>
-                    <TableCell className="font-bold">{group.activeCritical.toLocaleString()}</TableCell>
+                    <TableCell className="text-right font-semibold py-2">{fmt(h.qdsCritical)}</TableCell>
+                    <TableCell className="text-right py-2">{fmt(h.d5)}</TableCell>
+                    <TableCell className="text-right py-2">{fmt(h.d4)}</TableCell>
+                    <TableCell className={`text-right py-2 ${h.overdue ? "text-red-600" : "text-muted-foreground"}`}>{fmt(h.overdue)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-          </AccordionContent>
-        </AccordionItem>
-
-        {/* SECTION 5 : DETTE TECHNIQUE (RÉCURRENTES) * /}
-        <AccordionItem value="item-5" className="border border-border rounded-2xl bg-card overflow-hidden">
-          <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
-            <div className="flex items-center gap-3 text-base font-bold">
-              <FileWarning className="w-5 h-5 text-orange-500" /> 5. Top Dette Technique (Non corrigé &gt; 1 an)
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-secondary/5">
-                  <TableHead className="pl-6">Identifiant Vulnérabilité (CVE)</TableHead>
-                  <TableHead>Âge (Dette)</TableHead>
-                  <TableHead>Actifs Restants</TableHead>
-                  <TableHead>Raison du Blocage (Root Cause)</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.topRecurringDette.map((vuln) => (
-                  <TableRow key={vuln.cve}>
-                    <TableCell className="pl-6 font-bold text-sm">{vuln.cve}</TableCell>
-                    <TableCell className="text-destructive font-black">{vuln.age} j</TableCell>
-                    <TableCell className="font-bold">{vuln.affectedAssets}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground italic">{vuln.reason}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-            <div className="p-4 bg-secondary/5 border-t border-border text-xs text-muted-foreground">
-               Les actifs liés à ces vulnérabilités nécessitent une acceptation de risque formelle (Risk Acceptance) ou un isolement réseau strict.
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-
-        {/* SECTION 6 : VULNÉRABILITÉS CRITIQUES ACTIONNABLES * /}
-        <AccordionItem value="item-6" className="border border-border rounded-2xl bg-card overflow-hidden">
-          <AccordionTrigger className="px-6 py-4 hover:no-underline bg-secondary/10">
-            <div className="flex items-center gap-3 text-base font-bold">
-              <Target className="w-5 h-5 text-destructive" /> 6. Top CVE Critiques & Actionnables (CISA KEV)
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-secondary/5">
-                  <TableHead className="pl-6">CVE / Titre de la Vulnérabilité</TableHead>
-                  <TableHead>Score CVSS</TableHead>
-                  <TableHead>Actifs Impactés</TableHead>
-                  <TableHead>Catalogue CISA KEV</TableHead>
-                  <TableHead>Statut d'Exploitation</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.actionableVulns.map((vuln) => (
-                  <TableRow key={vuln.cve}>
-                    <TableCell className="pl-6">
-                      <span className="font-bold text-sm block">{vuln.cve}</span>
-                      <span className="text-xs text-muted-foreground">{vuln.title}</span>
-                    </TableCell>
-                    <TableCell><Badge variant="destructive" className="font-mono text-sm">{vuln.cvss.toFixed(1)}</Badge></TableCell>
-                    <TableCell className="font-bold text-lg">{vuln.affected}</TableCell>
-                    <TableCell>
-                      {vuln.cisaKev ? <Badge variant="destructive" className="text-[10px] uppercase">Répertorié</Badge> : <Badge variant="secondary" className="text-[10px] uppercase">Non</Badge>}
-                    </TableCell>
-                    <TableCell className={`text-xs font-bold ${vuln.exploitStatus.includes('Exploité') ? 'text-destructive' : 'text-orange-500'}`}>{vuln.exploitStatus}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </AccordionContent>
-        </AccordionItem>
-
-      </Accordion>
-
+          </div>
+          {r.topHosts.length > 8 && (
+            <button type="button" onClick={() => setShowAll((s) => ({ ...s, hosts: !s.hosts }))} className="text-xs font-semibold text-primary hover:underline mt-2">
+              {showAll.hosts ? "Afficher moins" : `Afficher les ${r.topHosts.length}`}
+            </button>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
-  ========================================================================= */
 }
