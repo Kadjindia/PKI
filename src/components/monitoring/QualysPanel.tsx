@@ -232,7 +232,7 @@ export default function QualysPanel() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Tile label="Liées à des ransomwares" value={fmt(r.ransomware.detections)} sub={ofSev5(r.ransomware.sev5)} help={<>Vulnérabilités ouvertes connues pour être utilisées par des rançongiciels.</>} />
-        <Tile label="Critiques corrigeables" value={fmt(r.criticalPatchable)} sub={ofSev5(r.criticalPatchableSev5)} help={<>Vulnérabilités critiques (QDS ≥ 90) pour lesquelles l&apos;éditeur a publié un correctif.</>} />
+        <Tile label="QDS ≥ 90 avec correctif éditeur" value={fmt(r.criticalPatchable)} sub={ofSev5(r.criticalPatchableSev5)} help={<>Vulnérabilités critiques (QDS ≥ 90) pour lesquelles l&apos;éditeur a publié un correctif. Différent de la tuile « Critical Patchable » de VMDR, qui ne compte que les correctifs déployables par Qualys Patch Management.</>} />
         <Tile label="QDS ≥ 90" value={fmt(r.detections.qdsCritical)} sub={ofSev5(r.detections.qdsCriticalSev5)} help={<>Vulnérabilités dont le score de détection Qualys (QDS, de 1 à 100) est critique : gravité, exploitation constatée et exposition réunies.</>} />
         <Tile label="Réouvertes" value={fmt(r.severities.reduce((t, s) => t + s.reopened, 0))} sub={ofSev5(sev5?.reopened)} help={<>Vulnérabilités corrigées puis détectées à nouveau.</>} />
       </div>
