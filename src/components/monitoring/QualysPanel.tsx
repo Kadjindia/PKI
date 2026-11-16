@@ -226,7 +226,7 @@ export default function QualysPanel() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Tile label="Liées à des ransomwares" value={fmt(r.ransomware.detections)} help={<>Vulnérabilités ouvertes connues pour être utilisées par des rançongiciels.</>} />
-        <Tile label="Critiques avec correctif disponible" value={fmt(r.criticalPatchable)} help={<>Vulnérabilités de sévérité 5 pour lesquelles l&apos;éditeur a publié un correctif.</>} />
+        <Tile label="Critiques corrigeables" value={fmt(r.criticalPatchable)} help={<>Vulnérabilités critiques (QDS ≥ 90) pour lesquelles l&apos;éditeur a publié un correctif.</>} />
         <Tile label="QDS ≥ 90" value={fmt(r.detections.qdsCritical)} help={<>Vulnérabilités dont le score de détection Qualys (QDS, de 1 à 100) est critique : gravité, exploitation constatée et exposition réunies.</>} />
         <Tile label="Réouvertes" value={fmt(r.severities.reduce((t, s) => t + s.reopened, 0))} help={<>Vulnérabilités corrigées puis détectées à nouveau.</>} />
       </div>
