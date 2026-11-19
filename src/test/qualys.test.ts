@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
+  policiesPage, posturePage, isEol, isEolOs,
 } from "../../supabase/functions/qualys-proxy/parse";
 import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
 import { remediationProgress, trendOver } from "../lib/qualys";
@@ -208,6 +209,54 @@ describe("Qualys : photo", () => {
       { month: "2026-11", fixed: 2, slaRate: 100, mttr5: 10, mttr4: null },
     ]);
     expect(summaryOf(r)).toMatchObject({ truriskAvg: 910, slaRate: 75, mttr5: 15 });
+  });
+});
+
+describe("Qualys : obsolescence et conformité", () => {
+  it("reconnaît les produits en fin de vie et compte les actifs concernés", () => {
+    expect(isEol("EOL/Obsolete Operating System: Microsoft Windows Server 2012 R2 Detected")).toBe(true);
+    expect(isEolOs("EOL/Obsolete Operating System: Microsoft Windows Server 2012 R2 Detected")).toBe(true);
+    expect(isEol("EOL/Obsolete Software: Microsoft .NET Framework 4.5.2 Detected")).toBe(true);
+    expect(isEolOs("EOL/Obsolete Software: Microsoft .NET Framework 4.5.2 Detected")).toBe(false);
+    expect(isEol("Microsoft Windows Security Update")).toBe(false);
+    const xml = detectionsXml(
+      host(1, "srv1", detection(900, 5, 400) + detection(901, 4, 400), "Windows Server 2012 R2")
+      + host(2, "pc2", detection(100, 5, 5)),
+    );
+    const p = detectionsPage(xml, NOW, [], ["900", "901"]);
+    expect(p.eol).toEqual({ server: 1, workstation: 0, other: 0 }); // un actif, même avec deux produits
+    const r = buildResults([
+      { kind: "detections", agg: JSON.parse(JSON.stringify(p)) },
+      { kind: "kb", agg: { 900: ["EOL/Obsolete Operating System: Windows Server 2012 R2 Detected", 0, ""], 901: ["EOL/Obsolete Software: .NET 4.5 Detected", 0, ""], 100: ["Autre", 0, ""] } },
+    ], NOW);
+    expect(r.obsolescence).toMatchObject({ hostsTracked: true, hosts: 1, products: 2, osProducts: 1, detections: 2 });
+    expect(r.obsolescence.top[0]).toMatchObject({ title: "Windows Server 2012 R2 Detected", os: true, servers: 1 });
+    expect(summaryOf(r).eolHosts).toBe(1);
+  });
+
+  it("lit les politiques et l'état de conformité (Policy Audit)", () => {
+    expect(policiesPage(`<POLICY_LIST_OUTPUT><RESPONSE><POLICY_LIST><POLICY><ID>11</ID><TITLE><![CDATA[CIS Windows Server 2019]]></TITLE></POLICY><POLICY><ID>12</ID><TITLE><![CDATA[ANSSI Linux]]></TITLE></POLICY></POLICY_LIST></RESPONSE></POLICY_LIST_OUTPUT>`))
+      .toEqual([{ id: "11", title: "CIS Windows Server 2019" }, { id: "12", title: "ANSSI Linux" }]);
+    const info = (h: number, c: number, st: string) => `<INFO><ID>${h}${c}</ID><HOST_ID>${h}</HOST_ID><CONTROL_ID>${c}</CONTROL_ID><TECHNOLOGY_ID>1</TECHNOLOGY_ID><STATUS>${st}</STATUS></INFO>`;
+    const xml = `<COMPLIANCE_POSTURE_INFO_LIST_OUTPUT><RESPONSE><INFO_LIST>${info(1, 1001, "Passed")}${info(1, 1002, "Failed")}${info(2, 1001, "Passed")}${info(2, 1002, "Passed")}${info(2, 1003, "Error")}</INFO_LIST>
+      <GLOSSARY><CONTROL_LIST><CONTROL><CID>1002</CID><STATEMENT><![CDATA[Status of the 'Minimum password length' setting]]></STATEMENT><CRITICALITY><LABEL>SERIOUS</LABEL><VALUE>3</VALUE></CRITICALITY></CONTROL></CONTROL_LIST></GLOSSARY></RESPONSE></COMPLIANCE_POSTURE_INFO_LIST_OUTPUT>`;
+    const p = posturePage(xml, "11");
+    expect(p).toMatchObject({ policyId: "11", hosts: 2, compliantHosts: 1, passed: 3, failed: 1, errors: 1 });
+    expect(p.controls["1002"]).toEqual([1, 1, 0]);
+    const r = buildResults([
+      { kind: "policies", agg: { list: [{ id: "11", title: "CIS Windows Server 2019" }] } },
+      { kind: "posture", agg: JSON.parse(JSON.stringify(p)) },
+    ], NOW);
+    expect(r.compliance).toMatchObject({ collected: true, error: null, rate: 75, passed: 3, failed: 1 });
+    expect(r.compliance.policies[0]).toMatchObject({ title: "CIS Windows Server 2019", rate: 75, compliantHosts: 1 });
+    expect(r.compliance.topFailed[0]).toMatchObject({ cid: "1002", statement: "Status of the 'Minimum password length' setting", criticality: "SERIOUS", failed: 1, rate: 50 });
+    expect(summaryOf(r).complianceRate).toBe(75);
+  });
+
+  it("signale une conformité indisponible sans bloquer la photo", () => {
+    const r = buildResults([{ kind: "pcerror", agg: { message: "User is not authorized (code 2002)" } }], NOW);
+    expect(r.compliance).toMatchObject({ collected: true, error: "User is not authorized (code 2002)", rate: null, policies: [] });
+    expect(buildResults([], NOW).compliance.collected).toBe(false);
   });
 });
 

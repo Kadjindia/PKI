@@ -1,5 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl, FIXED_WINDOW_DAYS, TOP_RISK } from "./parse.ts";
+import {
+  hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
+  FIXED_WINDOW_DAYS, TOP_RISK,
+} from "./parse.ts";
 import { runDiagnostic } from "./diagnostic.ts";
 
 // --- Secrets configurés côté Supabase (Project Settings > Edge Functions > Secrets) ---
@@ -21,12 +24,15 @@ const CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 // Étapes : hosts (liste des actifs, couverture, TruRisk) -> detections (vulnérabilités
 // de sévérité 4 et 5 ouvertes, dérogations comprises) -> fixed (vulnérabilités corrigées
 // sur 90 jours : délais réels) -> kb (titres, CISA KEV, ransomware, exploit public,
-// corrigeable) -> photo, et index des vulnérabilités pour la recherche d'exposition.
+// corrigeable) -> policies et posture (conformité Policy Audit ; une erreur à ces étapes
+// n'empêche pas la photo) -> photo, et index des vulnérabilités pour la recherche d'exposition.
 // ---------------------------------------------------------------------------
 
 const HOST_PAGE = 1000; // actifs par page de la liste des actifs (~1 s par actif chez Qualys)
 const DETECTION_PAGE = 150; // actifs par page de vulnérabilités (~100 000 lignes, ~15 Mo)
 const KB_CHUNK = 400; // vulnérabilités par appel à la base de connaissances
+const POSTURE_PAGE = 200; // actifs par page de l'état de conformité
+const MAX_POLICIES = 20; // politiques de conformité suivies au plus
 const KEEP_INDEX = 60; // photos dont on garde l'index des vulnérabilités (recherche, tendance)
 
 const REQUEST_TIMEOUT_MS = 15 * 60 * 1000; // attente maximale d'une réponse de Qualys
@@ -67,6 +73,8 @@ const firstUrl = {
   hosts: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/?action=list&details=All&show_trurisk=1&truncation_limit=${HOST_PAGE}`,
   detections: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=4-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}`,
   fixed: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=4-5&status=Fixed&detection_updated_since=${fixedSince().toISOString().slice(0, 10)}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
+  policies: () => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/policy/?action=list&details=Basic`,
+  posture: (policyId: string) => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/posture/info/?action=list&policy_id=${encodeURIComponent(policyId)}&details=Basic&truncation_limit=${POSTURE_PAGE}`,
   kb: (ids: string[]) => `${QUALYS_BASE_URL}/api/2.0/fo/knowledge_base/vuln/?action=list&details=All&ids=${ids.join(",")}`,
 };
 
@@ -103,6 +111,15 @@ async function saveIndex(admin: Admin, snapId: string, rows: Row[]) {
     .order("started_at", { ascending: false }).range(KEEP_INDEX - 1, KEEP_INDEX + 500);
   const ids = (old ?? []).map((r: Row) => r.id);
   if (ids.length) await admin.from("qualys_vulns").delete().in("snapshot_id", ids);
+}
+
+/** Vulnérabilités « fin de vie » connues d'après la dernière photo (titres EOL/Obsolete de son index). */
+async function knownEolQids(admin: Admin): Promise<string[]> {
+  const { data: last } = await admin.from("qualys_snapshots").select("id").eq("status", "done")
+    .order("started_at", { ascending: false }).limit(1).maybeSingle();
+  if (!last) return [];
+  const { data } = await admin.from("qualys_vulns").select("qid").eq("snapshot_id", last.id).ilike("title", "EOL%Obsolete%").limit(5000);
+  return (data ?? []).map((r: Row) => String(r.qid));
 }
 
 type StepOutcome = "advanced" | "waiting" | "skipped" | "finished";
@@ -156,6 +173,15 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     const err = res.timed_out ? "Délai dépassé" : res.error_msg ? String(res.error_msg)
       : res.status_code !== 200 ? (qualysError(content) ?? `HTTP ${res.status_code}`) : qualysError(content);
     await admin.rpc("qualys_http_forget", { request_id: id });
+    if (err && (state.phase === "policies" || state.phase === "posture")) {
+      // Conformité indisponible (droits, module) : on le note et on termine la photo
+      if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${res.status_code}`)) { await save(); return "waiting"; }
+      await savePage(admin, snapId, "pcerror", 0, { message: err });
+      state.attempts = 0;
+      state.phase = "final";
+      await save();
+      return "advanced";
+    }
     if (err) {
       if (res.status_code === 401 || /login|password/i.test(err)) return await fail(`Identifiants Qualys refusés : ${err}`);
       if (++state.attempts >= MAX_ATTEMPTS) return await fail(`Qualys : ${err}`);
@@ -169,10 +195,23 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       await savePage(admin, snapId, "kb", state.page, kbPage(content));
       state.page++;
       state.next = null;
-      if (state.page >= state.kbChunks) state.phase = "final";
+      if (state.page >= state.kbChunks) state.phase = "policies";
+    } else if (state.phase === "policies") {
+      const list = policiesPage(content).slice(0, MAX_POLICIES);
+      await savePage(admin, snapId, "policies", 0, { list });
+      state.policyIds = list.map((x) => x.id);
+      state.policyIdx = 0;
+      state.page = 0;
+      state.next = null;
+      state.phase = list.length ? "posture" : "final";
+    } else if (state.phase === "posture") {
+      await savePage(admin, snapId, "posture", state.page, posturePage(content, state.policyIds[state.policyIdx]));
+      state.page++;
+      state.next = nextPageUrl(content, QUALYS_BASE_URL);
+      if (!state.next && ++state.policyIdx >= state.policyIds.length) state.phase = "final";
     } else {
       const agg = state.phase === "hosts" ? hostsPage(content, now)
-        : state.phase === "detections" ? detectionsPage(content, now, state.watch ?? [])
+        : state.phase === "detections" ? detectionsPage(content, now, state.watch ?? [], state.eolQids ?? [])
         : fixedPage(content, fixedSince().getTime());
       await savePage(admin, snapId, state.phase, state.page, agg);
       state.page++;
@@ -185,6 +224,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
           const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
           state.watch = (hp ?? []).flatMap((p: Row) => p.agg.topRisk ?? [])
             .sort((a: Row, b: Row) => b.trurisk - a.trurisk).slice(0, TOP_RISK).map((h: Row) => h.id).filter(Boolean);
+          state.eolQids = await knownEolQids(admin);
           state.phase = "detections";
           state.page = 0;
         } else if (state.phase === "detections") {
@@ -196,7 +236,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
           const ids = [...new Set((pages ?? []).flatMap((p: Row) => Object.keys(p.agg.qids ?? {})))].sort((a, b) => Number(a) - Number(b));
           state.kbIds = ids;
           state.kbChunks = Math.ceil(ids.length / KB_CHUNK);
-          state.phase = ids.length ? "kb" : "final";
+          state.phase = ids.length ? "kb" : "policies";
           state.page = 0;
         }
       }
@@ -219,6 +259,8 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     await saveIndex(admin, snapId, vulnIndex(pages ?? []));
     state.kbIds = undefined;
     state.watch = undefined;
+    state.eolQids = undefined;
+    state.policyIds = undefined;
     await save({ status: "done", results, summary: summaryOf(results), finished_at: new Date().toISOString() });
     await admin.from("qualys_pages").delete().eq("snapshot_id", snapId);
     return "finished";
@@ -227,6 +269,8 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
   // 3. Demande suivante
   const url = state.phase === "kb"
     ? firstUrl.kb(state.kbIds.slice(state.page * KB_CHUNK, (state.page + 1) * KB_CHUNK))
+    : state.phase === "policies" ? firstUrl.policies()
+    : state.phase === "posture" ? state.next ?? firstUrl.posture(state.policyIds[state.policyIdx])
     : state.next ?? firstUrl[state.phase as "hosts" | "detections" | "fixed"]();
   state.request = await request(admin, url);
   state.requestedAt = new Date().toISOString();

@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/table";
 import {
   ShieldAlert, Flame, Hourglass, Radar, Info, Loader2, AlertTriangle, Server, Gauge, Timer, Search,
-  CheckCircle2, XCircle, HelpCircle, KeyRound, RotateCcw, FileWarning, LineChart as LineIcon, Crosshair, Wrench,
+  CheckCircle2, XCircle, HelpCircle, KeyRound, RotateCcw, FileWarning, LineChart as LineIcon, Crosshair, Wrench, Archive, ClipboardCheck,
 } from "lucide-react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
@@ -508,10 +508,164 @@ function VisibilityAxis({ r }: { readonly r: QualysResults }) {
               <span><b className="text-foreground">{fmt(r.coverage.trurisk.medium)}</b><br />moyen</span>
               <span><b className="text-foreground">{fmt(r.coverage.trurisk.low)}</b><br />faible</span>
             </div>
-            <p className="text-[11px] text-muted-foreground pt-2">Inventaire complet, obsolescence (fin de vie) et Shadow IT : à brancher sur CSAM selon le diagnostic des accès en bas de page.</p>
+            <p className="text-[11px] text-muted-foreground pt-2">Inventaire complet face à la CMDB et Shadow IT : nécessitent le module CSAM, non ouvert au compte configuré (voir le diagnostic des accès en bas de page).</p>
           </div>
         </CardContent>
       </Card>
+      <ObsolescenceCard r={r} />
+    </div>
+  );
+}
+
+function ObsolescenceCard({ r }: { readonly r: QualysResults }) {
+  const o = r.obsolescence;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-bold flex items-center gap-2">
+          <Archive className="w-4 h-4 text-amber-600" /> Dette technique : systèmes et logiciels en fin de vie
+          <Help>Systèmes d&apos;exploitation et logiciels qui ne reçoivent plus de correctifs de sécurité de leur éditeur, repérés par Qualys VMDR (vulnérabilités « EOL/Obsolete », sévérités 4 et 5). En attendant l&apos;accès au module CSAM, qui donnerait la liste complète avec les dates de fin de support.</Help>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {!o ? <Pending /> : (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="space-y-2 text-sm">
+              <div>
+                <div className="text-3xl font-black">{o.hostsTracked ? fmt(o.hosts) : "—"}</div>
+                <div className="text-xs text-muted-foreground">
+                  {o.hostsTracked ? <>actifs concernés, soit {pct(o.hosts, r.coverage.total) ?? 0} % du parc</> : "actifs concernés : dès la prochaine nuit (la liste des produits en fin de vie est apprise d'une nuit sur l'autre)"}
+                </div>
+              </div>
+              {o.hostsTracked && (
+                <dl className="space-y-1 text-xs">
+                  {(["server", "workstation", "other"] as const).map((t) => (
+                    <div key={t} className="flex justify-between gap-2"><dt className="text-muted-foreground">{ASSET_TYPE_LABELS[t]}</dt><dd className="font-semibold">{fmt(o.byType[t])}</dd></div>
+                  ))}
+                </dl>
+              )}
+              <div className="text-xs text-muted-foreground border-t border-border pt-2">{fmt(o.products)} produits en fin de vie, dont {fmt(o.osProducts)} systèmes d&apos;exploitation</div>
+            </div>
+            <div className="lg:col-span-2 overflow-x-auto">
+              {o.top.length === 0 ? <p className="text-sm text-emerald-600 font-semibold py-4">Aucun produit en fin de vie détecté.</p> : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Produit en fin de vie</TableHead>
+                      <TableHead className="text-right">Actifs</TableHead>
+                      <TableHead className="text-right">Serveurs</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {o.top.map((p) => (
+                      <TableRow key={p.qid}>
+                        <TableCell className="max-w-[420px] py-1.5">
+                          <div className="text-sm font-medium truncate" title={p.title}>{p.title}</div>
+                          <div className="text-[11px] text-muted-foreground"><Badge tone={p.os ? "violet" : "muted"}>{p.os ? "Système" : "Logiciel"}</Badge> <span className="font-mono">QID {p.qid}</span></div>
+                        </TableCell>
+                        <TableCell className="text-right font-semibold py-1.5">{fmt(p.hosts)}</TableCell>
+                        <TableCell className="text-right py-1.5">{fmt(p.servers)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Axe 4 : conformité et durcissement (Policy Audit)
+// ---------------------------------------------------------------------------
+
+function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly points: QualysHistoryPoint[] }) {
+  const c = r.compliance;
+  return (
+    <div className="space-y-4">
+      <Axis n={4} title="Conformité et durcissement" subtitle="Le respect des référentiels de configuration que l'on s'est fixés (CIS, ANSSI…), mesuré par Qualys Policy Audit." />
+      <Card>
+        <CardContent className="p-4">
+          {!c?.collected ? <Pending /> : c.error && c.policies.length === 0 ? (
+            <p className="text-sm text-amber-600 flex items-center gap-2 py-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Conformité non disponible : {c.error}</p>
+          ) : c.policies.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">Aucune politique de conformité évaluée dans Policy Audit.</p>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="space-y-1">
+                <div className="flex items-start justify-between gap-2 text-xs font-semibold text-muted-foreground">
+                  <span className="flex items-center gap-1.5"><ClipboardCheck className="w-4 h-4" /> Taux de conformité global</span>
+                  <Help>Part des contrôles réussis parmi les contrôles évalués (réussis et échoués), toutes politiques et tous actifs confondus. Les contrôles en erreur (non évaluables) sont exclus.</Help>
+                </div>
+                <div className="text-4xl font-black">{c.rate === null ? "—" : `${fmt(c.rate)} %`}</div>
+                <div className="text-xs text-muted-foreground">{fmt(c.passed)} contrôles réussis · {fmt(c.failed)} échoués · {fmt(c.policies.length)} politiques</div>
+                <div className="pt-1"><Delta value={trendOver(points, "complianceRate")} lowerIsBetter={false} unit=" pts" /></div>
+              </div>
+              <div className="lg:col-span-2 overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Politique</TableHead>
+                      <TableHead className="text-right">Actifs</TableHead>
+                      <TableHead className="text-right whitespace-nowrap">Entièrement conformes</TableHead>
+                      <TableHead>Conformité</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {c.policies.map((p) => (
+                      <TableRow key={p.id}>
+                        <TableCell className="max-w-[320px] py-1.5"><div className="text-sm font-medium truncate" title={p.title}>{p.title}</div></TableCell>
+                        <TableCell className="text-right py-1.5">{fmt(p.hosts)}</TableCell>
+                        <TableCell className="text-right py-1.5">{fmt(p.compliantHosts)}</TableCell>
+                        <TableCell className="py-1.5"><SlaBar rate={p.rate} /></TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      {c?.collected && c.topFailed.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <XCircle className="w-4 h-4 text-red-500" /> Top 5 des contrôles qui échouent le plus
+              <Help>Contrôles de sécurité en échec sur le plus grand nombre d&apos;actifs (ex. mots de passe par défaut, chiffrement des disques, partages SMB ouverts) : les chantiers de durcissement les plus rentables.</Help>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Contrôle</TableHead>
+                  <TableHead>Criticité</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Échecs</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Taux de réussite</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {c.topFailed.map((x) => (
+                  <TableRow key={x.cid}>
+                    <TableCell className="max-w-[560px] py-1.5">
+                      <div className="text-sm font-medium line-clamp-2" title={x.statement}>{x.statement}</div>
+                      <div className="text-[11px] text-muted-foreground font-mono">CID {x.cid}{x.policies > 1 ? ` · ${x.policies} politiques` : ""}</div>
+                    </TableCell>
+                    <TableCell className="py-1.5">{x.criticality ? <Badge tone={/urgent|critical/i.test(x.criticality) ? "red" : /serious|high/i.test(x.criticality) ? "orange" : "muted"}>{x.criticality}</Badge> : "—"}</TableCell>
+                    <TableCell className="text-right font-semibold py-1.5">{fmt(x.failed)}</TableCell>
+                    <TableCell className="text-right py-1.5">{x.rate === null ? "—" : `${fmt(x.rate)} %`}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+      <p className="text-[11px] text-muted-foreground">Conformité des environnements cloud (TotalCloud) : module non ouvert au compte configuré.</p>
     </div>
   );
 }
@@ -712,6 +866,7 @@ export default function QualysPanel() {
       <VisibilityAxis r={r} />
       <ExposureAxis r={r} />
       <OperationsAxis r={r} />
+      <ComplianceAxis r={r} points={points} />
       <History points={points} />
       <AccessDiagnostic />
     </div>
