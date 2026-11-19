@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { hostsPage, detectionsPage, kbPage, buildResults, summaryOf, qualysError, nextPageUrl } from "./parse.ts";
+import { hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl, FIXED_WINDOW_DAYS, TOP_RISK } from "./parse.ts";
+import { runDiagnostic } from "./diagnostic.ts";
 
 // --- Secrets configurés côté Supabase (Project Settings > Edge Functions > Secrets) ---
 const QUALYS_BASE_URL = (Deno.env.get("QUALYS_BASE_URL") ?? "https://qualysapi.qg2.apps.qualys.eu").trim().replace(/\/$/, "");
@@ -17,14 +18,16 @@ const CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 // puis demande la suivante. Un seul appel à Qualys à la fois (l'abonnement en
 // autorise 2 simultanés et 300 par heure). Lecture seule.
 //
-// Étapes : hosts (liste des actifs, couverture) -> detections (vulnérabilités de
-// sévérité 4 et 5 ouvertes) -> kb (titres, CISA KEV, ransomware, corrigeable)
-// -> photo.
+// Étapes : hosts (liste des actifs, couverture, TruRisk) -> detections (vulnérabilités
+// de sévérité 4 et 5 ouvertes, dérogations comprises) -> fixed (vulnérabilités corrigées
+// sur 90 jours : délais réels) -> kb (titres, CISA KEV, ransomware, exploit public,
+// corrigeable) -> photo, et index des vulnérabilités pour la recherche d'exposition.
 // ---------------------------------------------------------------------------
 
 const HOST_PAGE = 1000; // actifs par page de la liste des actifs (~1 s par actif chez Qualys)
 const DETECTION_PAGE = 150; // actifs par page de vulnérabilités (~100 000 lignes, ~15 Mo)
 const KB_CHUNK = 400; // vulnérabilités par appel à la base de connaissances
+const KEEP_INDEX = 60; // photos dont on garde l'index des vulnérabilités (recherche, tendance)
 
 const REQUEST_TIMEOUT_MS = 15 * 60 * 1000; // attente maximale d'une réponse de Qualys
 const CONCURRENCY_WAIT_MS = 3 * 60 * 1000; // pause si les 2 appels simultanés sont pris
@@ -62,9 +65,13 @@ function adminClient(): Admin {
 
 const firstUrl = {
   hosts: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/?action=list&details=All&show_trurisk=1&truncation_limit=${HOST_PAGE}`,
-  detections: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=4-5&status=New,Active,Re-Opened&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}`,
+  detections: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=4-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}`,
+  fixed: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=4-5&status=Fixed&detection_updated_since=${fixedSince().toISOString().slice(0, 10)}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
   kb: (ids: string[]) => `${QUALYS_BASE_URL}/api/2.0/fo/knowledge_base/vuln/?action=list&details=All&ids=${ids.join(",")}`,
 };
+
+/** Début de la période d'observation des vulnérabilités corrigées. */
+const fixedSince = () => new Date(Date.now() - FIXED_WINDOW_DAYS * 24 * 3600 * 1000);
 
 const basicAuth = () => `Basic ${btoa(`${QUALYS_USERNAME}:${QUALYS_PASSWORD}`)}`;
 
@@ -83,6 +90,19 @@ async function response(admin: Admin, id: number): Promise<Row | null> {
 async function savePage(admin: Admin, snapshotId: string, kind: string, page: number, agg: unknown) {
   const { error } = await admin.from("qualys_pages").upsert({ snapshot_id: snapshotId, kind, page, agg });
   if (error) throw new Error(`Enregistrement de la page : ${error.message}`);
+}
+
+/** Index des vulnérabilités de la photo (recherche d'exposition), et ménage des anciens index. */
+async function saveIndex(admin: Admin, snapId: string, rows: Row[]) {
+  for (let i = 0; i < rows.length; i += 1000) {
+    // upsert : l'étape finale peut être rejouée après une interruption
+    const { error } = await admin.from("qualys_vulns").upsert(rows.slice(i, i + 1000).map((r) => ({ snapshot_id: snapId, ...r })), { onConflict: "snapshot_id,qid" });
+    if (error) throw new Error(`Index des vulnérabilités : ${error.message}`);
+  }
+  const { data: old } = await admin.from("qualys_snapshots").select("id").eq("status", "done")
+    .order("started_at", { ascending: false }).range(KEEP_INDEX - 1, KEEP_INDEX + 500);
+  const ids = (old ?? []).map((r: Row) => r.id);
+  if (ids.length) await admin.from("qualys_vulns").delete().in("snapshot_id", ids);
 }
 
 type StepOutcome = "advanced" | "waiting" | "skipped" | "finished";
@@ -151,7 +171,9 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       state.next = null;
       if (state.page >= state.kbChunks) state.phase = "final";
     } else {
-      const agg = state.phase === "hosts" ? hostsPage(content, now) : detectionsPage(content, now);
+      const agg = state.phase === "hosts" ? hostsPage(content, now)
+        : state.phase === "detections" ? detectionsPage(content, now, state.watch ?? [])
+        : fixedPage(content, fixedSince().getTime());
       await savePage(admin, snapId, state.phase, state.page, agg);
       state.page++;
       state.pages++;
@@ -159,7 +181,14 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       state.next = nextPageUrl(content, QUALYS_BASE_URL);
       if (!state.next) {
         if (state.phase === "hosts") {
+          // Actifs les plus risqués : leurs vulnérabilités seront relevées au passage
+          const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
+          state.watch = (hp ?? []).flatMap((p: Row) => p.agg.topRisk ?? [])
+            .sort((a: Row, b: Row) => b.trurisk - a.trurisk).slice(0, TOP_RISK).map((h: Row) => h.id).filter(Boolean);
           state.phase = "detections";
+          state.page = 0;
+        } else if (state.phase === "detections") {
+          state.phase = "fixed";
           state.page = 0;
         } else {
           // Liste des vulnérabilités rencontrées, pour la base de connaissances
@@ -187,7 +216,9 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     const { data: pages, error } = await admin.from("qualys_pages").select("kind, agg").eq("snapshot_id", snapId);
     if (error) throw new Error(error.message);
     const results = buildResults(pages ?? [], Date.now());
+    await saveIndex(admin, snapId, vulnIndex(pages ?? []));
     state.kbIds = undefined;
+    state.watch = undefined;
     await save({ status: "done", results, summary: summaryOf(results), finished_at: new Date().toISOString() });
     await admin.from("qualys_pages").delete().eq("snapshot_id", snapId);
     return "finished";
@@ -196,7 +227,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
   // 3. Demande suivante
   const url = state.phase === "kb"
     ? firstUrl.kb(state.kbIds.slice(state.page * KB_CHUNK, (state.page + 1) * KB_CHUNK))
-    : state.next ?? firstUrl[state.phase as "hosts" | "detections"]();
+    : state.next ?? firstUrl[state.phase as "hosts" | "detections" | "fixed"]();
   state.request = await request(admin, url);
   state.requestedAt = new Date().toISOString();
   await save();
@@ -261,6 +292,49 @@ async function handleHistory(admin: Admin) {
   return jsonResponse({ points: [...byDay.values()] });
 }
 
+/** Recherche d'exposition : une CVE, un QID ou un mot du titre, dans la dernière photo, et sa tendance. */
+async function handleSearch(admin: Admin, raw: unknown) {
+  const q = String(raw ?? "").trim().slice(0, 100);
+  if (q.length < 3) return jsonResponse({ error: "Saisir au moins 3 caractères (CVE, QID ou mot du titre)." }, 400);
+  const { data: snaps } = await admin.from("qualys_snapshots").select("id, started_at").eq("status", "done")
+    .order("started_at", { ascending: false }).limit(KEEP_INDEX);
+  const latest = snaps?.[0];
+  if (!latest) return jsonResponse({ query: q, date: null, matches: [], trend: [] });
+  const cols = "qid, severity, hosts, servers, overdue, first_found, title, cves, flags";
+  const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const found = new Map<number, Row>();
+  if (/^\d+$/.test(q)) {
+    const { data } = await admin.from("qualys_vulns").select(cols).eq("snapshot_id", latest.id).eq("qid", Number(q));
+    for (const r of data ?? []) found.set(r.qid, r);
+  }
+  for (const col of ["cves", "title"]) {
+    const { data, error } = await admin.from("qualys_vulns").select(cols).eq("snapshot_id", latest.id).ilike(col, like)
+      .order("hosts", { ascending: false }).limit(25);
+    if (error) throw new Error(error.message);
+    for (const r of data ?? []) found.set(r.qid, r);
+  }
+  const matches = [...found.values()].sort((a, b) => b.hosts - a.hosts).slice(0, 25);
+  // Évolution du nombre d'actifs touchés, photo après photo, pour les vulnérabilités trouvées
+  const qids = matches.slice(0, 10).map((m) => m.qid);
+  const dates = new Map<string, string>((snaps ?? []).map((s: Row) => [s.id, s.started_at]));
+  const trend: Row[] = [];
+  if (qids.length) {
+    const { data } = await admin.from("qualys_vulns").select("snapshot_id, hosts")
+      .in("snapshot_id", [...dates.keys()]).in("qid", qids).limit(10000);
+    const bySnap = new Map<string, number>();
+    for (const r of data ?? []) bySnap.set(r.snapshot_id, (bySnap.get(r.snapshot_id) ?? 0) + r.hosts);
+    // Photos sans ligne : plus aucun actif touché (après la première apparition)
+    const ordered = [...dates.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+    let seen = false;
+    for (const [id, date] of ordered) {
+      const n = bySnap.get(id) ?? 0;
+      if (n) seen = true;
+      if (seen) trend.push({ date, hosts: n });
+    }
+  }
+  return jsonResponse({ query: q, date: latest.started_at, matches, trend });
+}
+
 function sameSecret(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -288,6 +362,8 @@ Deno.serve(async (req) => {
     if (authError || !user) return jsonResponse({ error: "Session invalide" }, 401);
 
     if (body.action === "history") return await handleHistory(adminClient());
+    if (body.action === "search") return await handleSearch(adminClient(), body.q);
+    if (body.action === "diagnostic") return jsonResponse(await runDiagnostic(QUALYS_BASE_URL, QUALYS_USERNAME, QUALYS_PASSWORD, Deno.env.get("QUALYS_GATEWAY_URL")));
     return await handleStatus(adminClient());
   } catch (err) {
     console.error("Erreur qualys-proxy:", (err as Error).message);

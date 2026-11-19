@@ -9,6 +9,8 @@ export interface QualysSeverity {
   reopened: number;
   /** Ancienneté depuis la première détection : < 30 j, 30-90 j, 90-180 j, > 180 j. */
   ages: [number, number, number, number];
+  /** Âge moyen (jours) des vulnérabilités ouvertes. */
+  avgAge?: number | null;
 }
 
 export interface QualysVuln {
@@ -23,7 +25,45 @@ export interface QualysVuln {
   kev: boolean;
   ransomware: boolean;
   activeAttacks: boolean;
+  exploitPublic?: boolean;
   patchable: boolean;
+  /** Détections sur des serveurs. */
+  servers?: number;
+}
+
+export type AssetType = "server" | "workstation" | "other";
+
+export interface QualysRiskHost {
+  id: string | null; name: string | null; ip: string | null; os: string | null;
+  type: AssetType; trurisk: number; criticality: number | null; lastScan: string | null;
+  d5: number | null; d4: number | null; overdue: number | null; armed: number | null;
+}
+
+/** Vulnérabilités corrigées sur la période : respect des délais et MTTR. */
+export interface QualysFixView {
+  fixed: number; inSla: number; slaRate: number | null; mttr: number | null; median: number | null;
+}
+
+export interface QualysExposure {
+  truriskAvg: number | null;
+  truriskAssets: number;
+  armed: { detections: number; vulns: number; sev5: number; servers: number; exploitPublic: number };
+  topArmed: QualysVuln[];
+  topRisk: QualysRiskHost[];
+}
+
+export interface QualysOperations {
+  windowDays: number;
+  fixed: {
+    all: QualysFixView;
+    bySev: Record<"4" | "5", QualysFixView>;
+    byType: Record<AssetType, QualysFixView>;
+    monthly: { month: string; fixed: number; slaRate: number | null; mttr5: number | null; mttr4: number | null }[];
+  };
+  open: { byType: Record<AssetType, { total: number; overdue: number; sev5: number }> };
+  reopenRate: number | null;
+  ignored: { total: number; sev5: number; ages: [number, number, number, number] };
+  fixedCollected: boolean;
 }
 
 export interface QualysHost {
@@ -42,6 +82,7 @@ export interface QualysResults {
   coverage: {
     total: number; agent: number; scanned: number; neverScanned: number; recentDays: number;
     trurisk: { critical: number; high: number; medium: number; low: number };
+    byType?: Record<AssetType, { total: number; scanned: number }>;
   };
   hostsWithVulns: number;
   /** Les champs « sev5 » sont la part de sévérité 5 (absents des photos d'avant le 17/11/2026). */
@@ -55,11 +96,14 @@ export interface QualysResults {
   criticalPatchableSev5?: number;
   topVulns: QualysVuln[];
   topHosts: QualysHost[];
+  /** Axes 2 et 3 (absents des photos d'avant le 19/11/2026). */
+  exposure?: QualysExposure;
+  operations?: QualysOperations;
 }
 
 export interface QualysState {
   latest: QualysResults | null;
-  running: { startedAt: string; phase: "hosts" | "detections" | "kb" | "final"; pages: number; expected: number | null } | null;
+  running: { startedAt: string; phase: "hosts" | "detections" | "fixed" | "kb" | "final"; pages: number; expected: number | null } | null;
   lastError: string | null;
 }
 
@@ -67,7 +111,27 @@ export interface QualysHistoryPoint {
   date: string;
   detections: number; sev5: number; sev4: number; overdue: number;
   kev: number; ransomware: number; qdsCritical: number; coverage: number | null;
+  truriskAvg?: number | null; armed?: number; slaRate?: number | null; mttr5?: number | null; ignored?: number;
 }
+
+export interface QualysSearchMatch {
+  qid: number; severity: number; hosts: number; servers: number; overdue: number;
+  first_found: string | null; title: string | null; cves: string | null; flags: number;
+}
+
+export interface QualysSearch {
+  query: string; date: string | null; matches: QualysSearchMatch[]; trend: { date: string; hosts: number }[];
+}
+
+export interface QualysProbe {
+  module: string; label: string; purpose: string; status: "ok" | "refused" | "unknown" | "error"; detail: string; count?: number | null;
+}
+
+export interface QualysDiagnostic { checkedAt: string; apiBase: string; gateway: string; results: QualysProbe[] }
+
+export const FLAGS = { kev: 1, ransomware: 2, patchable: 4, activeAttacks: 8, exploitPublic: 16 } as const;
+
+export const ASSET_TYPE_LABELS: Record<AssetType, string> = { server: "Serveurs", workstation: "Postes de travail", other: "Autres" };
 
 export const AGE_LABELS = ["< 30 j", "30 à 90 j", "90 à 180 j", "> 180 j"] as const;
 
@@ -90,15 +154,31 @@ export function daysSince(iso: string | null, now = Date.now()): number | null {
 export function progressLabel(r: NonNullable<QualysState["running"]>): string {
   if (r.phase === "hosts") return "inventaire des actifs";
   if (r.phase === "detections") return r.expected ? `vulnérabilités : page ${r.pages} sur ${r.expected}` : `vulnérabilités : page ${r.pages}`;
+  if (r.phase === "fixed") return "vulnérabilités corrigées (délais de correction)";
   if (r.phase === "kb") return "base de connaissances Qualys";
   return "finalisation";
 }
 
 export const HISTORY_METRICS: { key: keyof Omit<QualysHistoryPoint, "date">; label: string; lowerIsBetter: boolean; unit?: string }[] = [
-  { key: "sev5", label: "Critiques ouvertes", lowerIsBetter: true },
-  { key: "kev", label: "Exploitées (CISA KEV)", lowerIsBetter: true },
+  { key: "truriskAvg", label: "TruRisk moyen", lowerIsBetter: true },
+  { key: "armed", label: "Vulnérabilités armées", lowerIsBetter: true },
+  { key: "slaRate", label: "Respect des délais", lowerIsBetter: false, unit: "%" },
+  { key: "mttr5", label: "MTTR critiques", lowerIsBetter: true, unit: "j" },
   { key: "overdue", label: "Hors délai", lowerIsBetter: true },
-  { key: "qdsCritical", label: "QDS ≥ 90", lowerIsBetter: true },
-  { key: "detections", label: "Sévérité 4 et 5", lowerIsBetter: true },
+  { key: "ignored", label: "Dérogations", lowerIsBetter: true },
   { key: "coverage", label: "Couverture des scans", lowerIsBetter: false, unit: "%" },
 ];
+
+/** Écart entre la valeur actuelle et la plus ancienne des `days` derniers jours (null si moins de deux points). */
+export function trendOver(points: QualysHistoryPoint[], key: keyof Omit<QualysHistoryPoint, "date">, days = 30, now = Date.now()): number | null {
+  const series = points.filter((p) => p[key] !== null && p[key] !== undefined && now - Date.parse(p.date) <= days * 86400000);
+  if (series.length < 2) return null;
+  return Number(series[series.length - 1][key]) - Number(series[0][key]);
+}
+
+/** Avancement de la correction d'une faille : part des actifs corrigés depuis le pic observé. */
+export function remediationProgress(trend: { hosts: number }[]): { peak: number; now: number; pct: number | null } {
+  const peak = Math.max(0, ...trend.map((t) => t.hosts));
+  const current = trend.length ? trend[trend.length - 1].hosts : 0;
+  return { peak, now: current, pct: peak ? Math.round(((peak - current) / peak) * 100) : null };
+}
