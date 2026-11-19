@@ -99,11 +99,36 @@ export interface QualysResults {
   /** Axes 2 et 3 (absents des photos d'avant le 19/11/2026). */
   exposure?: QualysExposure;
   operations?: QualysOperations;
+  obsolescence?: QualysObsolescence;
+  compliance?: QualysCompliance;
+}
+
+/** Systèmes et logiciels en fin de vie, repérés par VMDR (vulnérabilités « EOL/Obsolete »). */
+export interface QualysObsolescence {
+  /** Faux la première nuit : le nombre d'actifs s'appuie sur la liste de la photo précédente. */
+  hostsTracked: boolean;
+  hosts: number;
+  byType: Record<AssetType, number>;
+  products: number;
+  osProducts: number;
+  detections: number;
+  top: { qid: string; title: string; os: boolean; severity: number; hosts: number; servers: number }[];
+}
+
+/** Conformité et durcissement (Policy Audit). */
+export interface QualysCompliance {
+  collected: boolean;
+  error: string | null;
+  rate: number | null;
+  passed: number;
+  failed: number;
+  policies: { id: string; title: string; hosts: number; compliantHosts: number; passed: number; failed: number; errors: number; rate: number | null }[];
+  topFailed: { cid: string; statement: string; criticality: string | null; failed: number; rate: number | null; policies: number }[];
 }
 
 export interface QualysState {
   latest: QualysResults | null;
-  running: { startedAt: string; phase: "hosts" | "detections" | "fixed" | "kb" | "final"; pages: number; expected: number | null } | null;
+  running: { startedAt: string; phase: "hosts" | "detections" | "fixed" | "kb" | "policies" | "posture" | "final"; pages: number; expected: number | null } | null;
   lastError: string | null;
 }
 
@@ -112,6 +137,7 @@ export interface QualysHistoryPoint {
   detections: number; sev5: number; sev4: number; overdue: number;
   kev: number; ransomware: number; qdsCritical: number; coverage: number | null;
   truriskAvg?: number | null; armed?: number; slaRate?: number | null; mttr5?: number | null; ignored?: number;
+  eolHosts?: number | null; complianceRate?: number | null;
 }
 
 export interface QualysSearchMatch {
@@ -155,6 +181,7 @@ export function progressLabel(r: NonNullable<QualysState["running"]>): string {
   if (r.phase === "hosts") return "inventaire des actifs";
   if (r.phase === "detections") return r.expected ? `vulnérabilités : page ${r.pages} sur ${r.expected}` : `vulnérabilités : page ${r.pages}`;
   if (r.phase === "fixed") return "vulnérabilités corrigées (délais de correction)";
+  if (r.phase === "policies" || r.phase === "posture") return "conformité (Policy Audit)";
   if (r.phase === "kb") return "base de connaissances Qualys";
   return "finalisation";
 }
@@ -167,6 +194,8 @@ export const HISTORY_METRICS: { key: keyof Omit<QualysHistoryPoint, "date">; lab
   { key: "overdue", label: "Hors délai", lowerIsBetter: true },
   { key: "ignored", label: "Dérogations", lowerIsBetter: true },
   { key: "coverage", label: "Couverture des scans", lowerIsBetter: false, unit: "%" },
+  { key: "eolHosts", label: "Actifs en fin de vie", lowerIsBetter: true },
+  { key: "complianceRate", label: "Conformité", lowerIsBetter: false, unit: "%" },
 ];
 
 /** Écart entre la valeur actuelle et la plus ancienne des `days` derniers jours (null si moins de deux points). */

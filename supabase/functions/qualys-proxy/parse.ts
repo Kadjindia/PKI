@@ -127,7 +127,7 @@ export function hostsPage(xml: string, now: number) {
 type QidStat = [number, number, number, number, number, number, number];
 
 /** Vulnérabilités ouvertes d'une page d'actifs. `watch` : actifs suivis de près (les plus risqués). */
-export function detectionsPage(xml: string, now: number, watch: readonly string[] = []) {
+export function detectionsPage(xml: string, now: number, watch: readonly string[] = [], eolQids: readonly string[] = []) {
   const bySev: Record<string, { total: number; overdue: number; ages: number[]; reopened: number; ageSum: number }> = {};
   for (const s of SEVERITIES) bySev[s] = { total: 0, overdue: 0, ages: [0, 0, 0, 0], reopened: 0, ageSum: 0 };
   const byType = emptyByType(() => ({ total: 0, overdue: 0, sev5: 0 }));
@@ -137,6 +137,9 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
   type Watched = { d5: number; d4: number; overdue: number; qids: string[] };
   const watched: Record<string, Watched> = {};
   const watchSet = new Set(watch);
+  const eolSet = new Set(eolQids);
+  /** Actifs portant au moins un système ou logiciel en fin de vie (EOL/Obsolete). */
+  const eol = emptyByType(() => 0);
   let hostCount = 0, hostsWithSev5 = 0, qdsCritical = 0, potential = 0;
   const ageBucket = (age: number) => { const i = AGE_LIMITS.findIndex((l) => age < l); return i === -1 ? AGE_LIMITS.length : i; };
 
@@ -147,6 +150,7 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
     const os = tag(head, "OS");
     const type = assetType(os);
     const host = { id, ip: tag(head, "IP"), name: tag(head, "DNS") || tag(head, "NETBIOS") || null, os, type, d5: 0, d4: 0, overdue: 0, qdsCritical: 0 };
+    let hasEol = false;
     let w: Watched | null = null;
     if (id && watchSet.has(id)) w = watched[id] = { d5: 0, d4: 0, overdue: 0, qids: [] };
     for (const d of blocks(h, "DETECTION")) {
@@ -179,6 +183,7 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       if (sev === 5) host.d5++; else host.d4++;
       if (late) host.overdue++;
       const qid = tag(d, "QID");
+      if (qid && eolSet.has(qid)) hasEol = true;
       if (w) {
         if (sev === 5) w.d5++; else w.d4++;
         if (late) w.overdue++;
@@ -194,13 +199,14 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
         if (type === "server") q[6]++;
       }
     }
+    if (hasEol) eol[type]++;
     if (host.d5 + host.d4 > 0) hosts.push(host);
     if (host.d5 > 0) hostsWithSev5++;
   }
   // Actifs les plus exposés de la page : vulnérabilités critiques (QDS >= 90), puis sévérité 5
   const exposure = (x: Row) => x.qdsCritical * 1000 + x.d5 * 10 + x.d4;
   hosts.sort((a, b) => exposure(b) - exposure(a));
-  return { hosts: hostCount, hostsWithVulns: hosts.length, hostsWithSev5, bySev, byType, ignored, qdsCritical, potential, qids, watched, topHosts: hosts.slice(0, TOP) };
+  return { hosts: hostCount, hostsWithVulns: hosts.length, hostsWithSev5, bySev, byType, ignored, eol, qdsCritical, potential, qids, watched, topHosts: hosts.slice(0, TOP) };
 }
 
 /** Répartition des délais de correction : jour -> nombre (plafonné à 365). */
@@ -264,6 +270,52 @@ export function kbPage(xml: string) {
     out[qid] = [tag(v, "TITLE") ?? "", flags, cves];
   }
   return out;
+}
+
+/** Vulnérabilité signalant un système ou un logiciel en fin de vie (titres Qualys « EOL/Obsolete … »). */
+export const isEol = (title: string | null | undefined) => /^\s*EOL\s*\/\s*Obsolete/i.test(title ?? "");
+/** Fin de vie d'un système d'exploitation (plutôt que d'un logiciel). */
+export const isEolOs = (title: string | null | undefined) => isEol(title) && /operating system/i.test(title ?? "");
+
+// ---------------------------------------------------------------------------
+// Conformité (Policy Audit) : politiques et état de conformité
+// ---------------------------------------------------------------------------
+
+/** Liste des politiques de conformité : identifiant et titre. */
+export function policiesPage(xml: string): { id: string; title: string }[] {
+  const out: { id: string; title: string }[] = [];
+  for (const p of blocks(tag(xml, "POLICY_LIST") ?? "", "POLICY")) {
+    const id = tag(p, "ID");
+    if (id) out.push({ id, title: tag(p, "TITLE") ?? `Politique ${id}` });
+  }
+  return out;
+}
+
+/** État de conformité d'une page (un lot d'actifs) pour une politique. */
+export function posturePage(xml: string, policyId: string) {
+  /** Contrôle -> [réussis, échoués, en erreur]. */
+  const controls: Record<string, [number, number, number]> = {};
+  const hosts = new Set<string>();
+  const failingHosts = new Set<string>();
+  let passed = 0, failed = 0, errors = 0;
+  for (const i of blocks(tag(xml, "INFO_LIST") ?? "", "INFO")) {
+    const cid = tag(i, "CONTROL_ID");
+    const host = tag(i, "HOST_ID");
+    const status = (tag(i, "STATUS") ?? "").toLowerCase();
+    if (!cid) continue;
+    if (host) hosts.add(host);
+    const c = (controls[cid] ??= [0, 0, 0]);
+    if (status.startsWith("pass")) { passed++; c[0]++; }
+    else if (status.startsWith("fail")) { failed++; c[1]++; if (host) failingHosts.add(host); }
+    else { errors++; c[2]++; }
+  }
+  /** Libellé et criticité des contrôles (glossaire de la réponse). */
+  const glossary: Record<string, [string, string | null]> = {};
+  for (const c of blocks(tag(xml, "CONTROL_LIST") ?? "", "CONTROL")) {
+    const cid = tag(c, "CID") ?? tag(c, "ID");
+    if (cid) glossary[cid] = [tag(c, "STATEMENT") ?? "", tag(tag(c, "CRITICALITY") ?? "", "LABEL")];
+  }
+  return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary };
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +480,58 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     ages: [0, 1, 2, 3].map((i) => sum(detPages, (p) => p.ignored?.ages?.[i])),
   };
 
+  // Obsolescence : vulnérabilités « EOL/Obsolete » de la photo
+  const eolEntries = [...qids.entries()].filter(([qid]) => isEol(kb[qid]?.[0]));
+  const eolHostsByType = Object.fromEntries(ASSET_TYPES.map((t) => [t, sum(detPages, (p) => p.eol?.[t])])) as Record<AssetType, number>;
+  const eolHosts = ASSET_TYPES.reduce((t, k) => t + eolHostsByType[k], 0);
+  const obsolescence = {
+    // Le nombre d'actifs s'appuie sur la liste des produits en fin de vie de la photo précédente
+    hostsTracked: detPages.some((p) => p.eol),
+    hosts: eolHosts,
+    byType: eolHostsByType,
+    products: eolEntries.length,
+    osProducts: eolEntries.filter(([qid]) => isEolOs(kb[qid]?.[0])).length,
+    detections: eolEntries.reduce((t, [, q]) => t + q[0], 0),
+    top: eolEntries.sort(byHosts).slice(0, TOP_RISK).map(([qid, q]) => ({
+      qid, title: (kb[qid]?.[0] ?? "").replace(/^\s*EOL\s*\/\s*Obsolete\s*(Software|Operating System)?\s*:?\s*/i, "") || `QID ${qid}`,
+      os: isEolOs(kb[qid]?.[0]), severity: q[1], hosts: q[0], servers: q[6] ?? 0,
+    })),
+  };
+
+  // Conformité (Policy Audit)
+  const posture = pages.filter((p) => p.kind === "posture").map((p) => p.agg);
+  const policyTitles: Record<string, string> = Object.assign({}, ...pages.filter((p) => p.kind === "policies").map((p) => Object.fromEntries((p.agg.list ?? []).map((x: Row) => [x.id, x.title]))));
+  const pcError: string | null = pages.find((p) => p.kind === "pcerror")?.agg?.message ?? null;
+  type PolicyStat = { id: string; title: string; hosts: number; compliantHosts: number; passed: number; failed: number; errors: number };
+  const byPolicy = new Map<string, PolicyStat>();
+  const controlStats = new Map<string, { failed: number; passed: number; policies: Set<string> }>();
+  const glossary: Record<string, [string, string | null]> = {};
+  for (const p of posture) {
+    const cur: PolicyStat = byPolicy.get(p.policyId) ?? { id: p.policyId, title: policyTitles[p.policyId] ?? `Politique ${p.policyId}`, hosts: 0, compliantHosts: 0, passed: 0, failed: 0, errors: 0 };
+    cur.hosts += p.hosts; cur.compliantHosts += p.compliantHosts; cur.passed += p.passed; cur.failed += p.failed; cur.errors += p.errors;
+    byPolicy.set(p.policyId, cur);
+    Object.assign(glossary, p.glossary ?? {});
+    for (const [cid, c] of Object.entries((p.controls ?? {}) as Record<string, [number, number, number]>)) {
+      const st = controlStats.get(cid) ?? { failed: 0, passed: 0, policies: new Set<string>() };
+      st.passed += c[0]; st.failed += c[1];
+      if (c[1]) st.policies.add(p.policyId);
+      controlStats.set(cid, st);
+    }
+  }
+  const rate = (ok: number, ko: number) => (ok + ko ? round1((ok / (ok + ko)) * 100) : null);
+  const policies = [...byPolicy.values()].filter((p) => p.passed + p.failed > 0)
+    .map((p) => ({ ...p, rate: rate(p.passed, p.failed) })).sort((a, b) => (a.rate ?? 0) - (b.rate ?? 0));
+  const allPassed = policies.reduce((t, p) => t + p.passed, 0), allFailed = policies.reduce((t, p) => t + p.failed, 0);
+  const compliance = {
+    collected: pages.some((p) => p.kind === "policies") || Boolean(pcError),
+    error: pcError,
+    rate: rate(allPassed, allFailed),
+    passed: allPassed, failed: allFailed,
+    policies,
+    topFailed: [...controlStats.entries()].filter(([, c]) => c.failed > 0).sort((a, b) => b[1].failed - a[1].failed).slice(0, 5)
+      .map(([cid, c]) => ({ cid, statement: glossary[cid]?.[0] || `Contrôle ${cid}`, criticality: glossary[cid]?.[1] ?? null, failed: c.failed, rate: rate(c.passed, c.failed), policies: c.policies.size })),
+  };
+
   const total = severities.reduce((t, s) => t + s.total, 0);
   const reopened = severities.reduce((t, s) => t + s.reopened, 0);
   return {
@@ -461,6 +565,10 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
       ignored,
       fixedCollected: fixPages.length > 0,
     },
+    // Axe 1 (en partie) : obsolescence, d'après VMDR
+    obsolescence,
+    // Axe 4 : conformité et durcissement (Policy Audit)
+    compliance,
   };
 }
 
@@ -492,5 +600,7 @@ export function summaryOf(r: ReturnType<typeof buildResults>) {
     slaRate: r.operations.fixedCollected ? r.operations.fixed.all.slaRate : null,
     mttr5: r.operations.fixedCollected ? r.operations.fixed.bySev[5]?.mttr ?? null : null,
     ignored: r.operations.ignored.total,
+    eolHosts: r.obsolescence.hostsTracked ? r.obsolescence.hosts : null,
+    complianceRate: r.compliance.rate,
   };
 }
