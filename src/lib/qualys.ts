@@ -164,7 +164,7 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = { server: "Serveurs"
 
 export const AGE_LABELS = ["< 30 j", "30 à 90 j", "90 à 180 j", "> 180 j"] as const;
 
-export const SEVERITY_LABELS: Record<number, string> = { 5: "Critiques", 4: "Élevées", 3: "Modérées" };
+export const SEVERITY_LABELS: Record<number, string> = { 5: "Critiques (5)", 4: "Élevées (4)", 3: "Modérées (3)" };
 
 /** Délai de remédiation d'une sévérité, en clair. */
 export const slaText = (s: { slaDays: number; slaLabel?: string }) => s.slaLabel ?? `${s.slaDays} jours`;
@@ -184,24 +184,24 @@ export function daysSince(iso: string | null, now = Date.now()): number | null {
 
 /** Avancement du calcul en cours, en clair. */
 export function progressLabel(r: NonNullable<QualysState["running"]>): string {
-  if (r.phase === "hosts") return "liste des machines";
-  if (r.phase === "detections") return r.expected ? `failles à corriger : page ${r.pages} sur ${r.expected}` : `failles à corriger : page ${r.pages}`;
-  if (r.phase === "fixed") return "failles corrigées (délais de correction)";
-  if (r.phase === "policies" || r.phase === "posture") return "règles de configuration";
-  if (r.phase === "kb") return "description des failles";
+  if (r.phase === "hosts") return "inventaire des actifs";
+  if (r.phase === "detections") return r.expected ? `vulnérabilités ouvertes : page ${r.pages} sur ${r.expected}` : `vulnérabilités ouvertes : page ${r.pages}`;
+  if (r.phase === "fixed") return "vulnérabilités corrigées (délais de correction)";
+  if (r.phase === "policies" || r.phase === "posture") return "conformité (Policy Audit)";
+  if (r.phase === "kb") return "base de connaissances Qualys";
   return "finalisation";
 }
 
 export const HISTORY_METRICS: { key: keyof Omit<QualysHistoryPoint, "date">; label: string; lowerIsBetter: boolean; unit?: string }[] = [
-  { key: "truriskAvg", label: "Niveau de risque moyen", lowerIsBetter: true },
-  { key: "armed", label: "Failles exploitables", lowerIsBetter: true },
-  { key: "slaRate", label: "Corrigées dans les délais", lowerIsBetter: false, unit: "%" },
-  { key: "mttr5", label: "Temps de correction (critiques)", lowerIsBetter: true, unit: "j" },
-  { key: "overdue", label: "Failles en retard", lowerIsBetter: true },
-  { key: "ignored", label: "Exceptions accordées", lowerIsBetter: true },
-  { key: "coverage", label: "Machines analysées", lowerIsBetter: false, unit: "%" },
-  { key: "eolHosts", label: "Machines avec un produit obsolète", lowerIsBetter: true },
-  { key: "complianceRate", label: "Règles respectées", lowerIsBetter: false, unit: "%" },
+  { key: "truriskAvg", label: "Score de risque moyen", lowerIsBetter: true },
+  { key: "armed", label: "Vulnérabilités exploitables", lowerIsBetter: true },
+  { key: "slaRate", label: "Respect des délais (SLA)", lowerIsBetter: false, unit: "%" },
+  { key: "mttr5", label: "MTTR critiques", lowerIsBetter: true, unit: "j" },
+  { key: "overdue", label: "Hors délai", lowerIsBetter: true },
+  { key: "ignored", label: "Dérogations", lowerIsBetter: true },
+  { key: "coverage", label: "Couverture des scans", lowerIsBetter: false, unit: "%" },
+  { key: "eolHosts", label: "Actifs en fin de support", lowerIsBetter: true },
+  { key: "complianceRate", label: "Taux de conformité", lowerIsBetter: false, unit: "%" },
 ];
 
 /** Écart entre la valeur actuelle et la plus ancienne des `days` derniers jours (null si moins de deux points). */
