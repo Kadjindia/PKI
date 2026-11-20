@@ -156,7 +156,7 @@ function ExposureSearch() {
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-bold flex items-center gap-2">
           <Crosshair className="w-4 h-4 text-red-500" /> Exposition à une faille du moment
-          <Help>Quand une faille fait l&apos;actualité (ex. Log4Shell), saisissez sa référence CVE, son QID Qualys ou un mot de son titre : nombre d&apos;actifs touchés d&apos;après la dernière photo, et évolution nuit après nuit pour suivre la correction. Vulnérabilités de sévérité 4 et 5.</Help>
+          <Help>Quand une faille fait l&apos;actualité (ex. Log4Shell), saisissez sa référence CVE, son QID Qualys ou un mot de son titre : nombre d&apos;actifs touchés d&apos;après la dernière photo, et évolution nuit après nuit pour suivre la correction. Vulnérabilités de sévérités 3 à 5.</Help>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -214,7 +214,7 @@ function ExposureSearch() {
                         <div className="text-sm font-medium truncate" title={m.title ?? ""}>{m.title ?? `QID ${m.qid}`}</div>
                         <div className="text-[11px] text-muted-foreground font-mono truncate">QID {m.qid}{m.cves ? ` · ${m.cves}` : ""}</div>
                       </TableCell>
-                      <TableCell className="text-center py-2"><Badge tone={m.severity === 5 ? "red" : "orange"}>{m.severity}</Badge></TableCell>
+                      <TableCell className="text-center py-2"><Badge tone={m.severity === 5 ? "red" : m.severity === 4 ? "orange" : "muted"}>{m.severity}</Badge></TableCell>
                       <TableCell className="text-right font-semibold py-2">{fmt(m.hosts)}</TableCell>
                       <TableCell className="text-right py-2">{fmt(m.servers)}</TableCell>
                       <TableCell className={`text-right py-2 ${m.overdue ? "text-red-600 font-semibold" : "text-muted-foreground"}`}>{fmt(m.overdue)}</TableCell>
@@ -243,7 +243,7 @@ function ExposureAxis({ r }: { readonly r: QualysResults }) {
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-bold flex items-center gap-2">
                 <Flame className="w-4 h-4 text-orange-500" /> Vulnérabilités armées
-                <Help>Vulnérabilités ouvertes (sévérité 4 et 5) qu&apos;un attaquant peut utiliser dès maintenant : catalogue CISA KEV (exploitées activement), liées à des rançongiciels, attaques en cours constatées par Qualys, ou exploit public disponible.</Help>
+                <Help>Vulnérabilités ouvertes (sévérités 3 à 5) qu&apos;un attaquant peut utiliser dès maintenant : catalogue CISA KEV (exploitées activement), liées à des rançongiciels, attaques en cours constatées par Qualys, ou exploit public disponible.</Help>
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -295,7 +295,7 @@ function ExposureAxis({ r }: { readonly r: QualysResults }) {
                     <TableRow>
                       <TableHead>Actif</TableHead>
                       <TableHead className="text-right">TruRisk</TableHead>
-                      <TableHead className="text-right">Crit./Élev.</TableHead>
+                      <TableHead className="text-right whitespace-nowrap">Crit./Élev./Mod.</TableHead>
                       <TableHead className="text-right">Armées</TableHead>
                       <TableHead className="text-right whitespace-nowrap">Hors délai</TableHead>
                     </TableRow>
@@ -308,7 +308,7 @@ function ExposureAxis({ r }: { readonly r: QualysResults }) {
                           <div className="text-[11px] text-muted-foreground truncate"><Badge tone={TYPE_TONE[h.type]}>{ASSET_TYPE_LABELS[h.type]}</Badge> {h.os}{h.criticality ? ` · criticité ${h.criticality}/5` : ""}</div>
                         </TableCell>
                         <TableCell className={`text-right font-black py-1.5 ${h.trurisk >= 850 ? "text-red-600" : h.trurisk >= 700 ? "text-orange-600" : ""}`}>{fmt(h.trurisk)}</TableCell>
-                        <TableCell className="text-right py-1.5 whitespace-nowrap">{h.d5 === null ? "—" : `${fmt(h.d5)} / ${fmt(h.d4)}`}</TableCell>
+                        <TableCell className="text-right py-1.5 whitespace-nowrap">{h.d5 === null ? "—" : `${fmt(h.d5)} / ${fmt(h.d4)}${h.d3 != null ? ` / ${fmt(h.d3)}` : ""}`}</TableCell>
                         <TableCell className="text-right py-1.5">{fmt(h.armed)}</TableCell>
                         <TableCell className={`text-right py-1.5 ${h.overdue ? "text-red-600" : "text-muted-foreground"}`}>{fmt(h.overdue)}</TableCell>
                       </TableRow>
@@ -352,7 +352,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Timer className="w-4 h-4 text-primary" /> Respect des délais et temps moyen de correction (MTTR)
-            <Help>Vulnérabilités de sévérité 4 et 5 corrigées au cours des {o?.windowDays ?? 90} derniers jours. Délai de correction : de la première détection à la correction constatée par Qualys. Délais de la politique de gestion des correctifs : {r.severities.map((s) => `${slaText(s)} pour la sévérité ${s.severity}`).join(", ")} (mois calendaires, à date anniversaire). Une vulnérabilité critique est traitée comme un incident de sécurité. La ventilation par équipe s&apos;appuie sur le type d&apos;actif (serveurs : équipes d&apos;infrastructure ; postes : poste de travail), faute de tags fiables.</Help>
+            <Help>Vulnérabilités de sévérités 3 à 5 corrigées au cours des {o?.windowDays ?? 90} derniers jours. Délai de correction : de la première détection à la correction constatée par Qualys. Délais de la politique de gestion des correctifs : {r.severities.map((s) => `${slaText(s)} pour la sévérité ${s.severity}`).join(", ")} (mois calendaires, à date anniversaire). Une vulnérabilité critique est traitée comme un incident de sécurité. La ventilation par équipe s&apos;appuie sur le type d&apos;actif (serveurs : équipes d&apos;infrastructure ; postes : poste de travail), faute de tags fiables.</Help>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -371,7 +371,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {r.severities.map((s) => <FixRow key={s.severity} label={SEVERITY_LABELS[s.severity]} f={o.fixed.bySev[String(s.severity) as "4" | "5"]} target={s.slaDays} targetLabel={slaText(s)} />)}
+                    {r.severities.map((s) => <FixRow key={s.severity} label={SEVERITY_LABELS[s.severity]} f={o.fixed.bySev[String(s.severity) as "3" | "4" | "5"] ?? { fixed: 0, inSla: 0, slaRate: null, mttr: null, median: null }} target={s.slaDays} targetLabel={slaText(s)} />)}
                     {(["server", "workstation", "other"] as const).filter((t) => o.fixed.byType[t]?.fixed).map((t) => (
                       <FixRow key={t} label={<span className="text-muted-foreground font-normal">dont {ASSET_TYPE_LABELS[t].toLowerCase()}</span>} f={o.fixed.byType[t]} />
                     ))}
@@ -388,7 +388,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
                       <div key={m.month} className="rounded-lg border border-border px-3 py-2 text-xs">
                         <div className="font-bold"><span className="capitalize">{formatMonth(m.month)}</span>{m.partial && <span className="ml-1.5"><Badge tone="muted">{m.partial === "start" ? "partiel" : "en cours"}</Badge></span>}</div>
                         <div className="text-muted-foreground">{fmt(m.fixed)} corrigées · {m.slaRate === null ? "—" : `${fmt(m.slaRate)} %`} dans les délais</div>
-                        <div>MTTR critiques <b>{m.mttr5 === null ? "—" : `${fmt(m.mttr5)} j`}</b> · élevées <b>{m.mttr4 === null ? "—" : `${fmt(m.mttr4)} j`}</b></div>
+                        <div>MTTR critiques <b>{m.mttr5 === null ? "—" : `${fmt(m.mttr5)} j`}</b> · élevées <b>{m.mttr4 === null ? "—" : `${fmt(m.mttr4)} j`}</b>{m.mttr3 != null && <> · modérées <b>{fmt(m.mttr3)} j</b></>}</div>
                       </div>
                     ))}
                   </div>
@@ -405,7 +405,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
               <Hourglass className="w-4 h-4 text-amber-500" /> Âge du backlog
-              <Help>Vulnérabilités de sévérité 4 et 5 encore ouvertes, par ancienneté depuis leur première détection. Un backlog qui vieillit (au-delà de 180 jours) signale une dette qui s&apos;accumule.</Help>
+              <Help>Vulnérabilités de sévérités 3 à 5 encore ouvertes, par ancienneté depuis leur première détection. Un backlog qui vieillit (au-delà de 180 jours) signale une dette qui s&apos;accumule.</Help>
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -455,7 +455,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
             <CardContent className="p-4 space-y-1">
               <div className="flex items-start justify-between gap-2 text-xs font-semibold text-muted-foreground">
                 <span className="flex items-center gap-1.5"><FileWarning className="w-4 h-4" /> Dérogations</span>
-                <Help>Vulnérabilités de sévérité 4 et 5 marquées « ignorées » dans Qualys (risque accepté, exception de correctif). Elles sont exclues des autres chiffres. Leur ancienneté montre si des exceptions durent indéfiniment. Les dates d&apos;échéance des exceptions ne sont pas lisibles par l&apos;API.</Help>
+                <Help>Vulnérabilités de sévérités 3 à 5 marquées « ignorées » dans Qualys (risque accepté, exception de correctif). Elles sont exclues des autres chiffres. Leur ancienneté montre si des exceptions durent indéfiniment. Les dates d&apos;échéance des exceptions ne sont pas lisibles par l&apos;API.</Help>
               </div>
               {!o ? <Pending /> : (
                 <>
@@ -526,7 +526,7 @@ function ObsolescenceCard({ r }: { readonly r: QualysResults }) {
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-bold flex items-center gap-2">
           <Archive className="w-4 h-4 text-amber-600" /> Dette technique : systèmes et logiciels en fin de vie
-          <Help>Systèmes d&apos;exploitation et logiciels qui ne reçoivent plus de correctifs de sécurité de leur éditeur, repérés par Qualys VMDR (vulnérabilités « EOL/Obsolete », sévérités 4 et 5). En attendant l&apos;accès au module CSAM, qui donnerait la liste complète avec les dates de fin de support.</Help>
+          <Help>Systèmes d&apos;exploitation et logiciels qui ne reçoivent plus de correctifs de sécurité de leur éditeur, repérés par Qualys VMDR (vulnérabilités « EOL/Obsolete », sévérités 3 à 5). En attendant l&apos;accès au module CSAM, qui donnerait la liste complète avec les dates de fin de support.</Help>
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -794,7 +794,7 @@ export default function QualysPanel() {
       <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
         <ShieldAlert className="w-7 h-7 text-primary" /> Vulnérabilités — Qualys
       </h2>
-      <p className="text-sm text-muted-foreground mt-1">Pilotage de la gestion des vulnérabilités : visibilité du parc, exposition aux menaces et efficacité de la correction. Sévérités 4 et 5.</p>
+      <p className="text-sm text-muted-foreground mt-1">Pilotage de la gestion des vulnérabilités : visibilité du parc, exposition aux menaces et efficacité de la correction. Sévérités 3 à 5.</p>
     </div>
   );
 

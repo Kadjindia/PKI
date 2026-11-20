@@ -90,7 +90,9 @@ describe("Qualys : chiffres d'une page", () => {
     expect(p.hosts).toBe(3);
     expect(p.hostsWithVulns).toBe(2); // pc3 n'a rien
     expect(p.bySev[5]).toMatchObject({ total: 3, overdue: 3, ages: [2, 1, 0, 0] }); // 10 j et 40 j > 7 jours
-    expect(p.bySev[4]).toMatchObject({ total: 1, overdue: 1, ages: [0, 0, 0, 1] }); // ignorée exclue, sévérité 3 ignorée
+    expect(p.bySev[4]).toMatchObject({ total: 1, overdue: 1, ages: [0, 0, 0, 1] }); // ignorée exclue
+    // Sévérité 3 (modérée) : 5 jours, délai de 3 mois non atteint
+    expect(p.bySev[3]).toMatchObject({ total: 1, overdue: 0, ages: [1, 0, 0, 0] });
     expect(p.qdsCritical).toBe(1);
     expect(p.qids["100"][0]).toBe(3);
     expect(p.qids["100"][3]).toBe(Date.parse(daysAgo(40))); // plus ancienne détection
@@ -124,7 +126,7 @@ describe("Qualys : chiffres d'une page", () => {
     expect(p.ignored).toEqual({ total: 1, sev5: 0, ages: [0, 0, 0, 1] });
     expect(p.byType.server).toEqual({ total: 1, overdue: 1, sev5: 1 });
     expect(p.byType.workstation).toEqual({ total: 1, overdue: 0, sev5: 1 });
-    expect(p.watched["1"]).toEqual({ d5: 1, d4: 0, overdue: 1, qids: ["100"] });
+    expect(p.watched["1"]).toEqual({ d5: 1, d4: 0, d3: 0, overdue: 1, qids: ["100"] });
     expect(p.watched["2"]).toBeUndefined();
     expect(p.qids["100"][6]).toBe(1); // une détection sur serveur
     expect(p.bySev[5].ageSum).toBeCloseTo(45);
@@ -216,8 +218,8 @@ describe("Qualys : photo", () => {
     expect(r.operations.fixed.bySev[5]).toEqual({ fixed: 4, inSla: 3, slaRate: 75, mttr: 15, median: 10 });
     // Fenêtre de 90 jours au 16/11 : commence en août ; novembre est le mois en cours
     expect(r.operations.fixed.monthly).toEqual([
-      { month: "2026-10", fixed: 2, slaRate: 50, mttr5: 20, mttr4: null, partial: null },
-      { month: "2026-11", fixed: 2, slaRate: 100, mttr5: 10, mttr4: null, partial: "current" },
+      { month: "2026-10", fixed: 2, slaRate: 50, mttr5: 20, mttr4: null, mttr3: null, partial: null },
+      { month: "2026-11", fixed: 2, slaRate: 100, mttr5: 10, mttr4: null, mttr3: null, partial: "current" },
     ]);
     expect(summaryOf(r)).toMatchObject({ truriskAvg: 910, slaRate: 75, mttr5: 15 });
   });

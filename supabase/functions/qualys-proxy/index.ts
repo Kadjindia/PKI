@@ -22,14 +22,14 @@ const CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 // autorise 2 simultanés et 300 par heure). Lecture seule.
 //
 // Étapes : hosts (liste des actifs, couverture, TruRisk) -> detections (vulnérabilités
-// de sévérité 4 et 5 ouvertes, dérogations comprises) -> fixed (vulnérabilités corrigées
+// de sévérité 3 à 5 ouvertes, dérogations comprises) -> fixed (vulnérabilités corrigées
 // sur 90 jours : délais réels) -> kb (titres, CISA KEV, ransomware, exploit public,
 // corrigeable) -> policies et posture (conformité Policy Audit ; une erreur à ces étapes
 // n'empêche pas la photo) -> photo, et index des vulnérabilités pour la recherche d'exposition.
 // ---------------------------------------------------------------------------
 
 const HOST_PAGE = 1000; // actifs par page de la liste des actifs (~1 s par actif chez Qualys)
-const DETECTION_PAGE = 150; // actifs par page de vulnérabilités (~100 000 lignes, ~15 Mo)
+const DETECTION_PAGE = 100; // actifs par page de vulnérabilités (sévérités 3 à 5 : pages de taille comparable à 150 actifs en 4-5)
 const KB_CHUNK = 400; // vulnérabilités par appel à la base de connaissances
 const POSTURE_PAGE = 200; // actifs par page de l'état de conformité
 const MAX_POLICIES = 20; // politiques de conformité suivies au plus
@@ -71,8 +71,8 @@ function adminClient(): Admin {
 
 const firstUrl = {
   hosts: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/?action=list&details=All&show_trurisk=1&truncation_limit=${HOST_PAGE}`,
-  detections: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=4-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}`,
-  fixed: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=4-5&status=Fixed&detection_updated_since=${fixedSince().toISOString().slice(0, 10)}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
+  detections: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}`,
+  fixed: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=Fixed&detection_updated_since=${fixedSince().toISOString().slice(0, 10)}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
   policies: () => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/policy/?action=list&details=Basic`,
   posture: (policyId: string) => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/posture/info/?action=list&policy_id=${encodeURIComponent(policyId)}&details=Basic&truncation_limit=${POSTURE_PAGE}`,
   kb: (ids: string[]) => `${QUALYS_BASE_URL}/api/2.0/fo/knowledge_base/vuln/?action=list&details=All&ids=${ids.join(",")}`,

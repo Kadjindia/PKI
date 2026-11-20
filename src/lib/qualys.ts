@@ -2,7 +2,7 @@
 // qualys-proxy (voir supabase/functions/qualys-proxy/parse.ts pour le calcul).
 
 export interface QualysSeverity {
-  severity: 4 | 5;
+  severity: 3 | 4 | 5;
   slaDays: number;
   /** Délai de la politique en clair (« 7 jours », « 1 mois ») ; absent des photos d'avant le 20/11/2026. */
   slaLabel?: string;
@@ -38,7 +38,7 @@ export type AssetType = "server" | "workstation" | "other";
 export interface QualysRiskHost {
   id: string | null; name: string | null; ip: string | null; os: string | null;
   type: AssetType; trurisk: number; criticality: number | null; lastScan: string | null;
-  d5: number | null; d4: number | null; overdue: number | null; armed: number | null;
+  d5: number | null; d4: number | null; d3?: number | null; overdue: number | null; armed: number | null;
 }
 
 /** Vulnérabilités corrigées sur la période : respect des délais et MTTR. */
@@ -58,10 +58,10 @@ export interface QualysOperations {
   windowDays: number;
   fixed: {
     all: QualysFixView;
-    bySev: Record<"4" | "5", QualysFixView>;
+    bySev: Partial<Record<"3" | "4" | "5", QualysFixView>>;
     byType: Record<AssetType, QualysFixView>;
     /** partial : « start » premier mois coupé par la fenêtre, « current » mois en cours. */
-    monthly: { month: string; fixed: number; slaRate: number | null; mttr5: number | null; mttr4: number | null; partial?: "start" | "current" | null }[];
+    monthly: { month: string; fixed: number; slaRate: number | null; mttr5: number | null; mttr4: number | null; mttr3?: number | null; partial?: "start" | "current" | null }[];
   };
   open: { byType: Record<AssetType, { total: number; overdue: number; sev5: number }> };
   reopenRate: number | null;
@@ -137,7 +137,7 @@ export interface QualysState {
 
 export interface QualysHistoryPoint {
   date: string;
-  detections: number; sev5: number; sev4: number; overdue: number;
+  detections: number; sev5: number; sev4: number; sev3?: number; overdue: number;
   kev: number; ransomware: number; qdsCritical: number; coverage: number | null;
   truriskAvg?: number | null; armed?: number; slaRate?: number | null; mttr5?: number | null; ignored?: number;
   eolHosts?: number | null; complianceRate?: number | null;
