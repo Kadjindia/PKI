@@ -793,6 +793,9 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                 </div>
                 <div className="text-4xl font-black">{c.rate === null ? "—" : `${fmt(c.rate)} %`}</div>
                 <div className="text-xs text-muted-foreground">{fmt(c.passed)} contrôles réussis · {fmt(c.failed)} en échec · {fmt(c.policies.length)} politiques</div>
+                {c.total != null && c.evaluated != null && c.evaluated < c.total && (
+                  <div className="text-xs text-amber-600 pt-1">{fmt(c.evaluated)} politiques réévaluées cette nuit sur {fmt(c.total)}{c.stopped ? " (limite de temps atteinte)" : ""} : les autres affichent leur dernier résultat connu, et seront réévaluées en priorité la nuit prochaine.</div>
+                )}
                 <div className="pt-1"><Delta value={trendOver(points, "complianceRate")} lowerIsBetter={false} unit=" pts" /></div>
               </div>
               <div className="lg:col-span-2 overflow-x-auto">
@@ -808,7 +811,10 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                   <TableBody>
                     {c.policies.map((p) => (
                       <TableRow key={p.id}>
-                        <TableCell className="max-w-[320px] py-1.5"><div className="text-sm font-medium truncate" title={p.title}>{p.title}</div></TableCell>
+                        <TableCell className="max-w-[320px] py-1.5">
+                          <div className="text-sm font-medium truncate" title={p.title}>{p.title}</div>
+                          {p.stale && <div className="text-[11px] text-muted-foreground">résultat du {p.evaluatedAt ? new Date(p.evaluatedAt).toLocaleDateString("fr-FR") : "dernier calcul"}</div>}
+                        </TableCell>
                         <TableCell className="text-right py-1.5">{fmt(p.hosts)}</TableCell>
                         <TableCell className="text-right py-1.5">{fmt(p.compliantHosts)}</TableCell>
                         <TableCell className="py-1.5"><SlaBar rate={p.rate} /></TableCell>

@@ -542,7 +542,7 @@ function mergeQids(detPages: Row[]) {
   return qids;
 }
 
-export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
+export function buildResults(pages: { kind: string; agg: Row }[], now: number, opts: { previousPolicies?: Row[] } = {}) {
   const hostsPages = pages.filter((p) => p.kind === "hosts").map((p) => p.agg);
   const detPages = pages.filter((p) => p.kind === "detections").map((p) => p.agg);
   const fixPages = pages.filter((p) => p.kind === "fixed").map((p) => p.agg);
@@ -731,7 +731,10 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
   };
 
   // Conformité (Policy Audit)
-  const posture = pages.filter((p) => p.kind === "posture").map((p) => p.agg);
+  // Seules les politiques entièrement lues comptent (la lecture a pu être interrompue)
+  const pcMeta: Row | null = pages.find((p) => p.kind === "pcmeta")?.agg ?? null;
+  const doneSet = pcMeta ? new Set<string>(pcMeta.done ?? []) : null;
+  const posture = pages.filter((p) => p.kind === "posture").map((p) => p.agg).filter((a) => !doneSet || doneSet.has(a.policyId));
   const policyTitles: Record<string, string> = Object.assign({}, ...pages.filter((p) => p.kind === "policies").map((p) => Object.fromEntries((p.agg.list ?? []).map((x: Row) => [x.id, x.title]))));
   const pcError: string | null = pages.find((p) => p.kind === "pcerror")?.agg?.message ?? null;
   type PolicyStat = { id: string; title: string; hosts: number; compliantHosts: number; passed: number; failed: number; errors: number };
@@ -751,12 +754,27 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     }
   }
   const rate = (ok: number, ko: number) => (ok + ko ? round1((ok / (ok + ko)) * 100) : null);
-  const policies = [...byPolicy.values()].filter((p) => p.passed + p.failed > 0)
-    .map((p) => ({ ...p, rate: rate(p.passed, p.failed) })).sort((a, b) => (a.rate ?? 0) - (b.rate ?? 0));
+  const evaluatedAt = new Date(now).toISOString();
+  const fresh = [...byPolicy.values()].filter((p) => p.passed + p.failed > 0)
+    .map((p) => ({ ...p, rate: rate(p.passed, p.failed), evaluatedAt: evaluatedAt as string | null, stale: false }));
+  // Politiques non réévaluées cette nuit : dernier résultat connu, avec sa date
+  const freshIds = new Set(fresh.map((p) => p.id));
+  const carried = (opts.previousPolicies ?? []).filter((p) => p && !freshIds.has(p.id) && (!pcMeta || (pcMeta.total ?? 0) > 0))
+    .map((p) => ({
+      id: String(p.id), title: policyTitles[p.id] ?? String(p.title ?? `Politique ${p.id}`),
+      hosts: Number(p.hosts) || 0, compliantHosts: Number(p.compliantHosts) || 0,
+      passed: Number(p.passed) || 0, failed: Number(p.failed) || 0, errors: Number(p.errors) || 0,
+      rate: typeof p.rate === "number" ? p.rate : null, evaluatedAt: (p.evaluatedAt as string | undefined) ?? null, stale: true,
+    }));
+  const policies = [...fresh, ...carried].sort((a, b) => (a.rate ?? 0) - (b.rate ?? 0));
   const allPassed = policies.reduce((t, p) => t + p.passed, 0), allFailed = policies.reduce((t, p) => t + p.failed, 0);
   const compliance = {
     collected: pages.some((p) => p.kind === "policies") || Boolean(pcError),
     error: pcError,
+    /** Politiques évaluées cette nuit / au total ; lecture interrompue (budget de temps) ? */
+    evaluated: fresh.length,
+    total: pcMeta?.total ?? fresh.length,
+    stopped: Boolean(pcMeta?.stopped),
     rate: rate(allPassed, allFailed),
     passed: allPassed, failed: allFailed,
     policies,

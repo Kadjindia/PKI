@@ -157,7 +157,11 @@ export interface QualysCompliance {
   rate: number | null;
   passed: number;
   failed: number;
-  policies: { id: string; title: string; hosts: number; compliantHosts: number; passed: number; failed: number; errors: number; rate: number | null }[];
+  /** Politiques évaluées cette nuit / au total ; lecture interrompue par le budget de temps (absents des photos d'avant le 20/11/2026). */
+  evaluated?: number;
+  total?: number;
+  stopped?: boolean;
+  policies: { id: string; title: string; hosts: number; compliantHosts: number; passed: number; failed: number; errors: number; rate: number | null; evaluatedAt?: string | null; stale?: boolean }[];
   topFailed: { cid: string; statement: string; criticality: string | null; failed: number; rate: number | null; policies: number }[];
 }
 

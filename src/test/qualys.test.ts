@@ -277,6 +277,25 @@ describe("Qualys : obsolescence et conformité", () => {
     expect(summaryOf(r).complianceRate).toBe(75);
   });
 
+  it("ne compte que les politiques entièrement lues et reprend les autres avec leur date", () => {
+    const pos = (policyId: string, passed: number, failed: number) => ({ policyId, hosts: 1, compliantHosts: failed ? 0 : 1, passed, failed, errors: 0, controls: {}, glossary: {} });
+    const r = buildResults([
+      { kind: "policies", agg: { list: [{ id: "1", title: "CIS A" }, { id: "2", title: "CIS B" }, { id: "3", title: "CIS C" }] } },
+      { kind: "posture", agg: pos("1", 8, 2) },
+      { kind: "posture", agg: pos("2", 1, 9) }, // lecture interrompue : ignorée
+      { kind: "pcmeta", agg: { done: ["1"], total: 3, stopped: true } },
+    ], NOW, { previousPolicies: [
+      { id: "2", title: "CIS B", hosts: 4, compliantHosts: 1, passed: 50, failed: 50, errors: 0, rate: 50, evaluatedAt: "2026-11-15T03:00:00Z" },
+      { id: "1", title: "CIS A", hosts: 1, compliantHosts: 0, passed: 1, failed: 1, errors: 0, rate: 50, evaluatedAt: "2026-11-15T03:00:00Z" },
+    ] });
+    expect(r.compliance).toMatchObject({ evaluated: 1, total: 3, stopped: true });
+    const byId = Object.fromEntries(r.compliance.policies.map((p) => [p.id, p]));
+    expect(byId["1"]).toMatchObject({ rate: 80, stale: false }); // réévaluée cette nuit
+    expect(byId["2"]).toMatchObject({ rate: 50, stale: true, evaluatedAt: "2026-11-15T03:00:00Z" }); // dernier résultat connu
+    expect(byId["3"]).toBeUndefined(); // jamais évaluée
+    expect(r.compliance.rate).toBe(52.7); // (8 + 50) / (10 + 100)
+  });
+
   it("signale une conformité indisponible sans bloquer la photo", () => {
     const r = buildResults([{ kind: "pcerror", agg: { message: "User is not authorized (code 2002)" } }], NOW);
     expect(r.compliance).toMatchObject({ collected: true, error: "User is not authorized (code 2002)", rate: null, policies: [] });

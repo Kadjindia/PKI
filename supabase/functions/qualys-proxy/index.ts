@@ -42,6 +42,9 @@ const REQUEST_TIMEOUT_MS = 15 * 60 * 1000; // attente maximale d'une réponse de
 const CONCURRENCY_WAIT_MS = 3 * 60 * 1000; // pause si les 2 appels simultanés sont pris
 const MAX_ATTEMPTS = 3;
 const RUN_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+// La conformité (Policy Audit) est lente : budget par nuit. Les politiques non évaluées
+// sont reprises en priorité la nuit suivante ; leur dernier résultat reste affiché.
+const COMPLIANCE_BUDGET_MS = 3 * 60 * 60 * 1000;
 const DIRECT_TIMEOUT_MS = 60_000; // CSAM et WAS répondent vite : appel direct depuis la fonction
 const CSAM_PAGE = 300;
 const WAS_PAGE = 1000;
@@ -146,7 +149,11 @@ async function directFetch(url: string, init: RequestInit): Promise<{ status: nu
 /** Une page de CSAM ou de WAS. Une erreur persistante est notée (csamerror / waserror) et l'on passe à la suite. */
 async function directStep(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>): Promise<StepOutcome> {
   const phase = state.phase as "csam" | "was";
-  const nextPhase = () => { state.phase = phase === "csam" ? "was" : "final"; state.page = 0; state.next = null; state.attempts = 0; };
+  const nextPhase = () => {
+    state.phase = phase === "csam" ? "was" : "policies";
+    if (state.phase === "policies") state.pcStartedAt = new Date().toISOString();
+    state.page = 0; state.next = null; state.attempts = 0;
+  };
   try {
     const now = Date.now();
     if (phase === "csam") {
@@ -187,6 +194,18 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
   }
 }
 
+/** Conformité de la dernière photo, par politique (reprise pour les politiques non réévaluées). */
+async function previousPolicies(admin: Admin): Promise<Row[]> {
+  const { data } = await admin.from("qualys_snapshots").select("results").eq("status", "done")
+    .not("results->compliance", "is", null).order("started_at", { ascending: false }).limit(1).maybeSingle();
+  return (data?.results?.compliance?.policies ?? []) as Row[];
+}
+
+/** Date de dernière évaluation de chaque politique. */
+async function lastPolicyDates(admin: Admin): Promise<Record<string, string>> {
+  return Object.fromEntries((await previousPolicies(admin)).map((p) => [p.id, p.evaluatedAt ?? ""]));
+}
+
 type StepOutcome = "advanced" | "waiting" | "skipped" | "finished";
 
 /**
@@ -212,7 +231,23 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     return "finished" as const;
   };
 
-  if (Date.now() - Date.parse(snap.started_at) > RUN_TIMEOUT_MS) return await fail("Calcul abandonné : durée maximale dépassée.");
+  // Le temps manque pendant les dernières étapes : on garde tout ce qui est fini plutôt que de tout perdre
+  const elapsed = Date.now() - Date.parse(snap.started_at);
+  const nearEnd = elapsed > RUN_TIMEOUT_MS - 20 * 60_000;
+  const pcOver = (state.phase === "policies" || state.phase === "posture") && state.pcStartedAt && Date.now() - Date.parse(state.pcStartedAt) > COMPLIANCE_BUDGET_MS;
+  if (pcOver || (nearEnd && ["csam", "was", "policies", "posture"].includes(state.phase))) {
+    if (state.request) await admin.rpc("qualys_http_forget", { request_id: state.request });
+    state.request = null;
+    if (state.phase === "policies" || state.phase === "posture") {
+      await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone ?? [], total: state.policyIds?.length ?? 0, stopped: true });
+    } else {
+      await savePage(admin, snapId, `${state.phase}error`, 0, { message: "Interrompu : durée maximale du calcul atteinte." });
+    }
+    state.phase = "final";
+    await save();
+    return "advanced";
+  }
+  if (elapsed > RUN_TIMEOUT_MS) return await fail("Calcul abandonné : durée maximale dépassée.");
 
   // 1. Une réponse est attendue
   if (state.request) {
@@ -243,9 +278,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${res.status_code}`)) { await save(); return "waiting"; }
       await savePage(admin, snapId, "pcerror", 0, { message: err });
       state.attempts = 0;
-      state.phase = "csam";
-      state.page = 0;
-      state.next = null;
+      state.phase = "final";
       await save();
       return "advanced";
     }
@@ -262,20 +295,30 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       await savePage(admin, snapId, "kb", state.page, kbPage(content));
       state.page++;
       state.next = null;
-      if (state.page >= state.kbChunks) state.phase = "policies";
+      if (state.page >= state.kbChunks) { state.phase = "csam"; state.page = 0; }
     } else if (state.phase === "policies") {
       const list = policiesPage(content).slice(0, MAX_POLICIES);
       await savePage(admin, snapId, "policies", 0, { list });
-      state.policyIds = list.map((x) => x.id);
+      // Les politiques évaluées le moins récemment passent en premier
+      const last = await lastPolicyDates(admin);
+      state.policyIds = list.map((x) => x.id).sort((a, b) => (last[a] ?? "").localeCompare(last[b] ?? ""));
       state.policyIdx = 0;
+      state.pcDone = [];
       state.page = 0;
       state.next = null;
-      state.phase = list.length ? "posture" : "csam";
+      if (!list.length) { await savePage(admin, snapId, "pcmeta", 0, { done: [], total: 0, stopped: false }); state.phase = "final"; }
+      else state.phase = "posture";
     } else if (state.phase === "posture") {
       await savePage(admin, snapId, "posture", state.page, posturePage(content, state.policyIds[state.policyIdx]));
       state.page++;
       state.next = nextPageUrl(content, QUALYS_BASE_URL);
-      if (!state.next && ++state.policyIdx >= state.policyIds.length) { state.phase = "csam"; state.page = 0; }
+      if (!state.next) {
+        state.pcDone = [...(state.pcDone ?? []), state.policyIds[state.policyIdx]];
+        if (++state.policyIdx >= state.policyIds.length) {
+          await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone, total: state.policyIds.length, stopped: false });
+          state.phase = "final";
+        }
+      }
     } else {
       const agg = state.phase === "hosts" ? hostsPage(content, now)
         : state.phase === "detections" ? detectionsPage(content, now, state.watch ?? [], state.eolQids ?? [])
@@ -303,7 +346,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
           const ids = [...new Set((pages ?? []).flatMap((p: Row) => Object.keys(p.agg.qids ?? {})))].sort((a, b) => Number(a) - Number(b));
           state.kbIds = ids;
           state.kbChunks = Math.ceil(ids.length / KB_CHUNK);
-          state.phase = ids.length ? "kb" : "policies";
+          state.phase = ids.length ? "kb" : "csam";
           state.page = 0;
         }
       }
@@ -322,12 +365,13 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
   if (state.phase === "final") {
     const { data: pages, error } = await admin.from("qualys_pages").select("kind, agg").eq("snapshot_id", snapId);
     if (error) throw new Error(error.message);
-    const results = buildResults(pages ?? [], Date.now());
+    const results = buildResults(pages ?? [], Date.now(), { previousPolicies: await previousPolicies(admin) });
     await saveIndex(admin, snapId, vulnIndex(pages ?? []));
     state.kbIds = undefined;
     state.watch = undefined;
     state.eolQids = undefined;
     state.policyIds = undefined;
+    state.pcDone = undefined;
     await save({ status: "done", results, summary: summaryOf(results), finished_at: new Date().toISOString() });
     await admin.from("qualys_pages").delete().eq("snapshot_id", snapId);
     return "finished";
