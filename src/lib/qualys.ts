@@ -104,6 +104,38 @@ export interface QualysResults {
   operations?: QualysOperations;
   obsolescence?: QualysObsolescence;
   compliance?: QualysCompliance;
+  inventory?: QualysInventory;
+  internetExposed?: { total: number; byType: Record<AssetType, number> };
+  webApps?: QualysWebApps;
+}
+
+/** Inventaire CSAM : agents, Shadow IT, fin de support des systèmes d'exploitation. */
+export interface QualysInventory {
+  collected: boolean;
+  error: string | null;
+  total: number;
+  withAgent: number;
+  agentStale: number;
+  unmanaged: number;
+  unmanagedNew: number;
+  publicIp: number;
+  byType: Record<AssetType, { total: number; withAgent: number; unmanaged: number }>;
+  osEol: number;
+  osEos: number;
+  osOutdated: { os: string; assets: number; endOfSupport: string | null; endOfLife: string | null }[];
+  recentUnmanaged: { id: string; name: string | null; ip: string | null; os: string | null; source: string | null; created: string | null }[];
+  agentStaleDays: number;
+  newDays: number;
+}
+
+/** Applications web (WAS). */
+export interface QualysWebApps {
+  collected: boolean;
+  error: string | null;
+  open: number;
+  apps: { id: string; name: string; sev5: number; sev4: number; sev3: number; overdue: number }[];
+  owasp: { name: string; count: number }[];
+  fixed: QualysFixView;
 }
 
 /** Systèmes et logiciels en fin de vie, repérés par VMDR (vulnérabilités « EOL/Obsolete »). */
@@ -131,7 +163,7 @@ export interface QualysCompliance {
 
 export interface QualysState {
   latest: QualysResults | null;
-  running: { startedAt: string; phase: "hosts" | "detections" | "fixed" | "kb" | "policies" | "posture" | "final"; pages: number; expected: number | null } | null;
+  running: { startedAt: string; phase: "hosts" | "detections" | "fixed" | "kb" | "policies" | "posture" | "csam" | "was" | "final"; pages: number; expected: number | null } | null;
   lastError: string | null;
 }
 
@@ -140,7 +172,7 @@ export interface QualysHistoryPoint {
   detections: number; sev5: number; sev4: number; sev3?: number; overdue: number;
   kev: number; ransomware: number; qdsCritical: number; coverage: number | null;
   truriskAvg?: number | null; armed?: number; slaRate?: number | null; mttr5?: number | null; ignored?: number;
-  eolHosts?: number | null; complianceRate?: number | null;
+  eolHosts?: number | null; complianceRate?: number | null; unmanaged?: number | null; webAppsCritical?: number | null;
 }
 
 export interface QualysSearchMatch {
@@ -188,6 +220,8 @@ export function progressLabel(r: NonNullable<QualysState["running"]>): string {
   if (r.phase === "detections") return r.expected ? `vulnérabilités ouvertes : page ${r.pages} sur ${r.expected}` : `vulnérabilités ouvertes : page ${r.pages}`;
   if (r.phase === "fixed") return "vulnérabilités corrigées (délais de correction)";
   if (r.phase === "policies" || r.phase === "posture") return "conformité (Policy Audit)";
+  if (r.phase === "csam") return "inventaire des actifs (CSAM)";
+  if (r.phase === "was") return "applications web (WAS)";
   if (r.phase === "kb") return "base de connaissances Qualys";
   return "finalisation";
 }
@@ -202,6 +236,8 @@ export const HISTORY_METRICS: { key: keyof Omit<QualysHistoryPoint, "date">; lab
   { key: "coverage", label: "Couverture des scans", lowerIsBetter: false, unit: "%" },
   { key: "eolHosts", label: "Actifs en fin de support", lowerIsBetter: true },
   { key: "complianceRate", label: "Taux de conformité", lowerIsBetter: false, unit: "%" },
+  { key: "unmanaged", label: "Shadow IT", lowerIsBetter: true },
+  { key: "webAppsCritical", label: "Applications : vulnérabilités critiques", lowerIsBetter: true },
 ];
 
 /** Écart entre la valeur actuelle et la plus ancienne des `days` derniers jours (null si moins de deux points). */

@@ -1,9 +1,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
-  FIXED_WINDOW_DAYS, TOP_RISK,
+  csamPage, wasPage, FIXED_WINDOW_DAYS, TOP_RISK,
 } from "./parse.ts";
-import { runDiagnostic } from "./diagnostic.ts";
+import { runDiagnostic, gatewayToken, gatewayUrl } from "./diagnostic.ts";
 
 // --- Secrets configurés côté Supabase (Project Settings > Edge Functions > Secrets) ---
 const QUALYS_BASE_URL = (Deno.env.get("QUALYS_BASE_URL") ?? "https://qualysapi.qg2.apps.qualys.eu").trim().replace(/\/$/, "");
@@ -25,7 +25,10 @@ const CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 // de sévérité 3 à 5 ouvertes, dérogations comprises) -> fixed (vulnérabilités corrigées
 // sur 90 jours : délais réels) -> kb (titres, CISA KEV, ransomware, exploit public,
 // corrigeable) -> policies et posture (conformité Policy Audit ; une erreur à ces étapes
-// n'empêche pas la photo) -> photo, et index des vulnérabilités pour la recherche d'exposition.
+// n'empêche pas la photo) -> csam (inventaire : agents, Shadow IT, fin de support des systèmes)
+// -> was (applications web) -> photo, et index des vulnérabilités pour la recherche d'exposition.
+// CSAM et WAS sont appelés directement (réponses rapides) ; une erreur y est notée sans
+// empêcher la photo.
 // ---------------------------------------------------------------------------
 
 const HOST_PAGE = 1000; // actifs par page de la liste des actifs (~1 s par actif chez Qualys)
@@ -38,7 +41,10 @@ const KEEP_INDEX = 60; // photos dont on garde l'index des vulnérabilités (rec
 const REQUEST_TIMEOUT_MS = 15 * 60 * 1000; // attente maximale d'une réponse de Qualys
 const CONCURRENCY_WAIT_MS = 3 * 60 * 1000; // pause si les 2 appels simultanés sont pris
 const MAX_ATTEMPTS = 3;
-const RUN_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+const RUN_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+const DIRECT_TIMEOUT_MS = 60_000; // CSAM et WAS répondent vite : appel direct depuis la fonction
+const CSAM_PAGE = 300;
+const WAS_PAGE = 1000;
 // Un passage de la tâche planifiée travaille au plus ~110 s (limite des fonctions : 150 s)
 const CRON_BUDGET_MS = 110_000;
 const POLL_MS = 8_000;
@@ -122,6 +128,65 @@ async function knownEolQids(admin: Admin): Promise<string[]> {
   return (data ?? []).map((r: Row) => String(r.qid));
 }
 
+/** Jeton de la Gateway (CSAM), gardé le temps de son utilisation (valable 4 h chez Qualys). */
+let gwCache: { token: string; until: number } | null = null;
+async function gatewayAuth(): Promise<string> {
+  if (gwCache && gwCache.until > Date.now()) return gwCache.token;
+  const gw = await gatewayToken(gatewayUrl(QUALYS_BASE_URL, Deno.env.get("QUALYS_GATEWAY_URL")), QUALYS_USERNAME!, QUALYS_PASSWORD!);
+  if (!gw.token) throw new Error(gw.detail);
+  gwCache = { token: gw.token, until: Date.now() + 3 * 3600 * 1000 };
+  return gw.token;
+}
+
+async function directFetch(url: string, init: RequestInit): Promise<{ status: number; body: string }> {
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(DIRECT_TIMEOUT_MS) });
+  return { status: res.status, body: await res.text() };
+}
+
+/** Une page de CSAM ou de WAS. Une erreur persistante est notée (csamerror / waserror) et l'on passe à la suite. */
+async function directStep(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>): Promise<StepOutcome> {
+  const phase = state.phase as "csam" | "was";
+  const nextPhase = () => { state.phase = phase === "csam" ? "was" : "final"; state.page = 0; state.next = null; state.attempts = 0; };
+  try {
+    const now = Date.now();
+    if (phase === "csam") {
+      const gw = gatewayUrl(QUALYS_BASE_URL, Deno.env.get("QUALYS_GATEWAY_URL"));
+      const url = `${gw}/rest/2.0/search/am/asset?pageSize=${CSAM_PAGE}${state.next ? `&lastSeenAssetId=${encodeURIComponent(state.next)}` : ""}`;
+      const res = await directFetch(url, { method: "POST", headers: { Authorization: `Bearer ${await gatewayAuth()}`, "Content-Type": "application/json", Accept: "application/json" }, body: "{}" });
+      if (res.status === 401) gwCache = null;
+      if (res.status < 200 || res.status >= 300) throw new Error(`CSAM : HTTP ${res.status}`);
+      const json = JSON.parse(res.body);
+      if (json.responseCode && json.responseCode !== "SUCCESS") throw new Error(`CSAM : ${json.responseCode} ${json.responseMessage ?? ""}`.trim());
+      const { agg, next } = csamPage(json, now);
+      await savePage(admin, snapId, "csam", state.page, agg);
+      state.page++;
+      state.next = next;
+    } else {
+      const filters = `<Criteria field="type" operator="EQUALS">VULNERABILITY</Criteria>${state.next ? `<Criteria field="id" operator="GREATER">${Number(state.next)}</Criteria>` : ""}`;
+      const body = `<ServiceRequest><preferences><limitResults>${WAS_PAGE}</limitResults></preferences><filters>${filters}</filters></ServiceRequest>`;
+      const res = await directFetch(`${QUALYS_BASE_URL}/qps/rest/3.0/search/was/finding`, {
+        method: "POST", headers: { Authorization: basicAuth(), "Content-Type": "text/xml", Accept: "application/xml", "X-Requested-With": "pki-dashboard" }, body,
+      });
+      const code = /<responseCode>([A-Z_]+)<\/responseCode>/.exec(res.body)?.[1];
+      if (res.status < 200 || res.status >= 300 || (code && code !== "SUCCESS")) throw new Error(`WAS : ${code ?? `HTTP ${res.status}`}`);
+      const { agg, next } = wasPage(res.body, now, fixedSince().getTime());
+      await savePage(admin, snapId, "was", state.page, agg);
+      state.page++;
+      state.next = next;
+    }
+    state.attempts = 0;
+    if (!state.next) nextPhase();
+    await save();
+    return "advanced";
+  } catch (e) {
+    if (++state.attempts < MAX_ATTEMPTS) { await save(); return "waiting"; }
+    await savePage(admin, snapId, `${phase}error`, 0, { message: (e as Error).message });
+    nextPhase();
+    await save();
+    return "advanced";
+  }
+}
+
 type StepOutcome = "advanced" | "waiting" | "skipped" | "finished";
 
 /**
@@ -178,7 +243,9 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${res.status_code}`)) { await save(); return "waiting"; }
       await savePage(admin, snapId, "pcerror", 0, { message: err });
       state.attempts = 0;
-      state.phase = "final";
+      state.phase = "csam";
+      state.page = 0;
+      state.next = null;
       await save();
       return "advanced";
     }
@@ -203,12 +270,12 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       state.policyIdx = 0;
       state.page = 0;
       state.next = null;
-      state.phase = list.length ? "posture" : "final";
+      state.phase = list.length ? "posture" : "csam";
     } else if (state.phase === "posture") {
       await savePage(admin, snapId, "posture", state.page, posturePage(content, state.policyIds[state.policyIdx]));
       state.page++;
       state.next = nextPageUrl(content, QUALYS_BASE_URL);
-      if (!state.next && ++state.policyIdx >= state.policyIds.length) state.phase = "final";
+      if (!state.next && ++state.policyIdx >= state.policyIds.length) { state.phase = "csam"; state.page = 0; }
     } else {
       const agg = state.phase === "hosts" ? hostsPage(content, now)
         : state.phase === "detections" ? detectionsPage(content, now, state.watch ?? [], state.eolQids ?? [])
@@ -266,7 +333,10 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     return "finished";
   }
 
-  // 3. Demande suivante
+  // 3. Inventaire (CSAM) et applications web (WAS) : appels directs
+  if (state.phase === "csam" || state.phase === "was") return await directStep(admin, snapId, state, save);
+
+  // 4. Demande suivante
   const url = state.phase === "kb"
     ? firstUrl.kb(state.kbIds.slice(state.page * KB_CHUNK, (state.page + 1) * KB_CHUNK))
     : state.phase === "policies" ? firstUrl.policies()

@@ -83,7 +83,7 @@ const PROBES: Probe[] = [
 ];
 
 /** Jeton de la Gateway (CSAM, TotalCloud, Container Security). */
-async function gatewayToken(gateway: string, username: string, password: string): Promise<{ token: string | null; detail: string; refused: boolean }> {
+export async function gatewayToken(gateway: string, username: string, password: string): Promise<{ token: string | null; detail: string; refused: boolean }> {
   try {
     const res = await call(`${gateway}/auth`, {
       method: "POST",

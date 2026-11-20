@@ -103,6 +103,20 @@ export function assetType(os: string | null | undefined): AssetType {
 
 const emptyByType = <T>(f: () => T): Record<AssetType, T> => ({ server: f(), workstation: f(), other: f() });
 
+/** Adresse IPv4 publique (joignable depuis Internet), hors plages privées et réservées. */
+export function isPublicIp(ip: string | null | undefined): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec((ip ?? "").trim());
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if ([m[1], m[2], m[3], m[4]].some((x) => Number(x) > 255)) return false;
+  if (a === 10 || a === 127 || a === 0 || a >= 224) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Chiffres d'une page
 // ---------------------------------------------------------------------------
@@ -117,13 +131,14 @@ export function hostsPage(xml: string, now: number) {
   const agg = { total: 0, agent: 0, scanned: 0, neverScanned: 0 };
   const tr = { critical: 0, high: 0, medium: 0, low: 0 };
   let truriskSum = 0, truriskCount = 0;
-  const byType = emptyByType(() => ({ total: 0, scanned: 0 }));
+  const byType = emptyByType(() => ({ total: 0, scanned: 0, publicIp: 0 }));
   const risk: RiskHost[] = [];
   for (const h of blocks(xml, "HOST")) {
     agg.total++;
     const os = tag(h, "OS");
     const type = assetType(os);
     byType[type].total++;
+    if (isPublicIp(tag(h, "IP"))) byType[type].publicIp++;
     if (/agent/i.test(tag(h, "TRACKING_METHOD") ?? "")) agg.agent++;
     const last = tag(h, "LAST_VULN_SCAN_DATETIME") ?? tag(h, "LAST_VM_SCANNED_DATE");
     const age = daysSince(last, now);
@@ -343,6 +358,122 @@ export function posturePage(xml: string, policyId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// CSAM (inventaire) : agents, Shadow IT, cycle de vie des systèmes d'exploitation
+// Format JSON de l'API Gateway « search/am/asset » ; lecture tolérante (champs optionnels).
+// ---------------------------------------------------------------------------
+
+export const AGENT_STALE_DAYS = 7;
+export const NEW_ASSET_DAYS = 30;
+const dateMs = (v: unknown): number | null => {
+  const x = typeof v === "object" && v !== null ? (v as Row).dateTime ?? (v as Row).date ?? null : v;
+  const t = typeof x === "number" ? x : Date.parse(String(x ?? ""));
+  return Number.isFinite(t) && t > 0 ? t : null;
+};
+
+export interface CsamAsset { id: string; name: string | null; ip: string | null; os: string | null; source: string | null; created: string | null }
+
+/** Une page d'actifs CSAM. */
+export function csamPage(json: Row, now: number) {
+  const list: Row[] = json?.assetListData?.asset ?? json?.assetList ?? json?.data ?? [];
+  const agg = {
+    total: 0, withAgent: 0, agentStale: 0, unmanaged: 0, unmanagedNew: 0, publicIp: 0,
+    byType: emptyByType(() => ({ total: 0, withAgent: 0, unmanaged: 0 })),
+    /** Système -> [actifs, fin de support (ms) ou 0, fin de vie (ms) ou 0, en fin de support ? 1 : 0]. */
+    os: {} as Record<string, [number, number, number, number]>,
+    osEol: 0, osEos: 0,
+    recentUnmanaged: [] as CsamAsset[],
+  };
+  for (const a of list) {
+    agg.total++;
+    const osObj = a.operatingSystem ?? {};
+    const os: string | null = osObj.osName ?? osObj.fullName ?? osObj.name ?? (typeof a.operatingSystem === "string" ? a.operatingSystem : null);
+    const type = assetType(os);
+    agg.byType[type].total++;
+    const sensor = a.sensor ?? {};
+    const hasAgent = Boolean(sensor.hasAgent ?? a.agent?.agentId ?? a.agentId);
+    const hasScanner = Boolean(sensor.hasNetworkScanner ?? sensor.hasScanner);
+    const ip: string | null = a.address ?? a.ipAddress ?? null;
+    if (isPublicIp(ip)) agg.publicIp++;
+    if (hasAgent) {
+      agg.withAgent++;
+      agg.byType[type].withAgent++;
+      const last = dateMs(a.agent?.lastCheckedIn ?? a.agent?.lastActivity ?? a.agent?.lastCheckIn ?? sensor.lastAgentCheckIn);
+      if (last !== null && now - last > AGENT_STALE_DAYS * DAY) agg.agentStale++;
+    }
+    // Shadow IT : actif découvert (capteur passif, découverte réseau…) sans agent ni scan authentifié
+    if (!hasAgent && !hasScanner) {
+      agg.unmanaged++;
+      agg.byType[type].unmanaged++;
+      const created = dateMs(a.inventory?.created ?? a.createdDate ?? a.firstSeen);
+      if (created !== null && now - created <= NEW_ASSET_DAYS * DAY) {
+        agg.unmanagedNew++;
+        agg.recentUnmanaged.push({
+          id: String(a.assetId ?? a.id ?? ""), name: a.assetName ?? a.name ?? null, ip, os,
+          source: a.inventory?.source ?? null, created: new Date(created).toISOString(),
+        });
+      }
+    }
+    // Cycle de vie du système d'exploitation
+    const lc = osObj.lifecycle ?? osObj.lifeCycle ?? {};
+    const eos = dateMs(lc.eosDate ?? lc.endOfSupport);
+    const eol = dateMs(lc.eolDate ?? lc.endOfLife);
+    const stage = String(lc.stage ?? "");
+    const outOfSupport = (eos !== null && eos < now) || /EOS|end of support/i.test(stage);
+    const endOfLife = (eol !== null && eol < now) || /EOL|end of life/i.test(stage);
+    if (outOfSupport) agg.osEos++;
+    if (endOfLife) agg.osEol++;
+    if (os && (outOfSupport || endOfLife)) {
+      const c = (agg.os[os] ??= [0, eos ?? 0, eol ?? 0, outOfSupport ? 1 : 0]);
+      c[0]++;
+    }
+  }
+  agg.recentUnmanaged.sort((x, y) => String(y.created).localeCompare(String(x.created)));
+  agg.recentUnmanaged = agg.recentUnmanaged.slice(0, TOP);
+  const hasMore = json?.hasMore === 1 || json?.hasMore === true || json?.hasMore === "1";
+  return { agg, next: hasMore ? String(json?.lastSeenAssetId ?? "") || null : null };
+}
+
+// ---------------------------------------------------------------------------
+// WAS (applications web) : vulnérabilités par application, catégories OWASP, MTTR applicatif
+// ---------------------------------------------------------------------------
+
+/** Une page de résultats WAS (QPS « search/was/finding », XML). `since` : début de la période des corrigées. */
+export function wasPage(xml: string, now: number, since: number) {
+  /** Application -> [nom, ouvertes sév. 5, ouvertes sév. 4, ouvertes sév. 3, hors délai]. */
+  const apps: Record<string, [string, number, number, number, number]> = {};
+  const owasp: Record<string, number> = {};
+  const fix = emptyFix();
+  let open = 0, lastId: string | null = null;
+  for (const f of blocks(tag(xml, "data") ?? "", "Finding")) {
+    lastId = tag(f, "id") ?? lastId;
+    const sev = Number(tag(f, "severity"));
+    const status = (tag(f, "status") ?? "").toUpperCase();
+    const app = tag(f, "webApp") ?? "";
+    const appId = tag(app, "id") ?? "?";
+    const appName = tag(app, "name") ?? `Application ${appId}`;
+    const first = Date.parse(tag(f, "firstDetectedDate") ?? "");
+    if (status === "FIXED") {
+      const fixedAt = Date.parse(tag(f, "fixedDate") ?? tag(f, "lastTestedDate") ?? "");
+      if (!Number.isFinite(fixedAt) || !Number.isFinite(first) || fixedAt < since || !SLA[sev]) continue;
+      const days = Math.max(0, Math.floor((fixedAt - first) / DAY));
+      fix.n++; fix.daysSum += days;
+      if (fixedAt <= deadline(first, sev)) fix.inSla++;
+      const k = String(Math.min(days, 365)); fix.hist[k] = (fix.hist[k] ?? 0) + 1;
+      continue;
+    }
+    if (sev < 3) continue;
+    open++;
+    const a = (apps[appId] ??= [appName, 0, 0, 0, 0]);
+    if (sev >= 5) a[1]++; else if (sev === 4) a[2]++; else a[3]++;
+    if (Number.isFinite(first) && now > deadline(first, Math.min(5, sev))) a[4]++;
+    const cat = tag(tag(f, "owasp") ?? "", "name") ?? null;
+    if (cat) owasp[cat] = (owasp[cat] ?? 0) + 1;
+  }
+  const more = /<hasMoreRecords>\s*true\s*<\/hasMoreRecords>/i.test(xml);
+  return { agg: { open, apps, owasp, fix }, next: more ? (tag(xml, "lastId") ?? lastId) : null };
+}
+
+// ---------------------------------------------------------------------------
 // Photo finale : réunion des pages
 // ---------------------------------------------------------------------------
 
@@ -543,6 +674,62 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     top: eolProducts(eolEntries, kb).slice(0, TOP_RISK),
   };
 
+  // Inventaire CSAM (axe 1)
+  const csam = pages.filter((p) => p.kind === "csam").map((p) => p.agg);
+  const csamError: string | null = pages.find((p) => p.kind === "csamerror")?.agg?.message ?? null;
+  const osMap = new Map<string, [number, number, number, number]>();
+  for (const p of csam) for (const [os, c] of Object.entries((p.os ?? {}) as Record<string, [number, number, number, number]>)) {
+    const cur = osMap.get(os);
+    if (!cur) osMap.set(os, [...c] as [number, number, number, number]); else cur[0] += c[0];
+  }
+  const csamTotal = sum(csam, (p) => p.total);
+  const inventory = {
+    collected: csam.length > 0 || Boolean(csamError),
+    error: csamError,
+    total: csamTotal,
+    withAgent: sum(csam, (p) => p.withAgent),
+    agentStale: sum(csam, (p) => p.agentStale),
+    unmanaged: sum(csam, (p) => p.unmanaged),
+    unmanagedNew: sum(csam, (p) => p.unmanagedNew),
+    publicIp: sum(csam, (p) => p.publicIp),
+    byType: Object.fromEntries(ASSET_TYPES.map((t) => [t, {
+      total: sum(csam, (p) => p.byType?.[t]?.total), withAgent: sum(csam, (p) => p.byType?.[t]?.withAgent), unmanaged: sum(csam, (p) => p.byType?.[t]?.unmanaged),
+    }])),
+    osEol: sum(csam, (p) => p.osEol),
+    osEos: sum(csam, (p) => p.osEos),
+    osOutdated: [...osMap.entries()].sort((a, b) => b[1][0] - a[1][0]).slice(0, TOP_RISK).map(([os, c]) => ({
+      os, assets: c[0], endOfSupport: c[1] ? new Date(c[1]).toISOString().slice(0, 10) : null, endOfLife: c[2] ? new Date(c[2]).toISOString().slice(0, 10) : null,
+    })),
+    recentUnmanaged: csam.flatMap((p) => p.recentUnmanaged ?? []).sort((a: Row, b: Row) => String(b.created).localeCompare(String(a.created))).slice(0, TOP_RISK),
+    agentStaleDays: AGENT_STALE_DAYS,
+    newDays: NEW_ASSET_DAYS,
+  };
+  const exposedByType = Object.fromEntries(ASSET_TYPES.map((t) => [t, sum(hostsPages, (p) => p.byType?.[t]?.publicIp)])) as Record<AssetType, number>;
+  const internetExposed = { total: ASSET_TYPES.reduce((t, k) => t + exposedByType[k], 0), byType: exposedByType };
+
+  // Applications web (WAS, axe 5)
+  const was = pages.filter((p) => p.kind === "was").map((p) => p.agg);
+  const wasError: string | null = pages.find((p) => p.kind === "waserror")?.agg?.message ?? null;
+  const appMap = new Map<string, [string, number, number, number, number]>();
+  const owaspMap: Record<string, number> = {};
+  for (const p of was) {
+    for (const [id, a] of Object.entries((p.apps ?? {}) as Record<string, [string, number, number, number, number]>)) {
+      const cur = appMap.get(id);
+      if (!cur) appMap.set(id, [...a] as [string, number, number, number, number]);
+      else { cur[1] += a[1]; cur[2] += a[2]; cur[3] += a[3]; cur[4] += a[4]; }
+    }
+    for (const [k, v] of Object.entries((p.owasp ?? {}) as Record<string, number>)) owaspMap[k] = (owaspMap[k] ?? 0) + v;
+  }
+  const webApps = {
+    collected: was.length > 0 || Boolean(wasError),
+    error: wasError,
+    open: sum(was, (p) => p.open),
+    apps: [...appMap.entries()].map(([id, a]) => ({ id, name: a[0], sev5: a[1], sev4: a[2], sev3: a[3], overdue: a[4] }))
+      .sort((x, y) => y.sev5 * 1000 + y.sev4 * 10 + y.sev3 - (x.sev5 * 1000 + x.sev4 * 10 + x.sev3)),
+    owasp: Object.entries(owaspMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, count]) => ({ name, count })),
+    fixed: fixView(mergeFix(was.map((p) => p.fix))),
+  };
+
   // Conformité (Policy Audit)
   const posture = pages.filter((p) => p.kind === "posture").map((p) => p.agg);
   const policyTitles: Record<string, string> = Object.assign({}, ...pages.filter((p) => p.kind === "policies").map((p) => Object.fromEntries((p.agg.list ?? []).map((x: Row) => [x.id, x.title]))));
@@ -614,6 +801,11 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     obsolescence,
     // Axe 4 : conformité et durcissement (Policy Audit)
     compliance,
+    // Axe 1 : inventaire (CSAM) et exposition Internet
+    inventory,
+    internetExposed,
+    // Axe 5 : sécurité applicative (WAS)
+    webApps,
   };
 }
 
@@ -648,5 +840,7 @@ export function summaryOf(r: ReturnType<typeof buildResults>) {
     ignored: r.operations.ignored.total,
     eolHosts: r.obsolescence.hostsTracked ? r.obsolescence.hosts : null,
     complianceRate: r.compliance.rate,
+    unmanaged: r.inventory.collected && !r.inventory.error ? r.inventory.unmanaged : null,
+    webAppsCritical: r.webApps.collected && !r.webApps.error ? r.webApps.apps.reduce((t, a) => t + a.sev5, 0) : null,
   };
 }
