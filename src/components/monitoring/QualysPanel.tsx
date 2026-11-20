@@ -17,7 +17,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
 } from "recharts";
 import {
-  AGE_LABELS, SEVERITY_LABELS, HISTORY_METRICS, ASSET_TYPE_LABELS, FLAGS, fmt, pct, daysSince, progressLabel, trendOver, remediationProgress,
+  AGE_LABELS, SEVERITY_LABELS, slaText, HISTORY_METRICS, ASSET_TYPE_LABELS, FLAGS, fmt, pct, daysSince, progressLabel, trendOver, remediationProgress,
   type QualysState, type QualysHistoryPoint, type QualysVuln, type QualysResults, type QualysSearch, type QualysDiagnostic,
   type QualysFixView, type AssetType,
 } from "@/lib/qualys";
@@ -329,7 +329,7 @@ function ExposureAxis({ r }: { readonly r: QualysResults }) {
 // Axe 3 : efficacité opérationnelle
 // ---------------------------------------------------------------------------
 
-function FixRow({ label, f, target }: { readonly label: React.ReactNode; readonly f: QualysFixView; readonly target?: number }) {
+function FixRow({ label, f, target, targetLabel }: { readonly label: React.ReactNode; readonly f: QualysFixView; readonly target?: number; readonly targetLabel?: string }) {
   return (
     <TableRow>
       <TableCell className="py-2 font-semibold">{label}</TableCell>
@@ -337,7 +337,7 @@ function FixRow({ label, f, target }: { readonly label: React.ReactNode; readonl
       <TableCell className="py-2"><SlaBar rate={f.slaRate} /></TableCell>
       <TableCell className={`text-right py-2 font-bold ${target && f.mttr !== null && f.mttr > target ? "text-red-600" : ""}`}>{f.mttr === null ? "—" : `${fmt(f.mttr)} j`}</TableCell>
       <TableCell className="text-right py-2 text-muted-foreground">{f.median === null ? "—" : `${fmt(f.median)} j`}</TableCell>
-      <TableCell className="text-right py-2 text-muted-foreground">{target ? `${target} j` : ""}</TableCell>
+      <TableCell className="text-right py-2 text-muted-foreground whitespace-nowrap">{targetLabel ?? (target ? `${target} j` : "")}</TableCell>
     </TableRow>
   );
 }
@@ -352,7 +352,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Timer className="w-4 h-4 text-primary" /> Respect des délais et temps moyen de correction (MTTR)
-            <Help>Vulnérabilités de sévérité 4 et 5 corrigées au cours des {o?.windowDays ?? 90} derniers jours. Délai de correction : de la première détection à la correction constatée par Qualys. Cibles PSSI : {r.severities.map((s) => `${s.slaDays} j pour la sévérité ${s.severity}`).join(", ")}. La ventilation par équipe s&apos;appuie sur le type d&apos;actif (serveurs : équipes d&apos;infrastructure ; postes : poste de travail), faute de tags fiables.</Help>
+            <Help>Vulnérabilités de sévérité 4 et 5 corrigées au cours des {o?.windowDays ?? 90} derniers jours. Délai de correction : de la première détection à la correction constatée par Qualys. Délais de la politique de gestion des correctifs : {r.severities.map((s) => `${slaText(s)} pour la sévérité ${s.severity}`).join(", ")} (mois calendaires, à date anniversaire). Une vulnérabilité critique est traitée comme un incident de sécurité. La ventilation par équipe s&apos;appuie sur le type d&apos;actif (serveurs : équipes d&apos;infrastructure ; postes : poste de travail), faute de tags fiables.</Help>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -371,7 +371,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {r.severities.map((s) => <FixRow key={s.severity} label={SEVERITY_LABELS[s.severity]} f={o.fixed.bySev[String(s.severity) as "4" | "5"]} target={s.slaDays} />)}
+                    {r.severities.map((s) => <FixRow key={s.severity} label={SEVERITY_LABELS[s.severity]} f={o.fixed.bySev[String(s.severity) as "4" | "5"]} target={s.slaDays} targetLabel={slaText(s)} />)}
                     {(["server", "workstation", "other"] as const).filter((t) => o.fixed.byType[t]?.fixed).map((t) => (
                       <FixRow key={t} label={<span className="text-muted-foreground font-normal">dont {ASSET_TYPE_LABELS[t].toLowerCase()}</span>} f={o.fixed.byType[t]} />
                     ))}
@@ -414,7 +414,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
                 <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
                   <span className="font-semibold text-foreground">{SEVERITY_LABELS[s.severity]} · {fmt(s.total)} ouvertes{s.avgAge != null ? ` · âge moyen ${fmt(s.avgAge)} j` : ""}</span>
                   <span className="text-xs text-muted-foreground">
-                    délai cible {s.slaDays} j · <b className={s.overdue ? "text-red-600" : "text-emerald-600"}>{fmt(s.overdue)} hors délai ({pct(s.overdue, s.total) ?? 0} %)</b>
+                    délai cible {slaText(s)} · <b className={s.overdue ? "text-red-600" : "text-emerald-600"}>{fmt(s.overdue)} hors délai ({pct(s.overdue, s.total) ?? 0} %)</b>
                   </span>
                 </div>
                 <div className="flex h-3 rounded-full overflow-hidden bg-muted">
@@ -860,11 +860,11 @@ export default function QualysPanel() {
           help={<>Vulnérabilités ouvertes exploitées ou exploitables dès maintenant : CISA KEV, rançongiciels, attaques actives, exploit public.</>}
           sub={e ? <><span>dont {fmt(e.armed.servers)} sur des serveurs</span> <Delta value={trendOver(points, "armed")} lowerIsBetter /></> : "CISA KEV seules (photo ancienne)"} />
         <Kpi title="Respect des délais" icon={CheckCircle2} color="border-l-emerald-500" value={slaRate === null ? "—" : `${fmt(slaRate)} %`}
-          help={<>Part des vulnérabilités corrigées dans les délais de la PSSI ({r.severities.map((s) => `${s.slaDays} j sévérité ${s.severity}`).join(", ")}), sur les {o?.windowDays ?? 90} derniers jours.</>}
+          help={<>Part des vulnérabilités corrigées dans les délais de la politique de gestion des correctifs ({r.severities.map((s) => `${slaText(s)} pour la sévérité ${s.severity}`).join(", ")}), sur les {o?.windowDays ?? 90} derniers jours.</>}
           sub={o?.fixedCollected ? `${fmt(o.fixed.all.fixed)} corrigées en ${o.windowDays} j` : "après le prochain calcul"} />
         <Kpi title="MTTR critiques" icon={Timer} color="border-l-sky-500" value={mttr5 === null ? "—" : `${fmt(mttr5)} j`}
-          help={<>Temps moyen de correction des vulnérabilités critiques (sévérité 5), de la détection à la correction. Cible : {r.severities.find((s) => s.severity === 5)?.slaDays ?? 15} jours.</>}
-          sub={mttr5 === null ? "après le prochain calcul" : <><span>cible {r.severities.find((s) => s.severity === 5)?.slaDays ?? 15} j</span> <Delta value={trendOver(points, "mttr5")} lowerIsBetter unit=" j" /></>} />
+          help={<>Temps moyen de correction des vulnérabilités critiques (sévérité 5), de la détection à la correction. Cible : 7 jours calendaires (une vulnérabilité critique est traitée comme un incident de sécurité).</>}
+          sub={mttr5 === null ? "après le prochain calcul" : <><span>cible 7 j</span> <Delta value={trendOver(points, "mttr5")} lowerIsBetter unit=" j" /></>} />
         <Kpi title="Couverture des scans" icon={Radar} color="border-l-violet-500" value={coverage === null ? "—" : `${coverage} %`}
           help={<>Part des actifs analysés (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
           sub={`${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)}`} />

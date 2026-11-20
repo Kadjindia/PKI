@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
-  policiesPage, posturePage, isEol, isEolOs,
+  policiesPage, posturePage, isEol, isEolOs, deadline,
 } from "../../supabase/functions/qualys-proxy/parse";
 import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
 import { remediationProgress, trendOver } from "../lib/qualys";
@@ -89,7 +89,7 @@ describe("Qualys : chiffres d'une page", () => {
     const p = detectionsPage(xml, NOW);
     expect(p.hosts).toBe(3);
     expect(p.hostsWithVulns).toBe(2); // pc3 n'a rien
-    expect(p.bySev[5]).toMatchObject({ total: 3, overdue: 1, ages: [2, 1, 0, 0] }); // 40 j > 15 j
+    expect(p.bySev[5]).toMatchObject({ total: 3, overdue: 3, ages: [2, 1, 0, 0] }); // 10 j et 40 j > 7 jours
     expect(p.bySev[4]).toMatchObject({ total: 1, overdue: 1, ages: [0, 0, 0, 1] }); // ignorée exclue, sévérité 3 ignorée
     expect(p.qdsCritical).toBe(1);
     expect(p.qids["100"][0]).toBe(3);
@@ -130,16 +130,26 @@ describe("Qualys : chiffres d'une page", () => {
     expect(p.bySev[5].ageSum).toBeCloseTo(45);
   });
 
+  it("applique les délais de la politique : 7 jours, 1 mois et 3 mois calendaires", () => {
+    const t = (iso: string) => Date.parse(iso);
+    expect(new Date(deadline(t("2026-11-02T10:00:00Z"), 5)).toISOString()).toBe("2026-11-09T10:00:00.000Z");
+    expect(new Date(deadline(t("2026-01-15T08:00:00Z"), 4)).toISOString()).toBe("2026-02-15T08:00:00.000Z");
+    // Fin de mois : 31 janvier + 1 mois -> 28 février
+    expect(new Date(deadline(t("2026-01-31T08:00:00Z"), 4)).toISOString()).toBe("2026-02-28T08:00:00.000Z");
+    expect(new Date(deadline(t("2026-11-30T08:00:00Z"), 3)).toISOString()).toBe("2027-02-28T08:00:00.000Z");
+    expect(deadline(t("2026-11-30T08:00:00Z"), 2)).toBe(Infinity);
+  });
+
   it("mesure les délais réels de correction (vulnérabilités corrigées)", () => {
     const fixed = (qid: number, sev: number, firstDays: number, fixedDays: number) => `
             <DETECTION><QID>${qid}</QID><TYPE>Confirmed</TYPE><SEVERITY>${sev}</SEVERITY><STATUS>Fixed</STATUS>
               <FIRST_FOUND_DATETIME>${daysAgo(firstDays)}</FIRST_FOUND_DATETIME><LAST_FIXED_DATETIME>${daysAgo(fixedDays)}</LAST_FIXED_DATETIME></DETECTION>`;
     const xml = detectionsXml(
-      host(1, "srv1", fixed(1, 5, 30, 20) /* 10 j : dans le délai */ + fixed(2, 5, 60, 30) /* 30 j : hors délai */, "Ubuntu 22.04")
+      host(1, "srv1", fixed(1, 5, 25, 20) /* 5 j : dans le délai */ + fixed(2, 5, 60, 30) /* 30 j : hors délai */, "Ubuntu 22.04")
       + host(2, "pc2", fixed(3, 4, 50, 30) /* 20 j : dans le délai */ + fixed(4, 4, 300, 200) /* corrigée avant la période */),
     );
     const p = fixedPage(xml, NOW - 90 * 86400000);
-    expect(p.bySev[5]).toMatchObject({ n: 2, inSla: 1, daysSum: 40 });
+    expect(p.bySev[5]).toMatchObject({ n: 2, inSla: 1, daysSum: 35 });
     expect(p.bySev[4]).toMatchObject({ n: 1, inSla: 1, daysSum: 20 });
     expect(p.byType.server).toMatchObject({ n: 2, inSla: 1 });
     expect(p.byType.workstation).toMatchObject({ n: 1, inSla: 1 });
@@ -166,7 +176,7 @@ describe("Qualys : photo", () => {
       { kind: "kb", agg: { 100: ["Vuln 100", 1 | 4, "CVE-1"], 200: ["Vuln 200", 2, ""] } },
     ], NOW);
     expect(r.detections).toMatchObject({ total: 3, vulns: 2 });
-    expect(r.severities.find((s) => s.severity === 5)).toMatchObject({ total: 2, overdue: 1, slaDays: 15 });
+    expect(r.severities.find((s) => s.severity === 5)).toMatchObject({ total: 2, overdue: 2, slaDays: 7, slaLabel: "7 jours" });
     // Sévérités 4 et 5, et part de sévérité 5 (« dont »), comme les filtres de la console
     expect(r.kev).toEqual({ detections: 2, vulns: 1, sev5: 2, servers: 0 });
     expect(r.ransomware).toEqual({ detections: 1, vulns: 1, sev5: 0, servers: 0 });
@@ -175,9 +185,9 @@ describe("Qualys : photo", () => {
     expect(r.hostsWithSev5).toBe(2);
     // QDS >= 90 et correctif disponible : seule la détection QDS 95 de QID 100 (QID 200 sans correctif)
     expect(r.criticalPatchable).toBe(1);
-    expect(r.topVulns[0]).toMatchObject({ qid: "100", title: "Vuln 100", hosts: 2, overdue: 1, kev: true, patchable: true, firstFound: new Date(daysAgo(50)).toISOString() });
+    expect(r.topVulns[0]).toMatchObject({ qid: "100", title: "Vuln 100", hosts: 2, overdue: 2, kev: true, patchable: true, firstFound: new Date(daysAgo(50)).toISOString() });
     expect(r.topHosts.map((h) => h.name)).toEqual(["pc1.corp.local", "pc2.corp.local"]);
-    expect(summaryOf(r)).toMatchObject({ detections: 3, sev5: 2, sev4: 1, overdue: 2, kev: 2, coverage: 75, slaRate: null });
+    expect(summaryOf(r)).toMatchObject({ detections: 3, sev5: 2, sev4: 1, overdue: 3, kev: 2, coverage: 75, slaRate: null });
     // Vulnérabilités armées : KEV (100) et ransomware (200)
     expect(r.exposure.armed).toMatchObject({ detections: 3, vulns: 2, sev5: 2 });
     expect(r.exposure.topArmed.map((v) => v.qid)).toEqual(["100", "200"]);

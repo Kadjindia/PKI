@@ -4,6 +4,8 @@
 export interface QualysSeverity {
   severity: 4 | 5;
   slaDays: number;
+  /** Délai de la politique en clair (« 7 jours », « 1 mois ») ; absent des photos d'avant le 20/11/2026. */
+  slaLabel?: string;
   total: number;
   overdue: number;
   reopened: number;
@@ -162,7 +164,10 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = { server: "Serveurs"
 
 export const AGE_LABELS = ["< 30 j", "30 à 90 j", "90 à 180 j", "> 180 j"] as const;
 
-export const SEVERITY_LABELS: Record<number, string> = { 5: "Critique (5)", 4: "Élevée (4)" };
+export const SEVERITY_LABELS: Record<number, string> = { 5: "Critique (5)", 4: "Élevée (4)", 3: "Modérée (3)" };
+
+/** Délai de remédiation d'une sévérité, en clair. */
+export const slaText = (s: { slaDays: number; slaLabel?: string }) => s.slaLabel ?? `${s.slaDays} jours`;
 
 /** Part en %, arrondie (null si total nul). */
 export function pct(part: number, total: number): number | null {

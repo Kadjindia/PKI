@@ -6,8 +6,31 @@
 type Row = Record<string, any>;
 
 export const SEVERITIES = [5, 4] as const;
-/** Délais de correction cibles (jours) par sévérité, fixés par la PSSI. */
-export const SLA_DAYS: Record<number, number> = { 5: 15, 4: 30 };
+/**
+ * Délais de remédiation fixés par la politique de gestion des correctifs :
+ * Critique (sévérité 5) : 7 jours calendaires, traitée comme un incident de sécurité ;
+ * Élevé (4) : 1 mois calendaire ; Modéré (3) : 3 mois calendaires.
+ */
+export const SLA: Record<number, { days?: number; months?: number; label: string }> = {
+  5: { days: 7, label: "7 jours" },
+  4: { months: 1, label: "1 mois" },
+  3: { months: 3, label: "3 mois" },
+};
+/** Délai cible en jours (approché pour les mois), pour les comparaisons et l'affichage. */
+export const SLA_DAYS: Record<number, number> = { 5: 7, 4: 30, 3: 91 };
+
+/** Échéance de remédiation d'une vulnérabilité détectée à `firstFound` (ms). Mois calendaires : même jour, ramené au dernier jour du mois si besoin. */
+export function deadline(firstFound: number, sev: number): number {
+  const rule = SLA[sev];
+  if (!rule) return Infinity;
+  if (rule.days) return firstFound + rule.days * DAY;
+  const d = new Date(firstFound);
+  const day = d.getUTCDate();
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + (rule.months ?? 0), 1, d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(day, lastDay));
+  return target.getTime();
+}
 /** Tranches d'ancienneté (jours depuis la première détection). */
 export const AGE_LIMITS = [30, 90, 180]; // < 30, 30-90, 90-180, > 180
 export const RECENT_SCAN_DAYS = 30;
@@ -169,7 +192,7 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       }
       if (/potential/i.test(tag(d, "TYPE") ?? "")) potential++;
       const status = tag(d, "STATUS") ?? "";
-      const late = age > SLA_DAYS[sev];
+      const late = first ? now > deadline(Date.parse(first), sev) : false;
       const qds = Number(tag(d, "QDS") ?? 0) || 0;
       stat.total++;
       stat.ageSum += age;
@@ -231,7 +254,7 @@ export function fixedPage(xml: string, since: number) {
       const first = Date.parse(tag(d, "FIRST_FOUND_DATETIME") ?? "");
       if (!Number.isFinite(fixedAt) || !Number.isFinite(first) || fixedAt < since) continue;
       const days = Math.max(0, Math.floor((fixedAt - first) / DAY));
-      const ok = days <= SLA_DAYS[sev];
+      const ok = fixedAt <= deadline(first, sev);
       for (const f of [bySev[sev], byType[type]]) {
         f.n++;
         if (ok) f.inSla++;
@@ -410,6 +433,7 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     return {
       severity: s,
       slaDays: SLA_DAYS[s],
+      slaLabel: SLA[s].label,
       total,
       overdue: sum(detPages, (p) => p.bySev[s]?.overdue),
       reopened: sum(detPages, (p) => p.bySev[s]?.reopened),
