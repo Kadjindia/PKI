@@ -514,11 +514,124 @@ function VisibilityAxis({ r }: { readonly r: QualysResults }) {
               <span><b className="text-foreground">{fmt(r.coverage.trurisk.medium)}</b><br />moyen</span>
               <span><b className="text-foreground">{fmt(r.coverage.trurisk.low)}</b><br />faible</span>
             </div>
-            <p className="text-[11px] text-muted-foreground pt-2">Rapprochement avec la CMDB et Shadow IT : nécessitent le module CSAM, non ouvert au compte configuré (voir « Accès aux modules Qualys » en bas de page).</p>
+            <p className="text-[11px] text-muted-foreground pt-2">Rapprochement avec la CMDB : nécessite un export de la CMDB (ServiceNow), à brancher.</p>
           </div>
         </CardContent>
       </Card>
+      <InventoryCard r={r} />
       <ObsolescenceCard r={r} />
+    </div>
+  );
+}
+
+function Stat({ label, value, sub, help, tone }: { readonly label: string; readonly value: string; readonly sub?: React.ReactNode; readonly help: React.ReactNode; readonly tone?: "red" | "amber" }) {
+  return (
+    <div className="rounded-lg border border-border px-3 py-2">
+      <div className="flex items-start justify-between gap-1 text-[11px] font-semibold text-muted-foreground"><span>{label}</span><Help>{help}</Help></div>
+      <div className={`text-2xl font-black ${tone === "red" ? "text-red-600" : tone === "amber" ? "text-amber-600" : ""}`}>{value}</div>
+      {sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}
+    </div>
+  );
+}
+
+/** Moyen de découverte d'un actif (libellés Qualys). */
+const SOURCE_FR: Record<string, string> = { PASSIVE_SENSOR: "Capteur réseau passif", IP_SCANNER: "Scanner réseau", AGENT: "Agent", EASM: "Scan externe (EASM)", CLOUD_CONNECTOR: "Connecteur cloud" };
+const sourceLabel = (src: string | null) => (src ? SOURCE_FR[src.trim().toUpperCase().replace(/\s+/g, "_")] ?? src : "—");
+
+function InventoryCard({ r }: { readonly r: QualysResults }) {
+  const inv = r.inventory;
+  const ex = r.internetExposed;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-bold flex items-center gap-2">
+          <Radar className="w-4 h-4 text-primary" /> Inventaire, agents et Shadow IT
+          <Help>Inventaire des actifs de Qualys CSAM, qui réunit tout ce que Qualys voit (agents, scanners, capteur réseau passif). Permet de repérer les actifs non maîtrisés.</Help>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!inv?.collected ? <Pending /> : inv.error && !inv.total ? (
+          <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Inventaire non disponible : {inv.error}</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+              <Stat label="Actifs inventoriés" value={fmt(inv.total)} help={<>Tous les actifs connus de Qualys CSAM, quel que soit le moyen de découverte.</>} />
+              <Stat label="Agent déployé" value={`${pct(inv.withAgent, inv.total) ?? 0} %`} sub={`${fmt(inv.withAgent)} actifs`}
+                help={<>Part des actifs inventoriés équipés de l&apos;agent Qualys, qui les analyse en continu, même hors du réseau.</>} />
+              <Stat label="Agents silencieux" value={fmt(inv.agentStale)} sub={`sans nouvelles depuis plus de ${inv.agentStaleDays} j`} tone={inv.agentStale ? "amber" : undefined}
+                help={<>Agents installés qui n&apos;ont pas remonté d&apos;information depuis plus de {inv.agentStaleDays} jours : machine éteinte, retirée, ou agent en panne.</>} />
+              <Stat label="Shadow IT" value={fmt(inv.unmanaged)} sub={`dont ${fmt(inv.unmanagedNew)} découverts en ${inv.newDays} j`} tone={inv.unmanaged ? "red" : undefined}
+                help={<>Actifs découverts sur le réseau (capteur passif, découverte réseau) mais ni équipés de l&apos;agent ni analysés par un scan : on ne connaît pas leurs vulnérabilités.</>} />
+              <Stat label="Exposés sur Internet" value={ex ? fmt(ex.total) : "—"} sub={ex ? `dont ${fmt(ex.byType.server)} serveurs` : undefined}
+                help={<>Actifs analysés par Qualys dont l&apos;adresse IP est publique, donc joignables depuis Internet : notre surface d&apos;attaque externe. BitSight en donne la vue de l&apos;extérieur.</>} />
+            </div>
+            {inv.recentUnmanaged.length > 0 && (
+              <div className="overflow-x-auto">
+                <div className="text-xs font-semibold text-muted-foreground mb-1">Derniers actifs inconnus découverts (à identifier et rattacher)</div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Actif</TableHead>
+                      <TableHead>Adresse IP</TableHead>
+                      <TableHead>Système</TableHead>
+                      <TableHead>Découvert par</TableHead>
+                      <TableHead className="text-right">Le</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {inv.recentUnmanaged.map((a) => (
+                      <TableRow key={a.id}>
+                        <TableCell className="py-1.5 text-sm font-medium">{a.name ?? "—"}</TableCell>
+                        <TableCell className="py-1.5 text-xs font-mono">{a.ip ?? "—"}</TableCell>
+                        <TableCell className="py-1.5 text-xs">{a.os ?? "—"}</TableCell>
+                        <TableCell className="py-1.5 text-xs">{sourceLabel(a.source)}</TableCell>
+                        <TableCell className="py-1.5 text-xs text-right whitespace-nowrap">{a.created ? new Date(a.created).toLocaleDateString("fr-FR") : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function OsLifecycle({ r }: { readonly r: QualysResults }) {
+  const inv = r.inventory;
+  if (!inv?.collected || inv.error || !inv.total) return null;
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-4 border-b border-border">
+      <div className="space-y-1 text-sm">
+        <div className="text-xs font-semibold text-muted-foreground">Systèmes d&apos;exploitation</div>
+        <div className="text-3xl font-black">{fmt(inv.osEos)}</div>
+        <div className="text-xs text-muted-foreground">actifs sous un système hors support éditeur, soit {pct(inv.osEos, inv.total) ?? 0} % de l&apos;inventaire</div>
+        <div className="text-xs text-muted-foreground">dont {fmt(inv.osEol)} en fin de vie</div>
+      </div>
+      <div className="lg:col-span-2 overflow-x-auto">
+        {inv.osOutdated.length === 0 ? <p className="text-sm text-emerald-600 font-semibold py-2">Aucun système hors support.</p> : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Système hors support</TableHead>
+                <TableHead className="text-right">Actifs</TableHead>
+                <TableHead className="text-right whitespace-nowrap">Fin de support</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {inv.osOutdated.map((x) => (
+                <TableRow key={x.os}>
+                  <TableCell className="py-1.5 text-sm font-medium">{x.os}</TableCell>
+                  <TableCell className="py-1.5 text-right font-semibold">{fmt(x.assets)}</TableCell>
+                  <TableCell className="py-1.5 text-right text-xs whitespace-nowrap">{x.endOfSupport ? new Date(x.endOfSupport).toLocaleDateString("fr-FR") : x.endOfLife ? new Date(x.endOfLife).toLocaleDateString("fr-FR") : "—"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </div>
     </div>
   );
 }
@@ -530,10 +643,11 @@ function ObsolescenceCard({ r }: { readonly r: QualysResults }) {
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-bold flex items-center gap-2">
           <Archive className="w-4 h-4 text-amber-600" /> Obsolescence : systèmes et logiciels en fin de support
-          <Help>Systèmes d&apos;exploitation et logiciels qui ne reçoivent plus de correctifs de sécurité de leur éditeur, repérés par Qualys VMDR (vulnérabilités « EOL/Obsolete »). Le module CSAM, non ouvert au compte configuré, donnerait la liste complète avec les dates de fin de support.</Help>
+          <Help>Systèmes d&apos;exploitation et logiciels qui ne reçoivent plus de correctifs de sécurité de leur éditeur. Systèmes : cycle de vie fourni par Qualys CSAM, avec les dates de fin de support. Logiciels : vulnérabilités « EOL/Obsolete » de Qualys VMDR.</Help>
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <OsLifecycle r={r} />
         {!o ? <Pending /> : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="space-y-2 text-sm">
@@ -585,6 +699,72 @@ function ObsolescenceCard({ r }: { readonly r: QualysResults }) {
 }
 
 // ---------------------------------------------------------------------------
+// Axe 5 : sécurité applicative (WAS)
+// ---------------------------------------------------------------------------
+
+function WebAppsAxis({ r }: { readonly r: QualysResults }) {
+  const w = r.webApps;
+  const tot = (k: "sev5" | "sev4" | "sev3" | "overdue") => (w?.apps ?? []).reduce((t, a) => t + a[k], 0);
+  return (
+    <div className="space-y-4">
+      <Axis n={5} title="Sécurité applicative" subtitle="Les vulnérabilités du code de nos applications web, et la rapidité des équipes de développement à les corriger (Qualys WAS)." />
+      <Card>
+        <CardContent className="p-4 space-y-4">
+          {!w?.collected ? <Pending /> : w.error && !w.apps.length ? (
+            <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Applications web non disponibles : {w.error}</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <Stat label="Vulnérabilités ouvertes" value={fmt(w.open)} sub={`sur ${fmt(w.apps.length)} applications`} help={<>Vulnérabilités de sévérité 3 à 5 encore présentes sur les applications web analysées par Qualys WAS (injections SQL, XSS…).</>} />
+                <Stat label="Critiques" value={fmt(tot("sev5"))} sub={`${fmt(tot("sev4"))} élevées · ${fmt(tot("sev3"))} modérées`} tone={tot("sev5") ? "red" : undefined} help={<>Vulnérabilités applicatives de sévérité 5.</>} />
+                <Stat label="Hors délai" value={fmt(tot("overdue"))} sub="selon la politique de gestion des correctifs" tone={tot("overdue") ? "amber" : undefined} help={<>Vulnérabilités ouvertes au-delà du délai de la politique (7 jours, 1 mois, 3 mois selon la sévérité).</>} />
+                <Stat label="MTTR applicatif" value={w.fixed.mttr === null ? "—" : `${fmt(w.fixed.mttr)} j`} sub={w.fixed.fixed ? `${fmt(w.fixed.fixed)} corrigées en 90 j · ${fmt(w.fixed.slaRate)} % dans les délais` : "aucune correction sur 90 j"}
+                  help={<>Délai moyen entre la détection d&apos;une vulnérabilité applicative et sa correction constatée par Qualys, sur les 90 derniers jours. La date de correction est approchée par le dernier test qui ne l&apos;a plus trouvée.</>} />
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="lg:col-span-2 overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Application</TableHead>
+                        <TableHead className="text-right whitespace-nowrap">Crit. / Élev. / Mod.</TableHead>
+                        <TableHead className="text-right whitespace-nowrap">Hors délai</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {w.apps.slice(0, 15).map((a) => (
+                        <TableRow key={a.id}>
+                          <TableCell className="py-1.5 text-sm font-medium max-w-[360px] truncate" title={a.name}>{a.name}</TableCell>
+                          <TableCell className="py-1.5 text-right whitespace-nowrap"><b className={a.sev5 ? "text-red-600" : ""}>{fmt(a.sev5)}</b> / {fmt(a.sev4)} / {fmt(a.sev3)}</TableCell>
+                          <TableCell className={`py-1.5 text-right ${a.overdue ? "text-red-600" : "text-muted-foreground"}`}>{fmt(a.overdue)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground mb-2">
+                    <span>Catégories OWASP Top 10</span>
+                    <Help>Classement des vulnérabilités applicatives ouvertes selon les catégories du référentiel OWASP Top 10 (injection, contrôle d&apos;accès défaillant…), quand Qualys les indique.</Help>
+                  </div>
+                  {w.owasp.length === 0 ? <p className="text-xs text-muted-foreground">Catégories non indiquées par Qualys.</p> : (
+                    <ul className="space-y-1.5 text-xs">
+                      {w.owasp.map((c) => (
+                        <li key={c.name} className="flex justify-between gap-2"><span className="truncate" title={c.name}>{c.name}</span><b>{fmt(c.count)}</b></li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Axe 4 : conformité et durcissement (Policy Audit)
 // ---------------------------------------------------------------------------
 
@@ -613,6 +793,9 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                 </div>
                 <div className="text-4xl font-black">{c.rate === null ? "—" : `${fmt(c.rate)} %`}</div>
                 <div className="text-xs text-muted-foreground">{fmt(c.passed)} contrôles réussis · {fmt(c.failed)} en échec · {fmt(c.policies.length)} politiques</div>
+                {c.total != null && c.evaluated != null && c.evaluated < c.total && (
+                  <div className="text-xs text-amber-600 pt-1">{fmt(c.evaluated)} politiques réévaluées cette nuit sur {fmt(c.total)}{c.stopped ? " (limite de temps atteinte)" : ""} : les autres affichent leur dernier résultat connu, et seront réévaluées en priorité la nuit prochaine.</div>
+                )}
                 <div className="pt-1"><Delta value={trendOver(points, "complianceRate")} lowerIsBetter={false} unit=" pts" /></div>
               </div>
               <div className="lg:col-span-2 overflow-x-auto">
@@ -628,7 +811,10 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                   <TableBody>
                     {c.policies.map((p) => (
                       <TableRow key={p.id}>
-                        <TableCell className="max-w-[320px] py-1.5"><div className="text-sm font-medium truncate" title={p.title}>{p.title}</div></TableCell>
+                        <TableCell className="max-w-[320px] py-1.5">
+                          <div className="text-sm font-medium truncate" title={p.title}>{p.title}</div>
+                          {p.stale && <div className="text-[11px] text-muted-foreground">résultat du {p.evaluatedAt ? new Date(p.evaluatedAt).toLocaleDateString("fr-FR") : "dernier calcul"}</div>}
+                        </TableCell>
                         <TableCell className="text-right py-1.5">{fmt(p.hosts)}</TableCell>
                         <TableCell className="text-right py-1.5">{fmt(p.compliantHosts)}</TableCell>
                         <TableCell className="py-1.5"><SlaBar rate={p.rate} /></TableCell>
@@ -676,7 +862,7 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
           </CardContent>
         </Card>
       )}
-      <p className="text-[11px] text-muted-foreground">Conformité des environnements cloud : nécessite le module TotalCloud, non ouvert au compte configuré.</p>
+      <p className="text-[11px] text-muted-foreground">Conformité des environnements cloud (TotalCloud) : aucun environnement cloud n&apos;est raccordé à Qualys à ce jour.</p>
     </div>
   );
 }
@@ -878,6 +1064,7 @@ export default function QualysPanel() {
       <ExposureAxis r={r} />
       <OperationsAxis r={r} />
       <ComplianceAxis r={r} points={points} />
+      <WebAppsAxis r={r} />
       <History points={points} />
       <AccessDiagnostic />
     </div>

@@ -1,3 +1,5 @@
+import { policiesPage } from "./parse.ts";
+
 // Diagnostic des accès Qualys : un petit appel en lecture seule par module, pour savoir
 // ce que le compte configuré peut interroger par l'API. L'API voit exactement ce que
 // voit le compte dans la console : un module absent de ses droits répond « refusé ».
@@ -81,7 +83,7 @@ const PROBES: Probe[] = [
 ];
 
 /** Jeton de la Gateway (CSAM, TotalCloud, Container Security). */
-async function gatewayToken(gateway: string, username: string, password: string): Promise<{ token: string | null; detail: string; refused: boolean }> {
+export async function gatewayToken(gateway: string, username: string, password: string): Promise<{ token: string | null; detail: string; refused: boolean }> {
   try {
     const res = await call(`${gateway}/auth`, {
       method: "POST",
@@ -119,7 +121,8 @@ export async function runDiagnostic(apiBase: string, username: string, password:
       results.push({ ...base, status: c.status, detail: c.detail, count: c.count });
       // Policy Audit : la liste des politiques peut passer alors que l'état de conformité par
       // actif (seul utile au tableau de bord) est refusé par la licence. On le teste aussi.
-      const policyId = p.module === "PA" && c.status === "ok" ? /<POLICY>\s*<ID>(\d+)<\/ID>/.exec(res.body)?.[1] : null;
+      // Même lecture que le calcul de nuit (balises CDATA, attributs, ordre des champs)
+      const policyId = p.module === "PA" && c.status === "ok" ? policiesPage(res.body)[0]?.id ?? null : null;
       if (p.module === "PA" && c.status === "ok") {
         const pb = { module: "PA (état)", label: "Policy Audit : état de conformité par actif", purpose: "Axe 4 : taux de conformité, contrôles en échec" };
         if (!policyId) { results.push({ ...pb, status: "unknown", detail: "Aucune politique de conformité à interroger" }); continue; }

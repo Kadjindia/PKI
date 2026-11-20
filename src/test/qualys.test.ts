@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
-  policiesPage, posturePage, isEol, isEolOs, deadline,
+  policiesPage, posturePage, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage,
 } from "../../supabase/functions/qualys-proxy/parse";
 import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
 import { remediationProgress, trendOver } from "../lib/qualys";
@@ -277,10 +277,93 @@ describe("Qualys : obsolescence et conformité", () => {
     expect(summaryOf(r).complianceRate).toBe(75);
   });
 
+  it("ne compte que les politiques entièrement lues et reprend les autres avec leur date", () => {
+    const pos = (policyId: string, passed: number, failed: number) => ({ policyId, hosts: 1, compliantHosts: failed ? 0 : 1, passed, failed, errors: 0, controls: {}, glossary: {} });
+    const r = buildResults([
+      { kind: "policies", agg: { list: [{ id: "1", title: "CIS A" }, { id: "2", title: "CIS B" }, { id: "3", title: "CIS C" }] } },
+      { kind: "posture", agg: pos("1", 8, 2) },
+      { kind: "posture", agg: pos("2", 1, 9) }, // lecture interrompue : ignorée
+      { kind: "pcmeta", agg: { done: ["1"], total: 3, stopped: true } },
+    ], NOW, { previousPolicies: [
+      { id: "2", title: "CIS B", hosts: 4, compliantHosts: 1, passed: 50, failed: 50, errors: 0, rate: 50, evaluatedAt: "2026-11-15T03:00:00Z" },
+      { id: "1", title: "CIS A", hosts: 1, compliantHosts: 0, passed: 1, failed: 1, errors: 0, rate: 50, evaluatedAt: "2026-11-15T03:00:00Z" },
+    ] });
+    expect(r.compliance).toMatchObject({ evaluated: 1, total: 3, stopped: true });
+    const byId = Object.fromEntries(r.compliance.policies.map((p) => [p.id, p]));
+    expect(byId["1"]).toMatchObject({ rate: 80, stale: false }); // réévaluée cette nuit
+    expect(byId["2"]).toMatchObject({ rate: 50, stale: true, evaluatedAt: "2026-11-15T03:00:00Z" }); // dernier résultat connu
+    expect(byId["3"]).toBeUndefined(); // jamais évaluée
+    expect(r.compliance.rate).toBe(52.7); // (8 + 50) / (10 + 100)
+  });
+
   it("signale une conformité indisponible sans bloquer la photo", () => {
     const r = buildResults([{ kind: "pcerror", agg: { message: "User is not authorized (code 2002)" } }], NOW);
     expect(r.compliance).toMatchObject({ collected: true, error: "User is not authorized (code 2002)", rate: null, policies: [] });
     expect(buildResults([], NOW).compliance.collected).toBe(false);
+  });
+});
+
+describe("Qualys : inventaire (CSAM), exposition Internet et applications web (WAS)", () => {
+  it("reconnaît une adresse IP publique", () => {
+    expect(isPublicIp("8.8.8.8")).toBe(true);
+    expect(isPublicIp("185.12.40.3")).toBe(true);
+    for (const ip of ["10.1.2.3", "172.16.0.1", "172.31.255.1", "192.168.1.1", "127.0.0.1", "169.254.1.1", "100.64.0.1", "999.1.1.1", "", null]) expect(isPublicIp(ip)).toBe(false);
+    expect(isPublicIp("172.32.0.1")).toBe(true);
+  });
+
+  it("lit une page d'actifs CSAM : agents, Shadow IT, systèmes hors support", () => {
+    const day = 86400000;
+    const iso = (d: number) => new Date(NOW - d * day).toISOString();
+    const json = {
+      responseCode: "SUCCESS", hasMore: 1, lastSeenAssetId: 3003,
+      assetListData: { asset: [
+        { assetId: 1, assetName: "srv1", address: "10.0.0.1", operatingSystem: { osName: "Windows Server 2012 R2", lifecycle: { stage: "EOS", eosDate: "2023-10-10T00:00:00Z" } },
+          sensor: { hasAgent: true }, agent: { lastCheckedIn: { dateTime: iso(10) } } },
+        { assetId: 2, assetName: "pc2", address: "10.0.0.2", operatingSystem: { osName: "Windows 11 Enterprise", lifecycle: { stage: "GA" } },
+          sensor: { hasAgent: true }, agent: { lastCheckedIn: { dateTime: iso(1) } } },
+        { assetId: 3003, assetName: "inconnu", address: "185.1.2.3", operatingSystem: { osName: "Linux 3.x" },
+          sensor: { hasAgent: false, hasNetworkScanner: false, hasPassiveSensor: true }, inventory: { source: "PASSIVE_SENSOR", created: iso(3) } },
+      ] },
+    };
+    const { agg, next } = csamPage(json, NOW);
+    expect(next).toBe("3003");
+    expect(agg).toMatchObject({ total: 3, withAgent: 2, agentStale: 1, unmanaged: 1, unmanagedNew: 1, publicIp: 1, osEos: 1 });
+    expect(agg.os["Windows Server 2012 R2"][0]).toBe(1);
+    expect(agg.recentUnmanaged[0]).toMatchObject({ name: "inconnu", source: "PASSIVE_SENSOR" });
+    expect(csamPage({ hasMore: 0, assetListData: { asset: [] } }, NOW).next).toBeNull();
+    const r = buildResults([{ kind: "csam", agg: JSON.parse(JSON.stringify(agg)) }], NOW);
+    expect(r.inventory).toMatchObject({ collected: true, total: 3, unmanaged: 1, osEos: 1 });
+    expect(r.inventory.osOutdated[0]).toMatchObject({ os: "Windows Server 2012 R2", assets: 1, endOfSupport: "2023-10-10" });
+    expect(summaryOf(r).unmanaged).toBe(1);
+  });
+
+  it("lit les vulnérabilités des applications web (WAS)", () => {
+    const f = (id: number, sev: number, status: string, app: string, firstDays: number, extra = "") => `<Finding><id>${id}</id><qid>150001</qid><type>VULNERABILITY</type><severity>${sev}</severity><status>${status}</status>
+      <webApp><id>${app}</id><name><![CDATA[Appli ${app}]]></name></webApp><firstDetectedDate>${daysAgo(firstDays)}</firstDetectedDate>${extra}</Finding>`;
+    const xml = `<ServiceResponse><responseCode>SUCCESS</responseCode><count>4</count><hasMoreRecords>true</hasMoreRecords><lastId>14</lastId><data>
+      ${f(11, 5, "ACTIVE", "1", 20, "<owasp><list><OWASP><name>A03 Injection</name></OWASP></list></owasp>")}
+      ${f(12, 3, "NEW", "1", 2)}
+      ${f(13, 4, "ACTIVE", "2", 5)}
+      ${f(14, 5, "FIXED", "2", 30, `<lastTestedDate>${daysAgo(25)}</lastTestedDate>`)}
+    </data></ServiceResponse>`;
+    const { agg, next } = wasPage(xml, NOW, NOW - 90 * 86400000);
+    expect(next).toBe("14");
+    expect(agg.open).toBe(3);
+    expect(agg.apps["1"]).toEqual(["Appli 1", 1, 0, 1, 1]); // critique ouverte depuis 20 j > 7 j
+    expect(agg.apps["2"]).toEqual(["Appli 2", 0, 1, 0, 0]);
+    expect(agg.owasp).toEqual({ "A03 Injection": 1 });
+    expect(agg.fix).toMatchObject({ n: 1, inSla: 1, daysSum: 5 });
+    const r = buildResults([{ kind: "was", agg: JSON.parse(JSON.stringify(agg)) }], NOW);
+    expect(r.webApps.apps[0]).toMatchObject({ name: "Appli 1", sev5: 1 });
+    expect(r.webApps.fixed).toMatchObject({ fixed: 1, mttr: 5, slaRate: 100 });
+    expect(summaryOf(r).webAppsCritical).toBe(1);
+  });
+
+  it("signale CSAM ou WAS indisponibles sans bloquer la photo", () => {
+    const r = buildResults([{ kind: "csamerror", agg: { message: "CSAM : HTTP 403" } }, { kind: "waserror", agg: { message: "WAS : UNAUTHORIZED" } }], NOW);
+    expect(r.inventory).toMatchObject({ collected: true, error: "CSAM : HTTP 403" });
+    expect(r.webApps).toMatchObject({ collected: true, error: "WAS : UNAUTHORIZED" });
+    expect(summaryOf(r)).toMatchObject({ unmanaged: null, webAppsCritical: null });
   });
 });
 
@@ -294,6 +377,12 @@ describe("Qualys : diagnostic des accès et écran", () => {
     expect(classify(404, "").status).toBe("unknown");
     expect(classify(409, "").status).toBe("error");
     expect(classify(200, `{"responseCode":"SUCCESS","count":7}`)).toEqual({ status: "ok", detail: "Autorisé", count: 7 });
+  });
+
+  it("trouve une politique quel que soit le format de la liste", () => {
+    const xml = `<POLICY_LIST_OUTPUT><RESPONSE><POLICY_LIST><POLICY>
+      <ID><![CDATA[4521]]></ID><TITLE><![CDATA[CIS Windows]]></TITLE><CREATED><DATETIME>x</DATETIME></CREATED></POLICY></POLICY_LIST></RESPONSE></POLICY_LIST_OUTPUT>`;
+    expect(policiesPage(xml)[0]?.id).toBe("4521");
   });
 
   it("déduit l'adresse de la Gateway", () => {
