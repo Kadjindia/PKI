@@ -204,9 +204,10 @@ describe("Qualys : photo", () => {
     expect(r.exposure.truriskAvg).toBe(910);
     expect(r.exposure.topRisk[0]).toMatchObject({ name: "srv1", d5: 2, overdue: 1, armed: 2 });
     expect(r.operations.fixed.bySev[5]).toEqual({ fixed: 4, inSla: 3, slaRate: 75, mttr: 15, median: 10 });
+    // Fenêtre de 90 jours au 16/11 : commence en août ; novembre est le mois en cours
     expect(r.operations.fixed.monthly).toEqual([
-      { month: "2026-10", fixed: 2, slaRate: 50, mttr5: 20, mttr4: null },
-      { month: "2026-11", fixed: 2, slaRate: 100, mttr5: 10, mttr4: null },
+      { month: "2026-10", fixed: 2, slaRate: 50, mttr5: 20, mttr4: null, partial: null },
+      { month: "2026-11", fixed: 2, slaRate: 100, mttr5: 10, mttr4: null, partial: "current" },
     ]);
     expect(summaryOf(r)).toMatchObject({ truriskAvg: 910, slaRate: 75, mttr5: 15 });
   });
@@ -232,6 +233,17 @@ describe("Qualys : obsolescence et conformité", () => {
     expect(r.obsolescence).toMatchObject({ hostsTracked: true, hosts: 1, products: 2, osProducts: 1, detections: 2 });
     expect(r.obsolescence.top[0]).toMatchObject({ title: "Windows Server 2012 R2 Detected", os: true, servers: 1 });
     expect(summaryOf(r).eolHosts).toBe(1);
+  });
+
+  it("regroupe les QID d'un même produit en fin de vie sans additionner les actifs", () => {
+    const xml = detectionsXml(host(1, "pc1", detection(5003893, 5, 400) + detection(106247, 5, 400)) + host(2, "pc2", detection(106247, 5, 400)));
+    const r = buildResults([
+      { kind: "detections", agg: JSON.parse(JSON.stringify(detectionsPage(xml, NOW))) },
+      { kind: "kb", agg: { 5003893: ["EOL/Obsolete Software: Microsoft .Net Version 6 Detected", 0, ""], 106247: ["EOL/Obsolete Software: Microsoft .Net Version 6 Detected", 0, ""] } },
+    ], NOW);
+    expect(r.obsolescence.products).toBe(1);
+    expect(r.obsolescence.top).toHaveLength(1);
+    expect(r.obsolescence.top[0]).toMatchObject({ title: "Microsoft .Net Version 6 Detected", hosts: 2, qid: "106247, 5003893" });
   });
 
   it("lit les politiques et l'état de conformité (Policy Audit)", () => {

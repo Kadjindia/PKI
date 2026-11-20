@@ -380,11 +380,13 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
               </div>
               {o.fixed.monthly.length > 0 && (
                 <div>
-                  <div className="text-xs font-semibold text-muted-foreground mb-1">Mois après mois (MTTR : doit baisser au fil de l&apos;année)</div>
+                  <div className="text-xs font-semibold text-muted-foreground mb-1 flex items-center gap-1.5">Mois après mois (MTTR : doit baisser au fil de l&apos;année)
+                    <Help>Vulnérabilités corrigées chaque mois. Le premier mois est coupé par la fenêtre de {o.windowDays} jours (« partiel ») : il ne compte que ses derniers jours, et ses chiffres ne sont pas comparables. Le mois en cours n&apos;est pas terminé.</Help>
+                  </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                     {o.fixed.monthly.map((m) => (
                       <div key={m.month} className="rounded-lg border border-border px-3 py-2 text-xs">
-                        <div className="font-bold capitalize">{formatMonth(m.month)}</div>
+                        <div className="font-bold"><span className="capitalize">{formatMonth(m.month)}</span>{m.partial && <span className="ml-1.5"><Badge tone="muted">{m.partial === "start" ? "partiel" : "en cours"}</Badge></span>}</div>
                         <div className="text-muted-foreground">{fmt(m.fixed)} corrigées · {m.slaRate === null ? "—" : `${fmt(m.slaRate)} %`} dans les délais</div>
                         <div>MTTR critiques <b>{m.mttr5 === null ? "—" : `${fmt(m.mttr5)} j`}</b> · élevées <b>{m.mttr4 === null ? "—" : `${fmt(m.mttr4)} j`}</b></div>
                       </div>
@@ -590,7 +592,12 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
       <Card>
         <CardContent className="p-4">
           {!c?.collected ? <Pending /> : c.error && c.policies.length === 0 ? (
-            <p className="text-sm text-amber-600 flex items-center gap-2 py-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Conformité non disponible : {c.error}</p>
+            <div className="space-y-1.5 py-1">
+              <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Conformité non disponible : {c.error}</p>
+              {/license is not authorized|code 2012/i.test(c.error) && (
+                <p className="text-xs text-muted-foreground">La licence Qualys n&apos;autorise pas l&apos;API qui donne l&apos;état de conformité par actif (la liste des politiques, elle, est accessible). C&apos;est une limite de l&apos;abonnement, pas des droits du compte : à voir avec l&apos;administrateur Qualys ou l&apos;interlocuteur commercial (option d&apos;accès API de Policy Audit).</p>
+              )}
+            </div>
           ) : c.policies.length === 0 ? (
             <p className="text-sm text-muted-foreground py-2">Aucune politique de conformité évaluée dans Policy Audit.</p>
           ) : (

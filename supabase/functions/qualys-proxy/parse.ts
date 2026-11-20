@@ -353,6 +353,26 @@ const fixView = (f: FixStat) => ({
   median: medianOf(f.hist),
 });
 
+/**
+ * Produits en fin de vie, regroupés par titre : Qualys publie parfois plusieurs QID pour le
+ * même produit (ex. deux « Microsoft .Net Version 6 »). Une machine pouvant porter les deux,
+ * on garde le plus grand nombre d'actifs plutôt que la somme.
+ */
+function eolProducts(entries: [string, QidStat][], kb: Record<string, [string, number, string]>) {
+  const byTitle = new Map<string, { qids: string[]; title: string; os: boolean; severity: number; hosts: number; servers: number }>();
+  for (const [qid, q] of entries) {
+    const title = (kb[qid]?.[0] ?? "").replace(/^\s*EOL\s*\/\s*Obsolete\s*(Software|Operating System)?\s*:?\s*/i, "") || `QID ${qid}`;
+    const key = title.toLowerCase();
+    const cur = byTitle.get(key);
+    if (!cur) { byTitle.set(key, { qids: [qid], title, os: isEolOs(kb[qid]?.[0]), severity: q[1], hosts: q[0], servers: q[6] ?? 0 }); continue; }
+    cur.qids.push(qid);
+    cur.severity = Math.max(cur.severity, q[1]);
+    cur.hosts = Math.max(cur.hosts, q[0]);
+    cur.servers = Math.max(cur.servers, q[6] ?? 0);
+  }
+  return [...byTitle.values()].sort((a, b) => b.hosts - a.hosts).map((p) => ({ ...p, qid: p.qids.join(", ") }));
+}
+
 /** Vulnérabilités (QID) de toutes les pages réunies. */
 function mergeQids(detPages: Row[]) {
   const qids = new Map<string, QidStat>();
@@ -468,7 +488,10 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     const fixed = cells.reduce((t, c) => t + c[0], 0);
     const inSla = cells.reduce((t, c) => t + c[1], 0);
     const mttrOf = (s: number) => { const c = monthCells[m][s]; return c && c[0] ? round1(c[2] / c[0]) : null; };
-    return { month: m, fixed, slaRate: fixed ? round1((inSla / fixed) * 100) : null, mttr5: mttrOf(5), mttr4: mttrOf(4) };
+    // Premier mois coupé par la fenêtre de 90 jours, mois en cours : chiffres partiels
+    const windowStart = new Date(now - FIXED_WINDOW_DAYS * DAY).toISOString().slice(0, 7);
+    const partial = m === windowStart ? "start" : m === new Date(now).toISOString().slice(0, 7) ? "current" : null;
+    return { month: m, fixed, slaRate: fixed ? round1((inSla / fixed) * 100) : null, mttr5: mttrOf(5), mttr4: mttrOf(4), partial };
   });
 
   const byTypeOpen = Object.fromEntries(ASSET_TYPES.map((t) => [t, {
@@ -489,13 +512,10 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     hostsTracked: detPages.some((p) => p.eol),
     hosts: eolHosts,
     byType: eolHostsByType,
-    products: eolEntries.length,
-    osProducts: eolEntries.filter(([qid]) => isEolOs(kb[qid]?.[0])).length,
+    products: eolProducts(eolEntries, kb).length,
+    osProducts: eolProducts(eolEntries, kb).filter((p) => p.os).length,
     detections: eolEntries.reduce((t, [, q]) => t + q[0], 0),
-    top: eolEntries.sort(byHosts).slice(0, TOP_RISK).map(([qid, q]) => ({
-      qid, title: (kb[qid]?.[0] ?? "").replace(/^\s*EOL\s*\/\s*Obsolete\s*(Software|Operating System)?\s*:?\s*/i, "") || `QID ${qid}`,
-      os: isEolOs(kb[qid]?.[0]), severity: q[1], hosts: q[0], servers: q[6] ?? 0,
-    })),
+    top: eolProducts(eolEntries, kb).slice(0, TOP_RISK),
   };
 
   // Conformité (Policy Audit)

@@ -58,7 +58,8 @@ export interface QualysOperations {
     all: QualysFixView;
     bySev: Record<"4" | "5", QualysFixView>;
     byType: Record<AssetType, QualysFixView>;
-    monthly: { month: string; fixed: number; slaRate: number | null; mttr5: number | null; mttr4: number | null }[];
+    /** partial : « start » premier mois coupé par la fenêtre, « current » mois en cours. */
+    monthly: { month: string; fixed: number; slaRate: number | null; mttr5: number | null; mttr4: number | null; partial?: "start" | "current" | null }[];
   };
   open: { byType: Record<AssetType, { total: number; overdue: number; sev5: number }> };
   reopenRate: number | null;
