@@ -117,6 +117,22 @@ export async function runDiagnostic(apiBase: string, username: string, password:
       });
       const c = classify(res.status, res.body);
       results.push({ ...base, status: c.status, detail: c.detail, count: c.count });
+      // Policy Audit : la liste des politiques peut passer alors que l'état de conformité par
+      // actif (seul utile au tableau de bord) est refusé par la licence. On le teste aussi.
+      const policyId = p.module === "PA" && c.status === "ok" ? /<POLICY>\s*<ID>(\d+)<\/ID>/.exec(res.body)?.[1] : null;
+      if (p.module === "PA" && c.status === "ok") {
+        const pb = { module: "PA (état)", label: "Policy Audit : état de conformité par actif", purpose: "Axe 4 : taux de conformité, contrôles en échec" };
+        if (!policyId) { results.push({ ...pb, status: "unknown", detail: "Aucune politique de conformité à interroger" }); continue; }
+        try {
+          const pr = await call(`${apiBase}/api/2.0/fo/compliance/posture/info/?action=list&policy_id=${policyId}&details=Basic&truncation_limit=1`, {
+            headers: { Authorization: basic, "X-Requested-With": "pki-dashboard", Accept: "application/xml" },
+          });
+          const pc = classify(pr.status, pr.body);
+          results.push({ ...pb, status: pc.status, detail: pc.detail, count: null });
+        } catch (e) {
+          results.push({ ...pb, status: "error", detail: `Pas de réponse : ${(e as Error).message}` });
+        }
+      }
     } catch (e) {
       results.push({ ...base, status: "error", detail: `Pas de réponse : ${(e as Error).message}` });
     }

@@ -5,9 +5,33 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
 
-export const SEVERITIES = [5, 4] as const;
-/** Délais de correction cibles (jours) par sévérité, fixés par la PSSI. */
-export const SLA_DAYS: Record<number, number> = { 5: 15, 4: 30 };
+/** Critique (5), élevée (4), modérée (3) : les trois niveaux de la politique de gestion des correctifs. */
+export const SEVERITIES = [5, 4, 3] as const;
+/**
+ * Délais de remédiation fixés par la politique de gestion des correctifs :
+ * Critique (sévérité 5) : 7 jours calendaires, traitée comme un incident de sécurité ;
+ * Élevé (4) : 1 mois calendaire ; Modéré (3) : 3 mois calendaires.
+ */
+export const SLA: Record<number, { days?: number; months?: number; label: string }> = {
+  5: { days: 7, label: "7 jours" },
+  4: { months: 1, label: "1 mois" },
+  3: { months: 3, label: "3 mois" },
+};
+/** Délai cible en jours (approché pour les mois), pour les comparaisons et l'affichage. */
+export const SLA_DAYS: Record<number, number> = { 5: 7, 4: 30, 3: 91 };
+
+/** Échéance de remédiation d'une vulnérabilité détectée à `firstFound` (ms). Mois calendaires : même jour, ramené au dernier jour du mois si besoin. */
+export function deadline(firstFound: number, sev: number): number {
+  const rule = SLA[sev];
+  if (!rule) return Infinity;
+  if (rule.days) return firstFound + rule.days * DAY;
+  const d = new Date(firstFound);
+  const day = d.getUTCDate();
+  const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + (rule.months ?? 0), 1, d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(day, lastDay));
+  return target.getTime();
+}
 /** Tranches d'ancienneté (jours depuis la première détection). */
 export const AGE_LIMITS = [30, 90, 180]; // < 30, 30-90, 90-180, > 180
 export const RECENT_SCAN_DAYS = 30;
@@ -134,7 +158,7 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
   const ignored = { total: 0, sev5: 0, ages: [0, 0, 0, 0] };
   const qids: Record<string, QidStat> = {};
   const hosts: Row[] = [];
-  type Watched = { d5: number; d4: number; overdue: number; qids: string[] };
+  type Watched = { d5: number; d4: number; d3: number; overdue: number; qids: string[] };
   const watched: Record<string, Watched> = {};
   const watchSet = new Set(watch);
   const eolSet = new Set(eolQids);
@@ -149,10 +173,10 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
     const id = tag(head, "ID");
     const os = tag(head, "OS");
     const type = assetType(os);
-    const host = { id, ip: tag(head, "IP"), name: tag(head, "DNS") || tag(head, "NETBIOS") || null, os, type, d5: 0, d4: 0, overdue: 0, qdsCritical: 0 };
+    const host = { id, ip: tag(head, "IP"), name: tag(head, "DNS") || tag(head, "NETBIOS") || null, os, type, d5: 0, d4: 0, d3: 0, overdue: 0, qdsCritical: 0 };
     let hasEol = false;
     let w: Watched | null = null;
-    if (id && watchSet.has(id)) w = watched[id] = { d5: 0, d4: 0, overdue: 0, qids: [] };
+    if (id && watchSet.has(id)) w = watched[id] = { d5: 0, d4: 0, d3: 0, overdue: 0, qids: [] };
     for (const d of blocks(h, "DETECTION")) {
       const sev = Number(tag(d, "SEVERITY"));
       const stat = bySev[sev];
@@ -169,7 +193,7 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       }
       if (/potential/i.test(tag(d, "TYPE") ?? "")) potential++;
       const status = tag(d, "STATUS") ?? "";
-      const late = age > SLA_DAYS[sev];
+      const late = first ? now > deadline(Date.parse(first), sev) : false;
       const qds = Number(tag(d, "QDS") ?? 0) || 0;
       stat.total++;
       stat.ageSum += age;
@@ -180,12 +204,12 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       if (late) byType[type].overdue++;
       if (sev === 5) byType[type].sev5++;
       if (qds >= 90) { qdsCritical++; host.qdsCritical++; }
-      if (sev === 5) host.d5++; else host.d4++;
+      if (sev === 5) host.d5++; else if (sev === 4) host.d4++; else host.d3++;
       if (late) host.overdue++;
       const qid = tag(d, "QID");
       if (qid && eolSet.has(qid)) hasEol = true;
       if (w) {
-        if (sev === 5) w.d5++; else w.d4++;
+        if (sev === 5) w.d5++; else if (sev === 4) w.d4++; else w.d3++;
         if (late) w.overdue++;
         if (qid) w.qids.push(qid);
       }
@@ -200,7 +224,7 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       }
     }
     if (hasEol) eol[type]++;
-    if (host.d5 + host.d4 > 0) hosts.push(host);
+    if (host.d5 + host.d4 + host.d3 > 0) hosts.push(host);
     if (host.d5 > 0) hostsWithSev5++;
   }
   // Actifs les plus exposés de la page : vulnérabilités critiques (QDS >= 90), puis sévérité 5
@@ -231,7 +255,7 @@ export function fixedPage(xml: string, since: number) {
       const first = Date.parse(tag(d, "FIRST_FOUND_DATETIME") ?? "");
       if (!Number.isFinite(fixedAt) || !Number.isFinite(first) || fixedAt < since) continue;
       const days = Math.max(0, Math.floor((fixedAt - first) / DAY));
-      const ok = days <= SLA_DAYS[sev];
+      const ok = fixedAt <= deadline(first, sev);
       for (const f of [bySev[sev], byType[type]]) {
         f.n++;
         if (ok) f.inSla++;
@@ -353,6 +377,26 @@ const fixView = (f: FixStat) => ({
   median: medianOf(f.hist),
 });
 
+/**
+ * Produits en fin de vie, regroupés par titre : Qualys publie parfois plusieurs QID pour le
+ * même produit (ex. deux « Microsoft .Net Version 6 »). Une machine pouvant porter les deux,
+ * on garde le plus grand nombre d'actifs plutôt que la somme.
+ */
+function eolProducts(entries: [string, QidStat][], kb: Record<string, [string, number, string]>) {
+  const byTitle = new Map<string, { qids: string[]; title: string; os: boolean; severity: number; hosts: number; servers: number }>();
+  for (const [qid, q] of entries) {
+    const title = (kb[qid]?.[0] ?? "").replace(/^\s*EOL\s*\/\s*Obsolete\s*(Software|Operating System)?\s*:?\s*/i, "") || `QID ${qid}`;
+    const key = title.toLowerCase();
+    const cur = byTitle.get(key);
+    if (!cur) { byTitle.set(key, { qids: [qid], title, os: isEolOs(kb[qid]?.[0]), severity: q[1], hosts: q[0], servers: q[6] ?? 0 }); continue; }
+    cur.qids.push(qid);
+    cur.severity = Math.max(cur.severity, q[1]);
+    cur.hosts = Math.max(cur.hosts, q[0]);
+    cur.servers = Math.max(cur.servers, q[6] ?? 0);
+  }
+  return [...byTitle.values()].sort((a, b) => b.hosts - a.hosts).map((p) => ({ ...p, qid: p.qids.join(", ") }));
+}
+
 /** Vulnérabilités (QID) de toutes les pages réunies. */
 function mergeQids(detPages: Row[]) {
   const qids = new Map<string, QidStat>();
@@ -390,6 +434,7 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     return {
       severity: s,
       slaDays: SLA_DAYS[s],
+      slaLabel: SLA[s].label,
       total,
       overdue: sum(detPages, (p) => p.bySev[s]?.overdue),
       reopened: sum(detPages, (p) => p.bySev[s]?.reopened),
@@ -399,7 +444,7 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
   });
 
   const qids = mergeQids(detPages);
-  // Chaque chiffre est donné pour les sévérités 4 et 5, et pour la sévérité 5 seule
+  // Chaque chiffre est donné pour les sévérités 3 à 5, et pour la sévérité 5 seule
   // (sev5), comme les filtres de la console VMDR
   const flagged = (flag: number) => {
     let detections = 0, vulns = 0, sev5 = 0, servers = 0;
@@ -446,7 +491,7 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     .sort((a, b) => b.trurisk - a.trurisk).slice(0, TOP_RISK)
     .map((h) => {
       const w = h.id ? watched[h.id] : undefined;
-      return { ...h, d5: w?.d5 ?? null, d4: w?.d4 ?? null, overdue: w?.overdue ?? null, armed: w ? w.qids.filter((q: string) => flagsOf(q) & ARMED).length : null };
+      return { ...h, d5: w?.d5 ?? null, d4: w?.d4 ?? null, d3: w?.d3 ?? null, overdue: w?.overdue ?? null, armed: w ? w.qids.filter((q: string) => flagsOf(q) & ARMED).length : null };
     });
   const truriskCount = sum(hostsPages, (p) => p.truriskCount);
 
@@ -468,7 +513,10 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     const fixed = cells.reduce((t, c) => t + c[0], 0);
     const inSla = cells.reduce((t, c) => t + c[1], 0);
     const mttrOf = (s: number) => { const c = monthCells[m][s]; return c && c[0] ? round1(c[2] / c[0]) : null; };
-    return { month: m, fixed, slaRate: fixed ? round1((inSla / fixed) * 100) : null, mttr5: mttrOf(5), mttr4: mttrOf(4) };
+    // Premier mois coupé par la fenêtre de 90 jours, mois en cours : chiffres partiels
+    const windowStart = new Date(now - FIXED_WINDOW_DAYS * DAY).toISOString().slice(0, 7);
+    const partial = m === windowStart ? "start" : m === new Date(now).toISOString().slice(0, 7) ? "current" : null;
+    return { month: m, fixed, slaRate: fixed ? round1((inSla / fixed) * 100) : null, mttr5: mttrOf(5), mttr4: mttrOf(4), mttr3: mttrOf(3), partial };
   });
 
   const byTypeOpen = Object.fromEntries(ASSET_TYPES.map((t) => [t, {
@@ -489,13 +537,10 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number) {
     hostsTracked: detPages.some((p) => p.eol),
     hosts: eolHosts,
     byType: eolHostsByType,
-    products: eolEntries.length,
-    osProducts: eolEntries.filter(([qid]) => isEolOs(kb[qid]?.[0])).length,
+    products: eolProducts(eolEntries, kb).length,
+    osProducts: eolProducts(eolEntries, kb).filter((p) => p.os).length,
     detections: eolEntries.reduce((t, [, q]) => t + q[0], 0),
-    top: eolEntries.sort(byHosts).slice(0, TOP_RISK).map(([qid, q]) => ({
-      qid, title: (kb[qid]?.[0] ?? "").replace(/^\s*EOL\s*\/\s*Obsolete\s*(Software|Operating System)?\s*:?\s*/i, "") || `QID ${qid}`,
-      os: isEolOs(kb[qid]?.[0]), severity: q[1], hosts: q[0], servers: q[6] ?? 0,
-    })),
+    top: eolProducts(eolEntries, kb).slice(0, TOP_RISK),
   };
 
   // Conformité (Policy Audit)
@@ -590,6 +635,7 @@ export function summaryOf(r: ReturnType<typeof buildResults>) {
     detections: r.detections.total,
     sev5: sev(5)?.total ?? 0,
     sev4: sev(4)?.total ?? 0,
+    sev3: sev(3)?.total ?? 0,
     overdue: r.severities.reduce((t, s) => t + s.overdue, 0),
     kev: r.kev.detections,
     ransomware: r.ransomware.detections,
