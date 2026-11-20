@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
-  policiesPage, posturePage, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage,
+  policiesPage, posturePage, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages,
 } from "../../supabase/functions/qualys-proxy/parse";
 import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
 import { remediationProgress, trendOver } from "../lib/qualys";
@@ -151,10 +151,16 @@ describe("Qualys : chiffres d'une page", () => {
       + host(2, "pc2", fixed(3, 4, 50, 30) /* 20 j : dans le délai */ + fixed(4, 4, 300, 200) /* corrigée avant la période */),
     );
     const p = fixedPage(xml, NOW - 90 * 86400000);
-    expect(p.bySev[5]).toMatchObject({ n: 2, inSla: 1, daysSum: 35 });
-    expect(p.bySev[4]).toMatchObject({ n: 1, inSla: 1, daysSum: 20 });
-    expect(p.byType.server).toMatchObject({ n: 2, inSla: 1 });
-    expect(p.byType.workstation).toMatchObject({ n: 1, inSla: 1 });
+    const rows = Object.values(p.cells);
+    const sum = (f: (r: (typeof rows)[number]) => boolean) => rows.filter(f).reduce((t, r) => ({ n: t.n + r.n, in_sla: t.in_sla + r.in_sla, days_sum: t.days_sum + r.days_sum }), { n: 0, in_sla: 0, days_sum: 0 });
+    expect(sum((r) => r.severity === 5)).toEqual({ n: 2, in_sla: 1, days_sum: 35 });
+    expect(sum((r) => r.severity === 4)).toEqual({ n: 1, in_sla: 1, days_sum: 20 });
+    expect(sum((r) => r.asset_type === "server")).toMatchObject({ n: 2, in_sla: 1 });
+    expect(sum((r) => r.asset_type === "workstation")).toMatchObject({ n: 1, in_sla: 1 });
+    // Borne haute : une correction lue après la fin de la période n'est pas comptée (elle le sera au calcul suivant)
+    const late = fixedPage(xml, NOW - 90 * 86400000, NOW - 25 * 86400000);
+    // Fin de période il y a 25 jours : les deux corrections d'il y a 30 jours comptent, celle d'il y a 20 jours attendra
+    expect(Object.values(late.cells).reduce((t, r) => t + r.n, 0)).toBe(2);
     expect(medianOf({ 10: 1, 30: 1, 20: 1 })).toBe(20);
     expect(medianOf({})).toBeNull();
   });
@@ -209,19 +215,36 @@ describe("Qualys : photo", () => {
     const r = buildResults([
       { kind: "hosts", agg: { total: 1, agent: 1, scanned: 1, neverScanned: 0, trurisk: { critical: 1, high: 0, medium: 0, low: 0 }, truriskSum: 910, truriskCount: 1, topRisk: [risk] } },
       { kind: "detections", agg: { bySev: {}, qids: { 100: [2, 5, 1, 0, 0, 0, 1] }, watched: { 1: { d5: 2, d4: 0, overdue: 1, qids: ["100", "100"] } } } },
-      { kind: "fixed", agg: { bySev: { 5: { n: 2, inSla: 1, daysSum: 40, hist: { 10: 1, 30: 1 } } }, byType: {}, months: { "2026-10": { 5: [2, 1, 40] } } } },
-      { kind: "fixed", agg: { bySev: { 5: { n: 2, inSla: 2, daysSum: 20, hist: { 10: 2 } } }, byType: {}, months: { "2026-11": { 5: [2, 2, 20] } } } },
+      { kind: "fixed", agg: { cells: { "2026-10-20|5|server": { day: "2026-10-20", severity: 5, asset_type: "server", n: 2, in_sla: 1, days_sum: 40, hist: { 10: 1, 30: 1 } } } } },
+      { kind: "fixed", agg: { cells: { "2026-11-10|5|server": { day: "2026-11-10", severity: 5, asset_type: "server", n: 2, in_sla: 2, days_sum: 20, hist: { 10: 2 } } } } },
       { kind: "kb", agg: { 100: ["Vuln 100", 1, ""] } },
     ], NOW);
     expect(r.exposure.truriskAvg).toBe(910);
     expect(r.exposure.topRisk[0]).toMatchObject({ name: "srv1", d5: 2, overdue: 1, armed: 2 });
     expect(r.operations.fixed.bySev[5]).toEqual({ fixed: 4, inSla: 3, slaRate: 75, mttr: 15, median: 10 });
-    // Fenêtre de 90 jours au 16/11 : commence en août ; novembre est le mois en cours
+    // Octobre : premier mois des données, commencé le 20 (partiel) ; novembre est le mois en cours
     expect(r.operations.fixed.monthly).toEqual([
-      { month: "2026-10", fixed: 2, slaRate: 50, mttr5: 20, mttr4: null, mttr3: null, partial: null },
+      { month: "2026-10", fixed: 2, slaRate: 50, mttr5: 20, mttr4: null, mttr3: null, partial: "start" },
       { month: "2026-11", fixed: 2, slaRate: 100, mttr5: 10, mttr4: null, mttr3: null, partial: "current" },
     ]);
     expect(summaryOf(r)).toMatchObject({ truriskAvg: 910, slaRate: 75, mttr5: 15 });
+  });
+
+  it("cumule les corrections jour par jour et se limite à 90 jours pour les délais", () => {
+    const row = (day: string, n: number, inSla: number) => ({ day, severity: 5, asset_type: "server" as const, n, in_sla: inSla, days_sum: n * 10, hist: { 10: n } });
+    expect(mergeFixedRows([row("2026-11-01", 2, 1), row("2026-11-01", 3, 3)])).toEqual([{ day: "2026-11-01", severity: 5, asset_type: "server", n: 5, in_sla: 4, days_sum: 50, hist: { 10: 5 } }]);
+    // Table cumulée : une correction vieille de 6 mois compte pour l'évolution mensuelle, pas pour les 90 derniers jours
+    const r = buildResults([], NOW, { fixedDaily: [row("2026-05-10", 4, 0), row("2026-11-01", 2, 2)] });
+    expect(r.operations.fixed.all).toMatchObject({ fixed: 2, slaRate: 100 });
+    expect(r.operations.fixed.monthly.map((m) => m.month)).toEqual(["2026-05", "2026-11"]);
+    expect(r.operations.fixedCollected).toBe(true);
+    expect(fixedRowsOfPages([{ kind: "fixed", agg: { cells: { a: row("2026-11-01", 1, 1) } } }])).toHaveLength(1);
+  });
+
+  it("partage le parc en deux moitiés pour lire les vulnérabilités en parallèle", () => {
+    expect(splitHosts([5, 1, 3])).toEqual([{}]); // petit parc : une seule lecture
+    const ids = Array.from({ length: 1000 }, (_, i) => 1000 + i);
+    expect(splitHosts(ids)).toEqual([{ max: 1499 }, { min: 1500 }]);
   });
 });
 

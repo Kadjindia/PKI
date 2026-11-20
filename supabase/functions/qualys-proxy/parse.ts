@@ -133,8 +133,12 @@ export function hostsPage(xml: string, now: number) {
   let truriskSum = 0, truriskCount = 0;
   const byType = emptyByType(() => ({ total: 0, scanned: 0, publicIp: 0 }));
   const risk: RiskHost[] = [];
+  /** Identifiants des actifs : pour partager la lecture des vulnérabilités entre deux appels simultanés. */
+  const ids: number[] = [];
   for (const h of blocks(xml, "HOST")) {
     agg.total++;
+    const hid = Number(tag(h, "ID"));
+    if (Number.isFinite(hid)) ids.push(hid);
     const os = tag(h, "OS");
     const type = assetType(os);
     byType[type].total++;
@@ -159,7 +163,7 @@ export function hostsPage(xml: string, now: number) {
     }
   }
   risk.sort((a, b) => b.trurisk - a.trurisk);
-  return { ...agg, trurisk: tr, truriskSum, truriskCount, byType, topRisk: risk.slice(0, TOP_RISK) };
+  return { ...agg, trurisk: tr, truriskSum, truriskCount, byType, topRisk: risk.slice(0, TOP_RISK), ids };
 }
 
 /** QID -> [détections, sévérité, hors délai, plus ancienne détection (ms, 0 si inconnue), QDS max, détections QDS >= 90, détections sur serveurs]. */
@@ -253,41 +257,65 @@ type Hist = Record<string, number>;
 interface FixStat { n: number; inSla: number; daysSum: number; hist: Hist }
 const emptyFix = (): FixStat => ({ n: 0, inSla: 0, daysSum: 0, hist: {} });
 
-/** Vulnérabilités corrigées (statut Fixed) depuis `since` : délais de correction réels. */
-export function fixedPage(xml: string, since: number) {
-  const bySev: Record<string, FixStat> = {};
-  for (const s of SEVERITIES) bySev[s] = emptyFix();
-  const byType = emptyByType(emptyFix);
-  /** Mois de correction (AAAA-MM) -> sévérité -> [corrigées, dans les délais, somme des délais]. */
-  const months: Record<string, Record<string, [number, number, number]>> = {};
+/**
+ * Partage du parc en deux moitiés d'identifiants, lues en parallèle (l'abonnement autorise
+ * deux appels simultanés). Renvoie [plage 1, plage 2] ; une seule plage si le parc est petit.
+ */
+export function splitHosts(ids: number[]): { min?: number; max?: number }[] {
+  const sorted = [...new Set(ids)].sort((a, b) => a - b);
+  if (sorted.length < 200) return [{}];
+  const mid = sorted[Math.floor(sorted.length / 2) - 1];
+  return [{ max: mid }, { min: mid + 1 }];
+}
+
+/** Ligne cumulée des vulnérabilités corrigées : un jour de correction, une sévérité, un type d'actif. */
+export interface FixedRow { day: string; severity: number; asset_type: AssetType; n: number; in_sla: number; days_sum: number; hist: Hist }
+
+/**
+ * Vulnérabilités corrigées (statut Fixed) dont la correction a été constatée dans [since, until[ :
+ * délais de correction réels, regroupés par jour, sévérité et type d'actif. La borne haute évite de
+ * compter deux fois une correction lue par deux calculs successifs.
+ */
+export function fixedPage(xml: string, since: number, until = Infinity) {
+  const cells: Record<string, FixedRow> = {};
   for (const h of blocks(xml, "HOST")) {
     const head = h.slice(0, Math.max(0, h.indexOf("<DETECTION_LIST>")) || h.length);
     const type = assetType(tag(head, "OS"));
     for (const d of blocks(h, "DETECTION")) {
       const sev = Number(tag(d, "SEVERITY"));
-      if (!bySev[sev] || !/fixed/i.test(tag(d, "STATUS") ?? "")) continue;
+      if (!SLA[sev] || !/fixed/i.test(tag(d, "STATUS") ?? "")) continue;
       const fixedAt = Date.parse(tag(d, "LAST_FIXED_DATETIME") ?? "");
       const first = Date.parse(tag(d, "FIRST_FOUND_DATETIME") ?? "");
-      if (!Number.isFinite(fixedAt) || !Number.isFinite(first) || fixedAt < since) continue;
+      if (!Number.isFinite(fixedAt) || !Number.isFinite(first) || fixedAt < since || fixedAt >= until) continue;
       const days = Math.max(0, Math.floor((fixedAt - first) / DAY));
-      const ok = fixedAt <= deadline(first, sev);
-      for (const f of [bySev[sev], byType[type]]) {
-        f.n++;
-        if (ok) f.inSla++;
-        f.daysSum += days;
-        const k = String(Math.min(days, 365));
-        f.hist[k] = (f.hist[k] ?? 0) + 1;
-      }
-      const m = new Date(fixedAt).toISOString().slice(0, 7);
-      const ms = (months[m] ??= {});
-      const cell = (ms[sev] ??= [0, 0, 0]);
-      cell[0]++;
-      if (ok) cell[1]++;
-      cell[2] += days;
+      const day = new Date(fixedAt).toISOString().slice(0, 10);
+      const key = `${day}|${sev}|${type}`;
+      const c = (cells[key] ??= { day, severity: sev, asset_type: type, n: 0, in_sla: 0, days_sum: 0, hist: {} });
+      c.n++;
+      if (fixedAt <= deadline(first, sev)) c.in_sla++;
+      c.days_sum += days;
+      const k = String(Math.min(days, 365));
+      c.hist[k] = (c.hist[k] ?? 0) + 1;
     }
   }
-  return { bySev, byType, months };
+  return { cells };
 }
+
+/** Lignes cumulées de plusieurs pages (mêmes jour, sévérité et type additionnés). */
+export function mergeFixedRows(list: FixedRow[]): FixedRow[] {
+  const out: Record<string, FixedRow> = {};
+  for (const r of list) {
+    const key = `${r.day}|${r.severity}|${r.asset_type}`;
+    const c = (out[key] ??= { day: r.day, severity: r.severity, asset_type: r.asset_type, n: 0, in_sla: 0, days_sum: 0, hist: {} });
+    c.n += r.n; c.in_sla += r.in_sla; c.days_sum += Number(r.days_sum);
+    for (const [k, v] of Object.entries(r.hist ?? {})) c.hist[k] = (c.hist[k] ?? 0) + Number(v);
+  }
+  return Object.values(out);
+}
+
+/** Corrections lues pendant la photo (pages « fixed »). */
+export const fixedRowsOfPages = (pages: { kind: string; agg: Row }[]) =>
+  mergeFixedRows(pages.filter((p) => p.kind === "fixed").flatMap((p) => Object.values((p.agg.cells ?? {}) as Record<string, FixedRow>)));
 
 /** Base de connaissances : titre, CVE et indicateurs de menace de chaque vulnérabilité. */
 export const KB_FLAGS = { kev: 1, ransomware: 2, patchable: 4, activeAttacks: 8, exploitPublic: 16 } as const;
@@ -542,7 +570,7 @@ function mergeQids(detPages: Row[]) {
   return qids;
 }
 
-export function buildResults(pages: { kind: string; agg: Row }[], now: number, opts: { previousPolicies?: Row[] } = {}) {
+export function buildResults(pages: { kind: string; agg: Row }[], now: number, opts: { previousPolicies?: Row[]; fixedDaily?: FixedRow[] } = {}) {
   const hostsPages = pages.filter((p) => p.kind === "hosts").map((p) => p.agg);
   const detPages = pages.filter((p) => p.kind === "detections").map((p) => p.agg);
   const fixPages = pages.filter((p) => p.kind === "fixed").map((p) => p.agg);
@@ -626,27 +654,31 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     });
   const truriskCount = sum(hostsPages, (p) => p.truriskCount);
 
-  // Délais de correction réels (vulnérabilités corrigées sur la période)
-  const fixSev = Object.fromEntries(SEVERITIES.map((s) => [s, fixView(mergeFix(fixPages.map((p) => p.bySev?.[s])))]));
-  const fixAll = fixView(mergeFix(fixPages.flatMap((p) => SEVERITIES.map((s) => p.bySev?.[s]))));
-  const fixType = Object.fromEntries(ASSET_TYPES.map((t) => [t, fixView(mergeFix(fixPages.map((p) => p.byType?.[t])))]));
+  // Délais de correction réels : cumul jour par jour (table qualys_fixed_daily), ou pages de la photo
+  const fixedRows = opts.fixedDaily ?? fixedRowsOfPages(pages);
+  const toFix = (r: FixedRow): FixStat => ({ n: r.n, inSla: r.in_sla, daysSum: Number(r.days_sum), hist: r.hist ?? {} });
+  const windowStartDay = new Date(now - FIXED_WINDOW_DAYS * DAY).toISOString().slice(0, 10);
+  const inWindow = fixedRows.filter((r) => r.day >= windowStartDay);
+  const fixSev = Object.fromEntries(SEVERITIES.map((s) => [s, fixView(mergeFix(inWindow.filter((r) => r.severity === s).map(toFix)))]));
+  const fixAll = fixView(mergeFix(inWindow.map(toFix)));
+  const fixType = Object.fromEntries(ASSET_TYPES.map((t) => [t, fixView(mergeFix(inWindow.filter((r) => r.asset_type === t).map(toFix)))]));
+  // Mois après mois, sur 12 mois au plus
+  const monthStart = new Date(now - 365 * DAY).toISOString().slice(0, 7);
   const monthCells: Record<string, Record<string, [number, number, number]>> = {};
-  for (const p of fixPages) {
-    for (const [m, bySev] of Object.entries((p.months ?? {}) as Record<string, Record<string, [number, number, number]>>)) {
-      for (const [s, c] of Object.entries(bySev)) {
-        const cell = ((monthCells[m] ??= {})[s] ??= [0, 0, 0]);
-        cell[0] += c[0]; cell[1] += c[1]; cell[2] += c[2];
-      }
-    }
+  for (const r of fixedRows) {
+    const m = r.day.slice(0, 7);
+    if (m < monthStart) continue;
+    const cell = ((monthCells[m] ??= {})[r.severity] ??= [0, 0, 0]);
+    cell[0] += r.n; cell[1] += r.in_sla; cell[2] += Number(r.days_sum);
   }
+  const firstDay = fixedRows.map((r) => r.day).sort()[0] ?? null;
   const monthly = Object.keys(monthCells).sort().map((m) => {
     const cells = Object.values(monthCells[m]);
     const fixed = cells.reduce((t, c) => t + c[0], 0);
     const inSla = cells.reduce((t, c) => t + c[1], 0);
     const mttrOf = (s: number) => { const c = monthCells[m][s]; return c && c[0] ? round1(c[2] / c[0]) : null; };
-    // Premier mois coupé par la fenêtre de 90 jours, mois en cours : chiffres partiels
-    const windowStart = new Date(now - FIXED_WINDOW_DAYS * DAY).toISOString().slice(0, 7);
-    const partial = m === windowStart ? "start" : m === new Date(now).toISOString().slice(0, 7) ? "current" : null;
+    // Premier mois des données commencé en cours de mois, mois en cours : chiffres partiels
+    const partial = firstDay && m === firstDay.slice(0, 7) && !firstDay.endsWith("-01") ? "start" : m === new Date(now).toISOString().slice(0, 7) ? "current" : null;
     return { month: m, fixed, slaRate: fixed ? round1((inSla / fixed) * 100) : null, mttr5: mttrOf(5), mttr4: mttrOf(4), mttr3: mttrOf(3), partial };
   });
 
@@ -813,7 +845,7 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
       open: { byType: byTypeOpen },
       reopenRate: total ? round1((reopened / total) * 100) : null,
       ignored,
-      fixedCollected: fixPages.length > 0,
+      fixedCollected: fixedRows.length > 0 || fixPages.length > 0,
     },
     // Axe 1 (en partie) : obsolescence, d'après VMDR
     obsolescence,

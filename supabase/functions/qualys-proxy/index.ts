@@ -1,7 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
-  csamPage, wasPage, FIXED_WINDOW_DAYS, TOP_RISK,
+  csamPage, wasPage, splitHosts, fixedRowsOfPages, FIXED_WINDOW_DAYS, TOP_RISK,
+  type FixedRow,
 } from "./parse.ts";
 import { runDiagnostic, gatewayToken, gatewayUrl } from "./diagnostic.ts";
 
@@ -80,8 +81,8 @@ function adminClient(): Admin {
 
 const firstUrl = {
   hosts: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/?action=list&details=All&show_trurisk=1&truncation_limit=${HOST_PAGE}`,
-  detections: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}`,
-  fixed: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=Fixed&detection_updated_since=${fixedSince().toISOString().slice(0, 10)}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
+  detections: (range: { min?: number; max?: number } = {}) => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}${range.min != null ? `&id_min=${range.min}` : ""}${range.max != null ? `&id_max=${range.max}` : ""}`,
+  fixed: (sinceIso: string) => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=Fixed&detection_updated_since=${sinceIso}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
   policies: () => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/policy/?action=list&details=Basic`,
   posture: (policyId: string) => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/posture/info/?action=list&policy_id=${encodeURIComponent(policyId)}&details=Basic&truncation_limit=${POSTURE_PAGE}`,
   kb: (ids: string[]) => `${QUALYS_BASE_URL}/api/2.0/fo/knowledge_base/vuln/?action=list&details=All&ids=${ids.join(",")}`,
@@ -89,6 +90,10 @@ const firstUrl = {
 
 /** Début de la période d'observation des vulnérabilités corrigées. */
 const fixedSince = () => new Date(Date.now() - FIXED_WINDOW_DAYS * 24 * 3600 * 1000);
+/** Corrections comptées avec un jour de décalage : Qualys peut traiter un scan quelques heures après coup. */
+const FIXED_LAG_MS = 24 * 3600 * 1000;
+/** Conformité : une politique est réévaluée au plus une fois par semaine. */
+const COMPLIANCE_REFRESH_MS = 6 * 24 * 3600 * 1000;
 
 const basicAuth = () => `Basic ${btoa(`${QUALYS_USERNAME}:${QUALYS_PASSWORD}`)}`;
 
@@ -194,6 +199,94 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
   }
 }
 
+/** Début de la lecture des vulnérabilités corrigées : depuis le dernier calcul (curseur), ou 90 jours au premier passage. */
+async function enterFixed(admin: Admin, state: Row) {
+  let cursor: string | null = null;
+  try {
+    const { data } = await admin.from("qualys_meta").select("value").eq("key", "fixed_cursor").maybeSingle();
+    cursor = data?.value ?? null;
+  } catch { cursor = null; }
+  const floor = fixedSince().toISOString();
+  state.fixedSince = cursor && cursor > floor ? cursor : floor;
+  state.fixedUntil = new Date(Date.now() - FIXED_LAG_MS).toISOString();
+  if (state.fixedSince >= state.fixedUntil) state.fixedSince = new Date(Date.parse(state.fixedUntil) - 1000).toISOString();
+  state.phase = "fixed";
+  state.page = 0;
+  state.next = null;
+}
+
+/**
+ * Ajoute les corrections lues à la table cumulée et avance le curseur (une transaction, idempotente
+ * par photo), puis renvoie l'historique (13 mois). Si la table n'existe pas (migration non appliquée),
+ * on se contente des corrections lues pendant la photo.
+ */
+async function mergeFixed(admin: Admin, snapId: string, pages: { kind: string; agg: Row }[], state: Row): Promise<FixedRow[] | undefined> {
+  if (!state.fixedUntil) return undefined;
+  const { error } = await admin.rpc("qualys_merge_fixed", { snapshot: snapId, rows: fixedRowsOfPages(pages), new_cursor: state.fixedUntil });
+  if (error) { console.error("Cumul des corrections :", error.message); return undefined; }
+  const since = new Date(Date.now() - 400 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const rows: FixedRow[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error: e } = await admin.from("qualys_fixed_daily").select("day, severity, asset_type, n, in_sla, days_sum, hist").gte("day", since).range(from, from + 999);
+    if (e) { console.error("Lecture des corrections :", e.message); return undefined; }
+    rows.push(...((data ?? []) as FixedRow[]));
+    if (!data || data.length < 1000) break;
+  }
+  return rows;
+}
+
+/** Vulnérabilités ouvertes, deux plages d'actifs à la fois (l'abonnement autorise deux appels simultanés). */
+async function advanceLanes(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>, fail: (m: string) => Promise<StepOutcome>): Promise<StepOutcome> {
+  let progressed = false;
+  for (const [i, lane] of (state.lanes as Row[]).entries()) {
+    if (lane.done) continue;
+    if (lane.request) {
+      const res = await response(admin, lane.request);
+      if (!res) {
+        if (Date.now() - Date.parse(lane.requestedAt) > REQUEST_TIMEOUT_MS + 5 * 60_000) {
+          lane.request = null;
+          if (++lane.attempts >= MAX_ATTEMPTS) return await fail("Qualys ne répond pas.");
+        }
+        continue;
+      }
+      const content = String(res.content ?? "");
+      const id = lane.request;
+      lane.request = null;
+      await admin.rpc("qualys_http_forget", { request_id: id });
+      if (res.status_code === 409 || /concurrency|rate limit/i.test(qualysError(content) ?? "")) {
+        lane.waitUntil = new Date(Date.now() + CONCURRENCY_WAIT_MS).toISOString();
+        continue;
+      }
+      const err = res.timed_out ? "Délai dépassé" : res.error_msg ? String(res.error_msg)
+        : res.status_code !== 200 ? (qualysError(content) ?? `HTTP ${res.status_code}`) : qualysError(content);
+      if (err) {
+        if (res.status_code === 401 || /login|password/i.test(err)) return await fail(`Identifiants Qualys refusés : ${err}`);
+        if (++lane.attempts >= MAX_ATTEMPTS) return await fail(`Qualys : ${err}`);
+        continue;
+      }
+      lane.attempts = 0;
+      await savePage(admin, snapId, "detections", i * 100_000 + lane.page, detectionsPage(content, Date.now(), state.watch ?? [], state.eolQids ?? []));
+      lane.page++;
+      state.pages++;
+      lane.next = nextPageUrl(content, QUALYS_BASE_URL);
+      if (!lane.next) lane.done = true;
+      progressed = true;
+    }
+    if (!lane.done && !lane.request && !(lane.waitUntil && Date.parse(lane.waitUntil) > Date.now())) {
+      lane.request = await request(admin, lane.next ?? firstUrl.detections(lane.range));
+      lane.requestedAt = new Date().toISOString();
+      lane.waitUntil = null;
+      progressed = true;
+    }
+  }
+  if ((state.lanes as Row[]).every((l) => l.done)) {
+    state.lanes = undefined;
+    await enterFixed(admin, state);
+  }
+  await save();
+  return progressed ? "advanced" : "waiting";
+}
+
 /** Conformité de la dernière photo, par politique (reprise pour les politiques non réévaluées). */
 async function previousPolicies(admin: Admin): Promise<Row[]> {
   const { data } = await admin.from("qualys_snapshots").select("results").eq("status", "done")
@@ -239,7 +332,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     if (state.request) await admin.rpc("qualys_http_forget", { request_id: state.request });
     state.request = null;
     if (state.phase === "policies" || state.phase === "posture") {
-      await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone ?? [], total: state.policyIds?.length ?? 0, stopped: true });
+      await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone ?? [], total: state.pcTotal ?? state.policyIds?.length ?? 0, stopped: true });
     } else {
       await savePage(admin, snapId, `${state.phase}error`, 0, { message: "Interrompu : durée maximale du calcul atteinte." });
     }
@@ -248,6 +341,9 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     return "advanced";
   }
   if (elapsed > RUN_TIMEOUT_MS) return await fail("Calcul abandonné : durée maximale dépassée.");
+
+  // Vulnérabilités ouvertes : deux lectures en parallèle
+  if (state.phase === "detections" && state.lanes) return await advanceLanes(admin, snapId, state, save, fail);
 
   // 1. Une réponse est attendue
   if (state.request) {
@@ -300,13 +396,16 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       const list = policiesPage(content).slice(0, MAX_POLICIES);
       await savePage(admin, snapId, "policies", 0, { list });
       // Les politiques évaluées le moins récemment passent en premier
+      // Réévaluation hebdomadaire : seules les politiques évaluées il y a plus de 6 jours (ou jamais) sont relues
       const last = await lastPolicyDates(admin);
-      state.policyIds = list.map((x) => x.id).sort((a, b) => (last[a] ?? "").localeCompare(last[b] ?? ""));
+      const due = list.map((x) => x.id).filter((id) => !last[id] || Date.now() - Date.parse(last[id]) > COMPLIANCE_REFRESH_MS);
+      state.policyIds = due.sort((a, b) => (last[a] ?? "").localeCompare(last[b] ?? ""));
+      state.pcTotal = list.length;
       state.policyIdx = 0;
       state.pcDone = [];
       state.page = 0;
       state.next = null;
-      if (!list.length) { await savePage(admin, snapId, "pcmeta", 0, { done: [], total: 0, stopped: false }); state.phase = "final"; }
+      if (!state.policyIds.length) { await savePage(admin, snapId, "pcmeta", 0, { done: [], total: list.length, stopped: false }); state.phase = "final"; }
       else state.phase = "posture";
     } else if (state.phase === "posture") {
       await savePage(admin, snapId, "posture", state.page, posturePage(content, state.policyIds[state.policyIdx]));
@@ -315,14 +414,14 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       if (!state.next) {
         state.pcDone = [...(state.pcDone ?? []), state.policyIds[state.policyIdx]];
         if (++state.policyIdx >= state.policyIds.length) {
-          await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone, total: state.policyIds.length, stopped: false });
+          await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone, total: state.pcTotal ?? state.policyIds.length, stopped: false });
           state.phase = "final";
         }
       }
     } else {
       const agg = state.phase === "hosts" ? hostsPage(content, now)
         : state.phase === "detections" ? detectionsPage(content, now, state.watch ?? [], state.eolQids ?? [])
-        : fixedPage(content, fixedSince().getTime());
+        : fixedPage(content, Date.parse(state.fixedSince ?? fixedSince().toISOString()), Date.parse(state.fixedUntil ?? new Date().toISOString()));
       await savePage(admin, snapId, state.phase, state.page, agg);
       state.page++;
       state.pages++;
@@ -335,11 +434,13 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
           state.watch = (hp ?? []).flatMap((p: Row) => p.agg.topRisk ?? [])
             .sort((a: Row, b: Row) => b.trurisk - a.trurisk).slice(0, TOP_RISK).map((h: Row) => h.id).filter(Boolean);
           state.eolQids = await knownEolQids(admin);
+          // Vulnérabilités ouvertes : deux moitiés du parc lues en parallèle
+          const ids = (hp ?? []).flatMap((p: Row) => (p.agg.ids ?? []) as number[]);
+          state.lanes = splitHosts(ids).map((range) => ({ range, next: null, request: null, requestedAt: null, attempts: 0, page: 0, done: false, waitUntil: null }));
           state.phase = "detections";
           state.page = 0;
         } else if (state.phase === "detections") {
-          state.phase = "fixed";
-          state.page = 0;
+          await enterFixed(admin, state);
         } else {
           // Liste des vulnérabilités rencontrées, pour la base de connaissances
           const { data: pages } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "detections");
@@ -365,13 +466,15 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
   if (state.phase === "final") {
     const { data: pages, error } = await admin.from("qualys_pages").select("kind, agg").eq("snapshot_id", snapId);
     if (error) throw new Error(error.message);
-    const results = buildResults(pages ?? [], Date.now(), { previousPolicies: await previousPolicies(admin) });
+    const fixedDaily = await mergeFixed(admin, snapId, pages ?? [], state);
+    const results = buildResults(pages ?? [], Date.now(), { previousPolicies: await previousPolicies(admin), fixedDaily });
     await saveIndex(admin, snapId, vulnIndex(pages ?? []));
     state.kbIds = undefined;
     state.watch = undefined;
     state.eolQids = undefined;
     state.policyIds = undefined;
     state.pcDone = undefined;
+    state.lanes = undefined;
     await save({ status: "done", results, summary: summaryOf(results), finished_at: new Date().toISOString() });
     await admin.from("qualys_pages").delete().eq("snapshot_id", snapId);
     return "finished";
@@ -385,7 +488,9 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     ? firstUrl.kb(state.kbIds.slice(state.page * KB_CHUNK, (state.page + 1) * KB_CHUNK))
     : state.phase === "policies" ? firstUrl.policies()
     : state.phase === "posture" ? state.next ?? firstUrl.posture(state.policyIds[state.policyIdx])
-    : state.next ?? firstUrl[state.phase as "hosts" | "detections" | "fixed"]();
+    : state.phase === "fixed" ? state.next ?? firstUrl.fixed(state.fixedSince.replace(/\.\d+Z$/, "Z"))
+    : state.phase === "detections" ? state.next ?? firstUrl.detections()
+    : state.next ?? firstUrl.hosts();
   state.request = await request(admin, url);
   state.requestedAt = new Date().toISOString();
   await save();

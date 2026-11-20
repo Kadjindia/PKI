@@ -356,7 +356,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-bold flex items-center gap-2">
             <Timer className="w-4 h-4 text-primary" /> Respect des délais (SLA) et délai moyen de correction (MTTR)
-            <Help>Vulnérabilités corrigées au cours des {o?.windowDays ?? 90} derniers jours. Délai de correction : de la première détection à la correction constatée par Qualys. Délais de la politique de gestion des correctifs : {r.severities.map((s) => `${slaText(s)} pour les ${(SEVERITY_LABELS[s.severity] ?? "").toLowerCase()}`).join(", ")} (mois calendaires). Une vulnérabilité critique est traitée comme un incident de sécurité. Temps médian : la moitié des vulnérabilités sont corrigées plus vite. Serveurs et postes de travail relèvent en général de deux équipes distinctes.</Help>
+            <Help>Vulnérabilités corrigées au cours des {o?.windowDays ?? 90} derniers jours. Délai de correction : de la première détection à la correction constatée par Qualys (corrections prises en compte avec un jour de décalage, le temps que Qualys traite les scans). Délais de la politique de gestion des correctifs : {r.severities.map((s) => `${slaText(s)} pour les ${(SEVERITY_LABELS[s.severity] ?? "").toLowerCase()}`).join(", ")} (mois calendaires). Une vulnérabilité critique est traitée comme un incident de sécurité. Temps médian : la moitié des vulnérabilités sont corrigées plus vite. Serveurs et postes de travail relèvent en général de deux équipes distinctes.</Help>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -385,10 +385,10 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
               {o.fixed.monthly.length > 0 && (
                 <div>
                   <div className="text-xs font-semibold text-muted-foreground mb-1 flex items-center gap-1.5">Mois après mois (le MTTR doit baisser au fil de l&apos;année)
-                    <Help>Vulnérabilités corrigées chaque mois. Le premier mois est coupé par la fenêtre de {o.windowDays} jours (« partiel ») : il ne compte que ses derniers jours, et ses chiffres ne sont pas comparables. Le mois en cours n&apos;est pas terminé.</Help>
+                    <Help>Vulnérabilités corrigées chaque mois, sur les 8 derniers mois (l&apos;historique se constitue au fil des calculs, jusqu&apos;à 12 mois). Le premier mois de l&apos;historique peut être incomplet (« partiel ») et le mois en cours n&apos;est pas terminé.</Help>
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                    {o.fixed.monthly.map((m) => (
+                    {o.fixed.monthly.slice(-8).map((m) => (
                       <div key={m.month} className="rounded-lg border border-border px-3 py-2 text-xs">
                         <div className="font-bold"><span className="capitalize">{formatMonth(m.month)}</span>{m.partial && <span className="ml-1.5"><Badge tone="muted">{m.partial === "start" ? "partiel" : "en cours"}</Badge></span>}</div>
                         <div className="text-muted-foreground">{fmt(m.fixed)} corrigées · {m.slaRate === null ? "—" : `${fmt(m.slaRate)} %`} dans les délais</div>
@@ -793,9 +793,11 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                 </div>
                 <div className="text-4xl font-black">{c.rate === null ? "—" : `${fmt(c.rate)} %`}</div>
                 <div className="text-xs text-muted-foreground">{fmt(c.passed)} contrôles réussis · {fmt(c.failed)} en échec · {fmt(c.policies.length)} politiques</div>
-                {c.total != null && c.evaluated != null && c.evaluated < c.total && (
-                  <div className="text-xs text-amber-600 pt-1">{fmt(c.evaluated)} politiques réévaluées cette nuit sur {fmt(c.total)}{c.stopped ? " (limite de temps atteinte)" : ""} : les autres affichent leur dernier résultat connu, et seront réévaluées en priorité la nuit prochaine.</div>
-                )}
+                {c.total != null && c.evaluated != null && c.evaluated < c.total && (c.stopped ? (
+                  <div className="text-xs text-amber-600 pt-1">{fmt(c.evaluated)} politiques réévaluées cette nuit sur {fmt(c.total)} (limite de temps atteinte) : les autres affichent leur dernier résultat connu et passent en priorité la nuit prochaine.</div>
+                ) : (
+                  <div className="text-xs text-muted-foreground pt-1">Réévaluation hebdomadaire : {c.evaluated ? `${fmt(c.evaluated)} politiques réévaluées cette nuit sur ${fmt(c.total)}` : "aucune politique à réévaluer cette nuit"} ; les autres affichent leur résultat de moins de 7 jours.</div>
+                ))}
                 <div className="pt-1"><Delta value={trendOver(points, "complianceRate")} lowerIsBetter={false} unit=" pts" /></div>
               </div>
               <div className="lg:col-span-2 overflow-x-auto">
