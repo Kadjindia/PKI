@@ -296,6 +296,12 @@ describe("Qualys : diagnostic des accès et écran", () => {
     expect(classify(200, `{"responseCode":"SUCCESS","count":7}`)).toEqual({ status: "ok", detail: "Autorisé", count: 7 });
   });
 
+  it("trouve une politique quel que soit le format de la liste", () => {
+    const xml = `<POLICY_LIST_OUTPUT><RESPONSE><POLICY_LIST><POLICY>
+      <ID><![CDATA[4521]]></ID><TITLE><![CDATA[CIS Windows]]></TITLE><CREATED><DATETIME>x</DATETIME></CREATED></POLICY></POLICY_LIST></RESPONSE></POLICY_LIST_OUTPUT>`;
+    expect(policiesPage(xml)[0]?.id).toBe("4521");
+  });
+
   it("déduit l'adresse de la Gateway", () => {
     expect(gatewayUrl("https://qualysapi.qg2.apps.qualys.eu")).toBe("https://gateway.qg2.apps.qualys.eu");
     expect(gatewayUrl("https://qualysapi.qg2.apps.qualys.eu", "https://gw.example/")).toBe("https://gw.example");
