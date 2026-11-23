@@ -268,6 +268,9 @@ export function splitHosts(ids: number[]): { min?: number; max?: number }[] {
   return [{ max: mid }, { min: mid + 1 }];
 }
 
+/** Date au format attendu par Qualys (AAAA-MM-JJTHH:MM:SSZ), encodée pour l'adresse ; accepte « …+00:00 » comme « …Z ». */
+export const qualysDate = (iso: string) => encodeURIComponent(new Date(Date.parse(iso)).toISOString().replace(/\.\d{3}Z$/, "Z"));
+
 /** Ligne cumulée des vulnérabilités corrigées : un jour de correction, une sévérité, un type d'actif. */
 export interface FixedRow { day: string; severity: number; asset_type: AssetType; n: number; in_sla: number; days_sum: number; hist: Hist }
 
@@ -846,6 +849,8 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
       reopenRate: total ? round1((reopened / total) * 100) : null,
       ignored,
       fixedCollected: fixedRows.length > 0 || fixPages.length > 0,
+      /** Lecture des corrigées en échec cette nuit (indicateurs sur l'historique déjà en base). */
+      fixedError: (pages.find((p) => p.kind === "fixederror")?.agg?.message as string | undefined) ?? null,
     },
     // Axe 1 (en partie) : obsolescence, d'après VMDR
     obsolescence,

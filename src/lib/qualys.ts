@@ -67,6 +67,7 @@ export interface QualysOperations {
   reopenRate: number | null;
   ignored: { total: number; sev5: number; ages: [number, number, number, number] };
   fixedCollected: boolean;
+  fixedError?: string | null;
 }
 
 export interface QualysHost {
