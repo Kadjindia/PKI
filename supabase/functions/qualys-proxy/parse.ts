@@ -388,6 +388,23 @@ export function posturePage(xml: string, policyId: string) {
   return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary };
 }
 
+/** Cumul des pages de conformité d'une même politique (reprise d'une lecture interrompue). */
+export function mergePosture(parts: Row[]): ReturnType<typeof posturePage> | null {
+  if (!parts.length) return null;
+  const out = { policyId: String(parts[0].policyId), hosts: 0, compliantHosts: 0, passed: 0, failed: 0, errors: 0,
+    controls: {} as Record<string, [number, number, number]>, glossary: {} as Record<string, [string, string | null]> };
+  for (const p of parts) {
+    out.hosts += Number(p.hosts) || 0; out.compliantHosts += Number(p.compliantHosts) || 0;
+    out.passed += Number(p.passed) || 0; out.failed += Number(p.failed) || 0; out.errors += Number(p.errors) || 0;
+    for (const [cid, c] of Object.entries((p.controls ?? {}) as Record<string, [number, number, number]>)) {
+      const cur = (out.controls[cid] ??= [0, 0, 0]);
+      cur[0] += c[0]; cur[1] += c[1]; cur[2] += c[2];
+    }
+    Object.assign(out.glossary, p.glossary ?? {});
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // CSAM (inventaire) : agents, Shadow IT, cycle de vie des systèmes d'exploitation
 // Format JSON de l'API Gateway « search/am/asset » ; lecture tolérante (champs optionnels).

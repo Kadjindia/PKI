@@ -1,6 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
-  hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
+  hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, mergePosture, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
   csamPage, wasPage, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS, TOP_RISK,
   type FixedRow,
 } from "./parse.ts";
@@ -46,8 +46,15 @@ const RUN_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 // La conformité (Policy Audit) est lente : budget par nuit. Les politiques non évaluées
 // sont reprises en priorité la nuit suivante ; leur dernier résultat reste affiché.
 const COMPLIANCE_BUDGET_MS = 3 * 60 * 60 * 1000;
-const DIRECT_TIMEOUT_MS = 60_000; // CSAM et WAS répondent vite : appel direct depuis la fonction
-const CSAM_PAGE = 300;
+// CSAM et WAS : appel direct depuis la fonction, attente limitée au temps restant du passage
+const DIRECT_TIMEOUT_MS = 100_000;
+const CSAM_PAGE = 100;
+// Champs volumineux dont le tableau de bord n'a pas besoin (logiciels installés surtout) : réponse plus légère.
+// Si Qualys refuse ce paramètre, la lecture reprend sans lui.
+const CSAM_EXCLUDE = "software,openPort,volume,networkInterface,service,userAccount,processor";
+// Lecture de conformité interrompue (budget de temps) : reprise à cet endroit la nuit suivante
+const PC_PROGRESS_KEY = "pc_progress";
+const PC_PROGRESS_MAX_AGE_MS = 14 * 24 * 3600 * 1000;
 const WAS_PAGE = 1000;
 // Un passage de la tâche planifiée travaille au plus ~110 s (limite des fonctions : 150 s)
 const CRON_BUDGET_MS = 110_000;
@@ -146,14 +153,17 @@ async function gatewayAuth(): Promise<string> {
   return gw.token;
 }
 
-async function directFetch(url: string, init: RequestInit): Promise<{ status: number; body: string }> {
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(DIRECT_TIMEOUT_MS) });
+async function directFetch(url: string, init: RequestInit, timeoutMs: number): Promise<{ status: number; body: string }> {
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   return { status: res.status, body: await res.text() };
 }
 
 /** Une page de CSAM ou de WAS. Une erreur persistante est notée (csamerror / waserror) et l'on passe à la suite. */
-async function directStep(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>): Promise<StepOutcome> {
+async function directStep(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>, deadline: number): Promise<StepOutcome> {
   const phase = state.phase as "csam" | "was";
+  // Pas assez de temps dans ce passage pour attendre une réponse : le suivant s'en charge
+  const timeoutMs = Math.min(DIRECT_TIMEOUT_MS, deadline - Date.now() - 5_000);
+  if (timeoutMs < 30_000) { await save(); return "waiting"; }
   const nextPhase = () => {
     state.phase = phase === "csam" ? "was" : "policies";
     if (state.phase === "policies") state.pcStartedAt = new Date().toISOString();
@@ -163,9 +173,10 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
     const now = Date.now();
     if (phase === "csam") {
       const gw = gatewayUrl(QUALYS_BASE_URL, Deno.env.get("QUALYS_GATEWAY_URL"));
-      const url = `${gw}/rest/2.0/search/am/asset?pageSize=${CSAM_PAGE}${state.next ? `&lastSeenAssetId=${encodeURIComponent(state.next)}` : ""}`;
-      const res = await directFetch(url, { method: "POST", headers: { Authorization: `Bearer ${await gatewayAuth()}`, "Content-Type": "application/json", Accept: "application/json" }, body: "{}" });
+      const url = `${gw}/rest/2.0/search/am/asset?pageSize=${CSAM_PAGE}${state.csamPlain ? "" : `&excludeFields=${CSAM_EXCLUDE}`}${state.next ? `&lastSeenAssetId=${encodeURIComponent(state.next)}` : ""}`;
+      const res = await directFetch(url, { method: "POST", headers: { Authorization: `Bearer ${await gatewayAuth()}`, "Content-Type": "application/json", Accept: "application/json" }, body: "{}" }, timeoutMs);
       if (res.status === 401) gwCache = null;
+      if (res.status === 400 && !state.csamPlain) { state.csamPlain = true; await save(); return "waiting"; }
       if (res.status < 200 || res.status >= 300) throw new Error(`CSAM : HTTP ${res.status}`);
       const json = JSON.parse(res.body);
       if (json.responseCode && json.responseCode !== "SUCCESS") throw new Error(`CSAM : ${json.responseCode} ${json.responseMessage ?? ""}`.trim());
@@ -178,7 +189,7 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
       const body = `<ServiceRequest><preferences><limitResults>${WAS_PAGE}</limitResults></preferences><filters>${filters}</filters></ServiceRequest>`;
       const res = await directFetch(`${QUALYS_BASE_URL}/qps/rest/3.0/search/was/finding`, {
         method: "POST", headers: { Authorization: basicAuth(), "Content-Type": "text/xml", Accept: "application/xml", "X-Requested-With": "pki-dashboard" }, body,
-      });
+      }, timeoutMs);
       const code = /<responseCode>([A-Z_]+)<\/responseCode>/.exec(res.body)?.[1];
       if (res.status < 200 || res.status >= 300 || (code && code !== "SUCCESS")) throw new Error(`WAS : ${code ?? `HTTP ${res.status}`}`);
       const { agg, next } = wasPage(res.body, now, fixedSince().getTime());
@@ -314,13 +325,37 @@ async function lastPolicyDates(admin: Admin): Promise<Record<string, string>> {
   return Object.fromEntries((await previousPolicies(admin)).map((p) => [p.id, p.evaluatedAt ?? ""]));
 }
 
+/** Lecture de conformité interrompue : politique, page suivante et chiffres déjà lus. */
+async function pcProgress(admin: Admin): Promise<Row | null> {
+  const { data } = await admin.from("qualys_meta").select("value").eq("key", PC_PROGRESS_KEY).maybeSingle();
+  const v = data?.value as Row | undefined;
+  if (!v?.policyId || !v.next || !v.agg || !(Date.now() - Date.parse(v.savedAt ?? "") < PC_PROGRESS_MAX_AGE_MS)) return null;
+  return v;
+}
+
+async function setPcProgress(admin: Admin, value: Row | null) {
+  const { error } = value
+    ? await admin.from("qualys_meta").upsert({ key: PC_PROGRESS_KEY, value })
+    : await admin.from("qualys_meta").delete().eq("key", PC_PROGRESS_KEY);
+  if (error) throw new Error(`Reprise de la conformité : ${error.message}`);
+}
+
+/** Budget écoulé au milieu d'une politique : on note où reprendre et ce qui est déjà lu. */
+async function savePcProgress(admin: Admin, snapId: string, state: Row) {
+  const policyId = state.policyIds?.[state.policyIdx];
+  if (state.phase !== "posture" || !policyId || !state.next) return;
+  const { data } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "posture");
+  const agg = mergePosture((data ?? []).map((p: Row) => p.agg).filter((a: Row) => a.policyId === policyId));
+  if (agg) await setPcProgress(admin, { policyId, next: state.next, agg, savedAt: new Date().toISOString() });
+}
+
 type StepOutcome = "advanced" | "waiting" | "skipped" | "finished";
 
 /**
  * Fait avancer la photo en cours d'une étape. Verrou (step_lock_until) : deux passages
  * ne travaillent jamais en même temps sur la même photo.
  */
-async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
+async function advance(admin: Admin, snapId: string, deadline: number): Promise<StepOutcome> {
   const nowIso = new Date().toISOString();
   const { data: snap } = await admin.from("qualys_snapshots")
     .update({ step_lock_until: new Date(Date.now() + STEP_LEASE_MS).toISOString() })
@@ -346,6 +381,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
   if (pcOver || (nearEnd && ["csam", "was", "policies", "posture"].includes(state.phase))) {
     if (state.request) await admin.rpc("qualys_http_forget", { request_id: state.request });
     state.request = null;
+    await savePcProgress(admin, snapId, state);
     if (state.phase === "policies" || state.phase === "posture") {
       await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone ?? [], total: state.pcTotal ?? state.policyIds?.length ?? 0, stopped: true });
     } else {
@@ -401,6 +437,8 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       // Conformité indisponible (droits, module) : on le note et on termine la photo
       if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${res.status_code}`)) { await save(); return "waiting"; }
       await savePage(admin, snapId, "pcerror", 0, { message: err });
+      // Une reprise devenue illisible ne doit pas bloquer les nuits suivantes
+      await setPcProgress(admin, null);
       state.attempts = 0;
       state.phase = "final";
       await save();
@@ -433,6 +471,14 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       state.pcDone = [];
       state.page = 0;
       state.next = null;
+      // Politique interrompue la nuit précédente : reprise en premier, là où la lecture s'était arrêtée
+      const prog = await pcProgress(admin);
+      if (prog && list.some((x) => x.id === prog.policyId)) {
+        state.policyIds = [prog.policyId, ...state.policyIds.filter((id: string) => id !== prog.policyId)];
+        state.next = prog.next;
+        await savePage(admin, snapId, "posture", 0, prog.agg);
+        state.page = 1;
+      }
       if (!state.policyIds.length) { await savePage(admin, snapId, "pcmeta", 0, { done: [], total: list.length, stopped: false }); state.phase = "final"; }
       else state.phase = "posture";
     } else if (state.phase === "posture") {
@@ -441,6 +487,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
       state.next = nextPageUrl(content, QUALYS_BASE_URL);
       if (!state.next) {
         state.pcDone = [...(state.pcDone ?? []), state.policyIds[state.policyIdx]];
+        if (state.policyIdx === 0) await setPcProgress(admin, null);
         if (++state.policyIdx >= state.policyIds.length) {
           await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone, total: state.pcTotal ?? state.policyIds.length, stopped: false });
           state.phase = "final";
@@ -503,7 +550,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
   }
 
   // 3. Inventaire (CSAM) et applications web (WAS) : appels directs
-  if (state.phase === "csam" || state.phase === "was") return await directStep(admin, snapId, state, save);
+  if (state.phase === "csam" || state.phase === "was") return await directStep(admin, snapId, state, save, deadline);
 
   // 4. Demande suivante
   const url = state.phase === "kb"
@@ -533,7 +580,7 @@ async function handleCron(admin: Admin, start: boolean) {
   const deadline = Date.now() + CRON_BUDGET_MS;
   let snap = await runningSnapshot(admin);
   while (snap && Date.now() < deadline) {
-    const outcome = await advance(admin, snap.id);
+    const outcome = await advance(admin, snap.id, deadline);
     if (outcome === "skipped" || outcome === "finished") break;
     // Réponse attendue : Qualys met ~1 min 30, on repasse régulièrement tant que le budget le permet
     if (outcome === "waiting") {

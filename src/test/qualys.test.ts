@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
-  policiesPage, posturePage, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages, qualysDate,
+  policiesPage, posturePage, mergePosture, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages, qualysDate,
 } from "../../supabase/functions/qualys-proxy/parse";
 import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
 import { remediationProgress, trendOver } from "../lib/qualys";
@@ -433,5 +433,17 @@ describe("Qualys : diagnostic des accès et écran", () => {
     const pts = [{ date: "2026-10-01T00:00:00Z", truriskAvg: 900 }, { date: "2026-11-01T00:00:00Z", truriskAvg: 650 }, { date: "2026-11-18T00:00:00Z", truriskAvg: 600 }];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(trendOver(pts as any, "truriskAvg", 30, now)).toBe(-50); // le point d'octobre est hors fenêtre
+  });
+});
+
+describe("mergePosture", () => {
+  it("cumule les pages d'une politique interrompue", () => {
+    const a = { policyId: "11", hosts: 2, compliantHosts: 1, passed: 5, failed: 1, errors: 0, controls: { "100": [3, 1, 0] }, glossary: { "100": ["Mot de passe", "HIGH"] } };
+    const b = { policyId: "11", hosts: 3, compliantHosts: 3, passed: 4, failed: 0, errors: 1, controls: { "100": [2, 0, 0], "200": [2, 0, 1] }, glossary: { "200": ["Pare-feu", null] } };
+    const m = mergePosture([a, b])!;
+    expect(m).toMatchObject({ policyId: "11", hosts: 5, compliantHosts: 4, passed: 9, failed: 1, errors: 1 });
+    expect(m.controls).toEqual({ "100": [5, 1, 0], "200": [2, 0, 1] });
+    expect(Object.keys(m.glossary)).toEqual(["100", "200"]);
+    expect(mergePosture([])).toBeNull();
   });
 });
