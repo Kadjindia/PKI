@@ -1,7 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
-  csamPage, wasPage, splitHosts, fixedRowsOfPages, FIXED_WINDOW_DAYS, TOP_RISK,
+  csamPage, wasPage, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS, TOP_RISK,
   type FixedRow,
 } from "./parse.ts";
 import { runDiagnostic, gatewayToken, gatewayUrl } from "./diagnostic.ts";
@@ -199,6 +199,16 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
   }
 }
 
+/** Liste des vulnérabilités rencontrées, pour la base de connaissances (titres, menaces). */
+async function enterKb(admin: Admin, snapId: string, state: Row) {
+  const { data: pages } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "detections");
+  const ids = [...new Set((pages ?? []).flatMap((p: Row) => Object.keys(p.agg.qids ?? {})))].sort((a, b) => Number(a) - Number(b));
+  state.kbIds = ids;
+  state.kbChunks = Math.ceil(ids.length / KB_CHUNK);
+  state.phase = ids.length ? "kb" : "csam";
+  state.page = 0;
+}
+
 /** Début de la lecture des vulnérabilités corrigées : depuis le dernier calcul (curseur), ou 90 jours au premier passage. */
 async function enterFixed(admin: Admin, state: Row) {
   let cursor: string | null = null;
@@ -206,10 +216,13 @@ async function enterFixed(admin: Admin, state: Row) {
     const { data } = await admin.from("qualys_meta").select("value").eq("key", "fixed_cursor").maybeSingle();
     cursor = data?.value ?? null;
   } catch { cursor = null; }
-  const floor = fixedSince().toISOString();
-  state.fixedSince = cursor && cursor > floor ? cursor : floor;
-  state.fixedUntil = new Date(Date.now() - FIXED_LAG_MS).toISOString();
-  if (state.fixedSince >= state.fixedUntil) state.fixedSince = new Date(Date.parse(state.fixedUntil) - 1000).toISOString();
+  // Dates toujours ramenées à la forme ISO « …Z » (la base renvoie « …+00:00 »)
+  const cursorMs = cursor ? Date.parse(String(cursor)) : NaN;
+  const floorMs = fixedSince().getTime();
+  const untilMs = Date.now() - FIXED_LAG_MS;
+  const sinceMs = Math.min(Number.isFinite(cursorMs) && cursorMs > floorMs ? cursorMs : floorMs, untilMs - 1000);
+  state.fixedSince = new Date(sinceMs).toISOString();
+  state.fixedUntil = new Date(untilMs).toISOString();
   state.phase = "fixed";
   state.page = 0;
   state.next = null;
@@ -221,9 +234,11 @@ async function enterFixed(admin: Admin, state: Row) {
  * on se contente des corrections lues pendant la photo.
  */
 async function mergeFixed(admin: Admin, snapId: string, pages: { kind: string; agg: Row }[], state: Row): Promise<FixedRow[] | undefined> {
-  if (!state.fixedUntil) return undefined;
-  const { error } = await admin.rpc("qualys_merge_fixed", { snapshot: snapId, rows: fixedRowsOfPages(pages), new_cursor: state.fixedUntil });
-  if (error) { console.error("Cumul des corrections :", error.message); return undefined; }
+  if (state.fixedUntil) {
+    const { error } = await admin.rpc("qualys_merge_fixed", { snapshot: snapId, rows: fixedRowsOfPages(pages), new_cursor: state.fixedUntil });
+    if (error) { console.error("Cumul des corrections :", error.message); return undefined; }
+  }
+  // Sans lecture cette nuit (erreur Qualys), l'historique déjà en base sert aux indicateurs
   const since = new Date(Date.now() - 400 * 24 * 3600 * 1000).toISOString().slice(0, 10);
   const rows: FixedRow[] = [];
   for (let from = 0; ; from += 1000) {
@@ -369,6 +384,19 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     const err = res.timed_out ? "Délai dépassé" : res.error_msg ? String(res.error_msg)
       : res.status_code !== 200 ? (qualysError(content) ?? `HTTP ${res.status_code}`) : qualysError(content);
     await admin.rpc("qualys_http_forget", { request_id: id });
+    if (err && state.phase === "fixed") {
+      // Vulnérabilités corrigées illisibles cette nuit : on le note, le curseur n'avance pas (rien n'est
+      // perdu pour le calcul suivant) et l'historique déjà en base sert aux indicateurs
+      if (++state.attempts < MAX_ATTEMPTS && !/invalid|unsupported|parameter/i.test(err)) { await save(); return "waiting"; }
+      await savePage(admin, snapId, "fixederror", 0, { message: err });
+      await admin.from("qualys_pages").delete().eq("snapshot_id", snapId).eq("kind", "fixed");
+      state.fixedUntil = undefined;
+      state.attempts = 0;
+      state.next = null;
+      await enterKb(admin, snapId, state);
+      await save();
+      return "advanced";
+    }
     if (err && (state.phase === "policies" || state.phase === "posture")) {
       // Conformité indisponible (droits, module) : on le note et on termine la photo
       if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${res.status_code}`)) { await save(); return "waiting"; }
@@ -442,13 +470,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
         } else if (state.phase === "detections") {
           await enterFixed(admin, state);
         } else {
-          // Liste des vulnérabilités rencontrées, pour la base de connaissances
-          const { data: pages } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "detections");
-          const ids = [...new Set((pages ?? []).flatMap((p: Row) => Object.keys(p.agg.qids ?? {})))].sort((a, b) => Number(a) - Number(b));
-          state.kbIds = ids;
-          state.kbChunks = Math.ceil(ids.length / KB_CHUNK);
-          state.phase = ids.length ? "kb" : "csam";
-          state.page = 0;
+          await enterKb(admin, snapId, state);
         }
       }
     }
@@ -488,7 +510,7 @@ async function advance(admin: Admin, snapId: string): Promise<StepOutcome> {
     ? firstUrl.kb(state.kbIds.slice(state.page * KB_CHUNK, (state.page + 1) * KB_CHUNK))
     : state.phase === "policies" ? firstUrl.policies()
     : state.phase === "posture" ? state.next ?? firstUrl.posture(state.policyIds[state.policyIdx])
-    : state.phase === "fixed" ? state.next ?? firstUrl.fixed(state.fixedSince.replace(/\.\d+Z$/, "Z"))
+    : state.phase === "fixed" ? state.next ?? firstUrl.fixed(qualysDate(state.fixedSince))
     : state.phase === "detections" ? state.next ?? firstUrl.detections()
     : state.next ?? firstUrl.hosts();
   state.request = await request(admin, url);

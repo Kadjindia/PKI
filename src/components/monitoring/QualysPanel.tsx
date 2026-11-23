@@ -360,6 +360,7 @@ function OperationsAxis({ r }: { readonly r: QualysResults }) {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          {o?.fixedError && <p className="text-xs text-amber-600 flex items-center gap-1.5 pb-2"><AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Les corrections de la nuit n&apos;ont pas pu être lues ({o.fixedError}) : chiffres calculés sur l&apos;historique déjà enregistré ; elles seront reprises au prochain calcul.</p>}
           {!o?.fixedCollected ? <Pending /> : (
             <div className="space-y-4">
               <div className="overflow-x-auto">

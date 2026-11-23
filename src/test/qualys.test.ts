@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
-  policiesPage, posturePage, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages,
+  policiesPage, posturePage, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages, qualysDate,
 } from "../../supabase/functions/qualys-proxy/parse";
 import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
 import { remediationProgress, trendOver } from "../lib/qualys";
@@ -239,6 +239,19 @@ describe("Qualys : photo", () => {
     expect(r.operations.fixed.monthly.map((m) => m.month)).toEqual(["2026-05", "2026-11"]);
     expect(r.operations.fixedCollected).toBe(true);
     expect(fixedRowsOfPages([{ kind: "fixed", agg: { cells: { a: row("2026-11-01", 1, 1) } } }])).toHaveLength(1);
+  });
+
+  it("formate les dates comme Qualys les attend (le curseur en base est en « +00:00 »)", () => {
+    expect(qualysDate("2026-11-19T20:22:06.358+00:00")).toBe("2026-11-19T20%3A22%3A06Z");
+    expect(decodeURIComponent(qualysDate("2026-11-19T20:22:06.358Z"))).toBe("2026-11-19T20:22:06Z");
+    expect(qualysDate("2026-11-19T20:22:06.358+00:00")).not.toContain("+");
+  });
+
+  it("signale une lecture des corrigées en échec sans bloquer la photo", () => {
+    const r = buildResults([{ kind: "fixederror", agg: { message: "parameter detection_updated_since has invalid value (code 1905)" } }], NOW,
+      { fixedDaily: [{ day: "2026-11-01", severity: 5, asset_type: "server", n: 2, in_sla: 1, days_sum: 20, hist: { 10: 2 } }] });
+    expect(r.operations.fixedError).toContain("code 1905");
+    expect(r.operations.fixed.all).toMatchObject({ fixed: 2 }); // historique déjà en base
   });
 
   it("partage le parc en deux moitiés pour lire les vulnérabilités en parallèle", () => {
