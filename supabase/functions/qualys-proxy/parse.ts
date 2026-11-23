@@ -65,6 +65,29 @@ export function* blocks(s: string, name: string): Generator<string> {
   }
 }
 
+/**
+ * Valeurs simples d'un bloc XML (balise -> texte), pour afficher « tous les détails » d'un élément
+ * sans dépendre d'une liste de champs figée. Les blocs `skip` (listes volumineuses) sont ignorés ;
+ * une balise répétée garde sa première valeur.
+ */
+export function leaves(xml: string, skip: readonly string[] = []): Record<string, string> {
+  let s = xml;
+  for (const k of skip) s = s.replace(new RegExp(`<${k}(?:\\s[^>]*)?>[\\s\\S]*?</${k}>`, "g"), "");
+  const out: Record<string, string> = {};
+  for (const m of s.matchAll(/<([A-Za-z_][\w.-]*)(?:\s[^>]*)?>(?:\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*|([^<]*))<\/\1>/g)) {
+    const v = (m[2] ?? m[3] ?? "").trim();
+    if (v && !(m[1] in out)) out[m[1]] = v.slice(0, 500);
+  }
+  return out;
+}
+
+/** Date ISO, ou null si illisible. */
+const isoOrNull = (v: unknown): string | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const t = typeof v === "number" ? v : Date.parse(String(v));
+  return Number.isFinite(t) && t > 0 ? new Date(t).toISOString() : null;
+};
+
 /** Erreur renvoyée par Qualys (SIMPLE_RETURN), sinon null. */
 export function qualysError(xml: string): string | null {
   if (!xml.includes("<SIMPLE_RETURN>")) return null;
@@ -127,7 +150,15 @@ export interface RiskHost {
 }
 
 /** Liste des actifs : couverture des scans, score TruRisk, actifs les plus risqués. */
+/** Fiche d'un actif VMDR (table qualys_assets). */
+export interface AssetRow {
+  host_id: number; asset_id: number | null; name: string | null; netbios: string | null; ip: string | null; os: string | null;
+  asset_type: AssetType; tracking: string | null; trurisk: number | null; criticality: number | null;
+  last_scan: string | null; last_activity: string | null; public_ip: boolean; tags: string[]; attrs: Record<string, string>;
+}
+
 export function hostsPage(xml: string, now: number) {
+  const rows: AssetRow[] = [];
   const agg = { total: 0, agent: 0, scanned: 0, neverScanned: 0 };
   const tr = { critical: 0, high: 0, medium: 0, low: 0 };
   let truriskSum = 0, truriskCount = 0;
@@ -155,7 +186,22 @@ export function hostsPage(xml: string, now: number) {
       truriskCount++;
       // Répartition TruRisk (0-1000) : on ne garde que les tranches
       if (score >= 850) tr.critical++; else if (score >= 700) tr.high++; else if (score >= 500) tr.medium++; else tr.low++;
-      const acs = Number(tag(h, "ASSET_CRITICALITY_SCORE"));
+    }
+    const acs = Number(tag(h, "ASSET_CRITICALITY_SCORE"));
+    if (Number.isFinite(hid)) {
+      const assetId = Number(tag(h, "ASSET_ID"));
+      rows.push({
+        host_id: hid, asset_id: Number.isFinite(assetId) && assetId > 0 ? assetId : null,
+        name: tag(h, "DNS") || tag(h, "NETBIOS") || null, netbios: tag(h, "NETBIOS"), ip: tag(h, "IP"), os, asset_type: type,
+        tracking: tag(h, "TRACKING_METHOD"), trurisk: raw !== null && Number.isFinite(score) ? score : null,
+        criticality: Number.isFinite(acs) && acs > 0 ? acs : null,
+        last_scan: isoOrNull(last), last_activity: isoOrNull(tag(h, "LAST_ACTIVITY") ?? tag(h, "LAST_BOOT")),
+        public_ip: isPublicIp(tag(h, "IP")),
+        tags: [...blocks(tag(h, "TAGS") ?? "", "TAG")].map((t) => tag(t, "NAME")).filter((x): x is string => Boolean(x)),
+        attrs: leaves(h, ["TAGS", "DNS_DATA", "CLOUD_PROVIDER_TAGS", "METADATA", "ASSET_GROUP_IDS"]),
+      });
+    }
+    if (raw !== null && Number.isFinite(score)) {
       risk.push({
         id: tag(h, "ID"), name: tag(h, "DNS") || tag(h, "NETBIOS") || null, ip: tag(h, "IP"), os, type,
         trurisk: score, criticality: Number.isFinite(acs) && acs > 0 ? acs : null, lastScan: last,
@@ -163,14 +209,25 @@ export function hostsPage(xml: string, now: number) {
     }
   }
   risk.sort((a, b) => b.trurisk - a.trurisk);
-  return { ...agg, trurisk: tr, truriskSum, truriskCount, byType, topRisk: risk.slice(0, TOP_RISK), ids };
+  return { ...agg, trurisk: tr, truriskSum, truriskCount, byType, topRisk: risk.slice(0, TOP_RISK), ids, rows };
 }
 
 /** QID -> [détections, sévérité, hors délai, plus ancienne détection (ms, 0 si inconnue), QDS max, détections QDS >= 90, détections sur serveurs]. */
 type QidStat = [number, number, number, number, number, number, number];
 
 /** Vulnérabilités ouvertes d'une page d'actifs. `watch` : actifs suivis de près (les plus risqués). */
+/**
+ * Vulnérabilités d'un actif (table qualys_asset_vulns). `detections` : une ligne par détection,
+ * [QID, sévérité, 1re détection (AAAA-MM-JJ), dernière détection, statut (N nouvelle, A active, R réouverte),
+ *  QDS, dérogation (1/0), hors délai (1/0), port].
+ */
+export interface AssetVulnRow {
+  host_id: number; d5: number; d4: number; d3: number; overdue: number; ignored: number; reopened: number; qds_max: number;
+  qids: number[]; detections: (string | number | null)[][];
+}
+
 export function detectionsPage(xml: string, now: number, watch: readonly string[] = [], eolQids: readonly string[] = []) {
+  const rows: AssetVulnRow[] = [];
   const bySev: Record<string, { total: number; overdue: number; ages: number[]; reopened: number; ageSum: number }> = {};
   for (const s of SEVERITIES) bySev[s] = { total: 0, overdue: 0, ages: [0, 0, 0, 0], reopened: 0, ageSum: 0 };
   const byType = emptyByType(() => ({ total: 0, overdue: 0, sev5: 0 }));
@@ -194,6 +251,7 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
     const type = assetType(os);
     const host = { id, ip: tag(head, "IP"), name: tag(head, "DNS") || tag(head, "NETBIOS") || null, os, type, d5: 0, d4: 0, d3: 0, overdue: 0, qdsCritical: 0 };
     let hasEol = false;
+    const row: AssetVulnRow = { host_id: Number(id), d5: 0, d4: 0, d3: 0, overdue: 0, ignored: 0, reopened: 0, qds_max: 0, qids: [], detections: [] };
     let w: Watched | null = null;
     if (id && watchSet.has(id)) w = watched[id] = { d5: 0, d4: 0, d3: 0, overdue: 0, qids: [] };
     for (const d of blocks(h, "DETECTION")) {
@@ -203,8 +261,15 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       if (tag(d, "IS_DISABLED") === "1") continue;
       const first = tag(d, "FIRST_FOUND_DATETIME");
       const age = daysSince(first, now) ?? 0;
+      const qidNum = Number(tag(d, "QID"));
+      const day = (v: string | null) => (v ? v.slice(0, 10) : null);
+      const portRaw = tag(d, "PORT");
+      const detRow = (st: string, qds: number, ign: number, late: number) =>
+        row.detections.push([qidNum, sev, day(first), day(tag(d, "LAST_FOUND_DATETIME")), st, qds, ign, late, portRaw ? Number(portRaw) : null]);
       // Dérogations : vulnérabilités ignorées dans la console (risque accepté), comptées à part
       if (tag(d, "IS_IGNORED") === "1") {
+        row.ignored++;
+        detRow("I", Number(tag(d, "QDS") ?? 0) || 0, 1, 0);
         ignored.total++;
         if (sev === 5) ignored.sev5++;
         ignored.ages[ageBucket(age)]++;
@@ -214,6 +279,13 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       const status = tag(d, "STATUS") ?? "";
       const late = first ? now > deadline(Date.parse(first), sev) : false;
       const qds = Number(tag(d, "QDS") ?? 0) || 0;
+      const st = /re-?opened/i.test(status) ? "R" : /new/i.test(status) ? "N" : "A";
+      detRow(st, qds, 0, late ? 1 : 0);
+      if (Number.isFinite(qidNum)) row.qids.push(qidNum);
+      if (sev === 5) row.d5++; else if (sev === 4) row.d4++; else row.d3++;
+      if (late) row.overdue++;
+      if (st === "R") row.reopened++;
+      row.qds_max = Math.max(row.qds_max, qds);
       stat.total++;
       stat.ageSum += age;
       if (late) stat.overdue++;
@@ -243,13 +315,14 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       }
     }
     if (hasEol) eol[type]++;
+    if (Number.isFinite(row.host_id) && row.detections.length) rows.push(row);
     if (host.d5 + host.d4 + host.d3 > 0) hosts.push(host);
     if (host.d5 > 0) hostsWithSev5++;
   }
   // Actifs les plus exposés de la page : vulnérabilités critiques (QDS >= 90), puis sévérité 5
   const exposure = (x: Row) => x.qdsCritical * 1000 + x.d5 * 10 + x.d4;
   hosts.sort((a, b) => exposure(b) - exposure(a));
-  return { hosts: hostCount, hostsWithVulns: hosts.length, hostsWithSev5, bySev, byType, ignored, eol, qdsCritical, potential, qids, watched, topHosts: hosts.slice(0, TOP) };
+  return { hosts: hostCount, hostsWithVulns: hosts.length, hostsWithSev5, bySev, byType, ignored, eol, qdsCritical, potential, qids, watched, topHosts: hosts.slice(0, TOP), rows };
 }
 
 /** Répartition des délais de correction : jour -> nombre (plafonné à 365). */
@@ -342,6 +415,41 @@ export function kbPage(xml: string) {
   return out;
 }
 
+/** Texte lisible d'un champ HTML de la base de connaissances (solution, conséquence…). */
+export const plainText = (html: string | null, max: number) =>
+  (html ?? "").replace(/<br\s*\/?>|<\/p>|<\/li>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim().slice(0, max) || null;
+
+/** Fiche d'une vulnérabilité de la base de connaissances (table qualys_kb). */
+export interface KbRow {
+  qid: number; severity: number | null; title: string; category: string | null; vuln_type: string | null;
+  cvss3: number | null; cvss: number | null; cves: string[]; flags: number; threats: string[];
+  products: [string, string][]; solution: string | null; consequence: string | null; diagnosis: string | null;
+  published: string | null; patch_published: string | null; vendor_refs: string[];
+}
+
+export function kbDetails(xml: string): KbRow[] {
+  const out: KbRow[] = [];
+  const flagsOf = kbPage(xml);
+  for (const v of blocks(xml, "VULN")) {
+    const qid = Number(tag(v, "QID"));
+    if (!Number.isFinite(qid)) continue;
+    const num = (x: string | null) => { const n = Number(x); return x !== null && x !== "" && Number.isFinite(n) ? n : null; };
+    out.push({
+      qid, severity: num(tag(v, "SEVERITY_LEVEL")), title: tag(v, "TITLE") ?? "", category: tag(v, "CATEGORY"), vuln_type: tag(v, "VULN_TYPE"),
+      cvss3: num(tag(tag(v, "CVSS_V3") ?? "", "BASE")), cvss: num(tag(tag(v, "CVSS") ?? "", "BASE")),
+      cves: [...blocks(tag(v, "CVE_LIST") ?? "", "CVE")].map((c) => tag(c, "ID")).filter((x): x is string => Boolean(x)).slice(0, 50),
+      flags: flagsOf[String(qid)]?.[1] ?? 0,
+      threats: [...v.matchAll(/<THREAT_INTEL[^>]*>(?:<!\[CDATA\[)?([^\]<]*)/g)].map((m) => m[1].trim()).filter(Boolean),
+      products: [...blocks(tag(v, "SOFTWARE_LIST") ?? "", "SOFTWARE")].map((x) => [tag(x, "VENDOR") ?? "", tag(x, "PRODUCT") ?? ""] as [string, string]).filter((x) => x[1]).slice(0, 20),
+      solution: plainText(tag(v, "SOLUTION"), 3000), consequence: plainText(tag(v, "CONSEQUENCE"), 1500), diagnosis: plainText(tag(v, "DIAGNOSIS"), 1500),
+      published: isoOrNull(tag(v, "PUBLISHED_DATETIME")), patch_published: isoOrNull(tag(v, "PATCH_PUBLISHED_DATE")),
+      vendor_refs: [...blocks(tag(v, "VENDOR_REFERENCE_LIST") ?? "", "VENDOR_REFERENCE")].map((r) => tag(r, "ID")).filter((x): x is string => Boolean(x)).slice(0, 20),
+    });
+  }
+  return out;
+}
+
 /** Vulnérabilité signalant un système ou un logiciel en fin de vie (titres Qualys « EOL/Obsolete … »). */
 export const isEol = (title: string | null | undefined) => /^\s*EOL\s*\/\s*Obsolete/i.test(title ?? "");
 /** Fin de vie d'un système d'exploitation (plutôt que d'un logiciel). */
@@ -367,8 +475,9 @@ export function posturePage(xml: string, policyId: string) {
   const controls: Record<string, [number, number, number]> = {};
   const hosts = new Set<string>();
   const failingHosts = new Set<string>();
-  let passed = 0, failed = 0, errors = 0;
+  let passed = 0, failed = 0, errors = 0, records = 0;
   for (const i of blocks(tag(xml, "INFO_LIST") ?? "", "INFO")) {
+    records++;
     const cid = tag(i, "CONTROL_ID");
     const host = tag(i, "HOST_ID");
     const status = (tag(i, "STATUS") ?? "").toLowerCase();
@@ -385,7 +494,29 @@ export function posturePage(xml: string, policyId: string) {
     const cid = tag(c, "CID") ?? tag(c, "ID");
     if (cid) glossary[cid] = [tag(c, "STATEMENT") ?? "", tag(tag(c, "CRITICALITY") ?? "", "LABEL")];
   }
-  return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary };
+  // Contrôle de lecture : enregistrements reconnus face aux balises <INFO> présentes, et racine de la réponse
+  const raw = (xml.match(/<INFO[\s>]/g) ?? []).length;
+  const root = /<([A-Z_]+)[\s>]/.exec(xml.replace(/<\?[^>]*\?>|<!DOCTYPE[^>]*>/g, ""))?.[1] ?? null;
+  return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary, records, raw, root };
+}
+
+/** Cumul des pages de conformité d'une même politique (reprise d'une lecture interrompue). */
+export function mergePosture(parts: Row[]): ReturnType<typeof posturePage> | null {
+  if (!parts.length) return null;
+  const out = { policyId: String(parts[0].policyId), hosts: 0, compliantHosts: 0, passed: 0, failed: 0, errors: 0,
+    controls: {} as Record<string, [number, number, number]>, glossary: {} as Record<string, [string, string | null]>,
+    records: 0, raw: 0, root: (parts[0].root as string | null | undefined) ?? null };
+  for (const p of parts) {
+    out.records += Number(p.records) || 0; out.raw += Number(p.raw) || 0;
+    out.hosts += Number(p.hosts) || 0; out.compliantHosts += Number(p.compliantHosts) || 0;
+    out.passed += Number(p.passed) || 0; out.failed += Number(p.failed) || 0; out.errors += Number(p.errors) || 0;
+    for (const [cid, c] of Object.entries((p.controls ?? {}) as Record<string, [number, number, number]>)) {
+      const cur = (out.controls[cid] ??= [0, 0, 0]);
+      cur[0] += c[0]; cur[1] += c[1]; cur[2] += c[2];
+    }
+    Object.assign(out.glossary, p.glossary ?? {});
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +535,31 @@ const dateMs = (v: unknown): number | null => {
 export interface CsamAsset { id: string; name: string | null; ip: string | null; os: string | null; source: string | null; created: string | null }
 
 /** Une page d'actifs CSAM. */
+/** Fiche d'un actif CSAM (table qualys_csam_assets). */
+export interface CsamRow {
+  asset_id: number; host_id: number | null; name: string | null; ip: string | null; os: string | null; asset_type: AssetType;
+  has_agent: boolean; has_scanner: boolean; agent_last_checkin: string | null; lifecycle_stage: string | null;
+  eos: string | null; eol: string | null; created: string | null; last_seen: string | null; sources: string | null;
+  hardware: string | null; criticality: number | null; tags: string[]; attrs: Row;
+}
+
+/** Copie allégée d'un objet JSON : listes volumineuses écourtées, champs très longs coupés. */
+export function trimJson(v: unknown, depth = 0): unknown {
+  if (Array.isArray(v)) return depth > 3 ? `[${v.length}]` : v.slice(0, 10).map((x) => trimJson(x, depth + 1));
+  if (v && typeof v === "object") {
+    if (depth > 4) return "{…}";
+    const out: Row = {};
+    for (const [k, x] of Object.entries(v as Row)) {
+      if (/software|openPort|volume|networkInterface|processor|service|userAccount|container|missing/i.test(k)) continue;
+      out[k] = trimJson(x, depth + 1);
+    }
+    return out;
+  }
+  return typeof v === "string" ? v.slice(0, 300) : v;
+}
+
 export function csamPage(json: Row, now: number) {
+  const rows: CsamRow[] = [];
   const list: Row[] = json?.assetListData?.asset ?? json?.assetList ?? json?.data ?? [];
   const agg = {
     total: 0, withAgent: 0, agentStale: 0, unmanaged: 0, unmanagedNew: 0, publicIp: 0,
@@ -457,11 +612,29 @@ export function csamPage(json: Row, now: number) {
       const c = (agg.os[os] ??= [0, eos ?? 0, eol ?? 0, outOfSupport ? 1 : 0]);
       c[0]++;
     }
+    const assetId = Number(a.assetId ?? a.id);
+    if (Number.isFinite(assetId)) {
+      const hw = a.hardware ?? {};
+      const crit = Number(a.criticality?.score ?? a.criticalityScore);
+      rows.push({
+        asset_id: assetId, host_id: Number.isFinite(Number(a.hostId)) && Number(a.hostId) > 0 ? Number(a.hostId) : null,
+        name: a.assetName ?? a.name ?? null, ip, os, asset_type: type, has_agent: hasAgent, has_scanner: hasScanner,
+        agent_last_checkin: isoOrNull(a.agent?.lastCheckedIn?.dateTime ?? a.agent?.lastCheckedIn ?? a.agent?.lastActivity ?? sensor.lastAgentCheckIn),
+        lifecycle_stage: stage || null, eos: eos !== null ? new Date(eos).toISOString() : null, eol: eol !== null ? new Date(eol).toISOString() : null,
+        created: isoOrNull(a.inventory?.created ?? a.createdDate ?? a.firstSeen),
+        last_seen: isoOrNull(a.inventory?.lastUpdated ?? a.lastModifiedDate ?? a.lastSeen ?? sensor.lastFullScan),
+        sources: String(a.inventory?.source ?? a.sources ?? "") || null,
+        hardware: [hw.category?.category ?? hw.category1 ?? hw.category, hw.manufacturer, hw.model].filter((x) => typeof x === "string" && x).join(" · ") || null,
+        criticality: Number.isFinite(crit) && crit > 0 ? crit : null,
+        tags: ((a.tagList?.tag ?? a.tags ?? []) as Row[]).map((t) => String(t?.tagName ?? t?.name ?? "")).filter(Boolean).slice(0, 50),
+        attrs: trimJson(a) as Row,
+      });
+    }
   }
   agg.recentUnmanaged.sort((x, y) => String(y.created).localeCompare(String(x.created)));
   agg.recentUnmanaged = agg.recentUnmanaged.slice(0, TOP);
   const hasMore = json?.hasMore === 1 || json?.hasMore === true || json?.hasMore === "1";
-  return { agg, next: hasMore ? String(json?.lastSeenAssetId ?? "") || null : null };
+  return { agg, rows, next: hasMore ? String(json?.lastSeenAssetId ?? "") || null : null };
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +642,16 @@ export function csamPage(json: Row, now: number) {
 // ---------------------------------------------------------------------------
 
 /** Une page de résultats WAS (QPS « search/was/finding », XML). `since` : début de la période des corrigées. */
+/** Vulnérabilité applicative (table qualys_was_findings). */
+export interface WasFindingRow {
+  finding_id: number; app_id: number | null; app_name: string | null; qid: number | null; title: string | null; severity: number | null;
+  status: string | null; owasp: string | null; url: string | null; first_detected: string | null; last_detected: string | null;
+  last_tested: string | null; fixed_date: string | null; times_detected: number | null; potential: boolean; ignored: boolean; overdue: boolean;
+  attrs: Record<string, string>;
+}
+
 export function wasPage(xml: string, now: number, since: number) {
+  const rows: WasFindingRow[] = [];
   /** Application -> [nom, ouvertes sév. 5, ouvertes sév. 4, ouvertes sév. 3, hors délai]. */
   const apps: Record<string, [string, number, number, number, number]> = {};
   const owasp: Record<string, number> = {};
@@ -483,6 +665,19 @@ export function wasPage(xml: string, now: number, since: number) {
     const appId = tag(app, "id") ?? "?";
     const appName = tag(app, "name") ?? `Application ${appId}`;
     const first = Date.parse(tag(f, "firstDetectedDate") ?? "");
+    const fid = Number(tag(f, "id"));
+    if (Number.isFinite(fid)) {
+      const n = (x: string | null) => (x !== null && Number.isFinite(Number(x)) ? Number(x) : null);
+      rows.push({
+        finding_id: fid, app_id: n(tag(app, "id")), app_name: appName, qid: n(tag(f, "qid")), title: tag(f, "name"), severity: n(tag(f, "severity")),
+        status: status || null, owasp: tag(tag(f, "owasp") ?? "", "name"), url: tag(f, "url"),
+        first_detected: isoOrNull(tag(f, "firstDetectedDate")), last_detected: isoOrNull(tag(f, "lastDetectedDate")),
+        last_tested: isoOrNull(tag(f, "lastTestedDate")), fixed_date: isoOrNull(tag(f, "fixedDate")), times_detected: n(tag(f, "timesDetected")),
+        potential: /true/i.test(tag(f, "potential") ?? ""), ignored: /true/i.test(tag(f, "isIgnored") ?? ""),
+        overdue: status !== "FIXED" && sev >= 3 && Number.isFinite(first) && now > deadline(first, Math.min(5, sev)),
+        attrs: leaves(f, ["resultList", "webApp", "history", "request", "response", "payloads"]),
+      });
+    }
     if (status === "FIXED") {
       const fixedAt = Date.parse(tag(f, "fixedDate") ?? tag(f, "lastTestedDate") ?? "");
       if (!Number.isFinite(fixedAt) || !Number.isFinite(first) || fixedAt < since || !SLA[sev]) continue;
@@ -501,7 +696,30 @@ export function wasPage(xml: string, now: number, since: number) {
     if (cat) owasp[cat] = (owasp[cat] ?? 0) + 1;
   }
   const more = /<hasMoreRecords>\s*true\s*<\/hasMoreRecords>/i.test(xml);
-  return { agg: { open, apps, owasp, fix }, next: more ? (tag(xml, "lastId") ?? lastId) : null };
+  return { agg: { open, apps, owasp, fix }, rows, next: more ? (tag(xml, "lastId") ?? lastId) : null };
+}
+
+/** Application web déclarée dans WAS (table qualys_was_apps). */
+export interface WasAppRow { app_id: number; name: string | null; url: string | null; tags: string[]; created: string | null; last_scan: string | null; attrs: Record<string, string> }
+
+/** Une page de l'inventaire des applications web (QPS « search/was/webapp »). */
+export function wasAppsPage(xml: string): { rows: WasAppRow[]; next: string | null } {
+  const rows: WasAppRow[] = [];
+  let lastId: string | null = null;
+  for (const w of blocks(tag(xml, "data") ?? "", "WebApp")) {
+    const id = Number(tag(w, "id"));
+    if (!Number.isFinite(id)) continue;
+    lastId = String(id);
+    rows.push({
+      app_id: id, name: tag(w, "name"), url: tag(w, "url"),
+      tags: [...blocks(tag(tag(w, "tags") ?? "", "list") ?? "", "Tag")].map((t) => tag(t, "name")).filter((x): x is string => Boolean(x)),
+      created: isoOrNull(tag(w, "createdDate")),
+      last_scan: isoOrNull(tag(tag(w, "lastScan") ?? "", "launchedDate") ?? tag(w, "lastScanDate")),
+      attrs: leaves(w, ["tags", "comments", "authRecords", "uris", "scanners", "config"]),
+    });
+  }
+  const more = /<hasMoreRecords>\s*true\s*<\/hasMoreRecords>/i.test(xml);
+  return { rows, next: more ? (tag(xml, "lastId") ?? lastId) : null };
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +1030,19 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     stopped: Boolean(pcMeta?.stopped),
     rate: rate(allPassed, allFailed),
     passed: allPassed, failed: allFailed,
+    /** Contrôle de lecture de la nuit (toutes pages lues, politiques terminées ou non). */
+    read: (() => {
+      const all = pages.filter((p) => p.kind === "posture").map((p) => p.agg);
+      return {
+        pages: all.length,
+        policies: new Set(all.map((a) => a.policyId)).size,
+        emptyPolicies: [...new Set(all.map((a) => a.policyId))].filter((id) => all.filter((a) => a.policyId === id).every((a) => !Number(a.raw) && !Number(a.records))).length,
+        records: all.reduce((t, a) => t + (Number(a.records) || 0), 0),
+        raw: all.reduce((t, a) => t + (Number(a.raw) || 0), 0),
+        hosts: all.reduce((t, a) => t + (Number(a.hosts) || 0), 0),
+        root: (all.find((a) => a.root)?.root as string | undefined) ?? null,
+      };
+    })(),
     policies,
     topFailed: [...controlStats.entries()].filter(([, c]) => c.failed > 0).sort((a, b) => b[1].failed - a[1].failed).slice(0, 5)
       .map(([cid, c]) => ({ cid, statement: glossary[cid]?.[0] || `Contrôle ${cid}`, criticality: glossary[cid]?.[1] ?? null, failed: c.failed, rate: rate(c.passed, c.failed), policies: c.policies.size })),
