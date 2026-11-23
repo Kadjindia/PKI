@@ -83,6 +83,8 @@ export interface QualysHost {
 
 export interface QualysResults {
   date: string;
+  /** Détail par actif enregistré (inventaires, fiches) ; erreur éventuelle de son enregistrement. */
+  details?: { available: boolean; error: string | null };
   coverage: {
     total: number; agent: number; scanned: number; neverScanned: number; recentDays: number;
     trurisk: { critical: number; high: number; medium: number; low: number };
