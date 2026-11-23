@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/table";
 import {
   ShieldAlert, Flame, Hourglass, Radar, Info, Loader2, AlertTriangle, Server, Gauge, Timer, Search,
-  CheckCircle2, XCircle, HelpCircle, KeyRound, RotateCcw, FileWarning, LineChart as LineIcon, Crosshair, Wrench, Archive, ClipboardCheck,
+  CheckCircle2, XCircle, HelpCircle, KeyRound, RotateCcw, FileWarning, LineChart as LineIcon, Crosshair, Wrench, Archive, ClipboardCheck, Globe,
 } from "lucide-react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
@@ -242,8 +242,12 @@ function ExposureAxis({ r, d }: { readonly r: QualysResults; readonly d: DView |
   const one = <K extends keyof QFilters>(k: K, v: QFilters[K]) => ctx?.setFilters((x) => ({ ...x, [k]: x[k] === v ? undefined : v }));
   return (
     <AxisSection id="axe2" n={2} title="Exposition aux menaces" subtitle="Les vulnérabilités qui menacent réellement l'entreprise aujourd'hui, plutôt que leur volume total."
-      summary={s ? <><span><b className="text-red-600">{fmt(s.kevAssets)}</b> actifs exposés à une vulnérabilité exploitée activement</span><span><b>{fmt(s.armedAssets)}</b> à une vulnérabilité exploitable</span><span><b>{fmt(s.withSev5)}</b> avec une critique</span></>
-        : e ? <><span><b>{fmt(e.armed.detections)}</b> vulnérabilités exploitables</span></> : undefined}>
+      icon={Flame}
+      metrics={s ? [
+        { value: fmt(s.kevAssets), label: "actifs exposés CISA KEV", tone: s.kevAssets ? "red" : "green" },
+        { value: fmt(s.armedAssets), label: "actifs exploitables", tone: s.armedAssets ? "amber" : "green" },
+        { value: fmt(s.withSev5), label: "avec une critique" },
+      ] : e ? [{ value: fmt(e.armed.detections), label: "vulnérabilités exploitables", tone: "amber" }] : undefined}>
       {d && s ? (
         <>
           <Card>
@@ -370,7 +374,12 @@ function OperationsAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
   const sevTotal = r.severities.reduce((t, s) => t + s.total, 0);
   return (
     <AxisSection id="axe3" n={3} title="Efficacité de la remédiation" subtitle="Les vulnérabilités sont-elles corrigées dans les délais fixés par la politique de gestion des correctifs ?"
-      summary={o?.fixedCollected ? <><span>dans les délais <b>{o.fixed.all.slaRate === null ? "—" : `${fmt(o.fixed.all.slaRate)} %`}</b></span><span>MTTR critiques <b>{o.fixed.bySev["5"]?.mttr == null ? "—" : `${fmt(o.fixed.bySev["5"]!.mttr)} j`}</b></span><span>hors délai <b className="text-red-600">{fmt(r.severities.reduce((t, x) => t + x.overdue, 0))}</b></span></> : undefined}>
+      icon={Timer}
+      metrics={o?.fixedCollected ? [
+        { value: o.fixed.all.slaRate === null ? "—" : `${fmt(o.fixed.all.slaRate)} %`, label: "dans les délais", tone: (o.fixed.all.slaRate ?? 0) >= 90 ? "green" : (o.fixed.all.slaRate ?? 0) >= 70 ? "amber" : "red" },
+        { value: o.fixed.bySev["5"]?.mttr == null ? "—" : `${fmt(o.fixed.bySev["5"]!.mttr)} j`, label: "MTTR critiques", tone: (o.fixed.bySev["5"]?.mttr ?? 0) > 7 ? "red" : "green" },
+        { value: fmt(r.severities.reduce((t, x) => t + x.overdue, 0)), label: "hors délai", tone: "red" },
+      ] : undefined}>
       {d && isFiltered(ctx?.filters ?? {}) && (
         <Card className="border-primary/30 bg-primary/5">
           <CardContent className="p-3 text-sm flex flex-wrap gap-x-5 gap-y-1">
@@ -538,7 +547,13 @@ function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
   const never = s ? s.never : r.coverage.neverScanned;
   return (
     <AxisSection id="axe1" n={1} title="Visibilité du parc" subtitle="Le socle : un actif que Qualys n'analyse pas est un angle mort."
-      summary={<><span><b>{fmt(total)}</b> actifs</span><span>agent <b>{pct(agent, total) ?? 0} %</b></span><span>analysés &lt; 30 j <b>{pct(recent, total) ?? 0} %</b></span><span>jamais analysés <b>{fmt(never)}</b></span></>}>
+      icon={Radar}
+      metrics={[
+        { value: fmt(total), label: "actifs suivis" },
+        { value: `${pct(agent, total) ?? 0} %`, label: "avec agent" },
+        { value: `${pct(recent, total) ?? 0} %`, label: "analysés < 30 j", tone: (pct(recent, total) ?? 0) < 80 ? "amber" : "green" },
+        { value: fmt(never), label: "jamais analysés", tone: never ? "amber" : undefined },
+      ]}>
       <Card>
         <CardContent className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
           <dl className="space-y-1">
@@ -802,7 +817,12 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
   const tot = (k: "sev5" | "sev4" | "sev3" | "overdue") => (w?.apps ?? []).reduce((t, a) => t + a[k], 0);
   return (
     <AxisSection id="axe5" n={5} title="Sécurité applicative" subtitle="Les vulnérabilités du code de nos applications web, et la rapidité des équipes de développement à les corriger (Qualys WAS)."
-      summary={w?.collected && !w.error ? <><span><b>{fmt(w.open)}</b> vulnérabilités ouvertes</span><span>dont <b className="text-red-600">{fmt(tot("sev5"))}</b> critiques</span><span><b>{fmt(w.apps.length)}</b> applications concernées</span></> : undefined}>
+      icon={Globe}
+      metrics={w?.collected && !w.error ? [
+        { value: fmt(w.open), label: "vulnérabilités ouvertes" },
+        { value: fmt(tot("sev5")), label: "critiques", tone: tot("sev5") ? "red" : "green" },
+        { value: fmt(w.apps.length), label: "applications concernées" },
+      ] : undefined}>
       <Card>
         <CardContent className="p-4 space-y-4">
           {!w?.collected ? <Pending /> : w.error && !w.apps.length ? (
@@ -868,7 +888,12 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
   const c = r.compliance;
   return (
     <AxisSection id="axe4" n={4} title="Conformité et durcissement" subtitle="Le respect des référentiels de configuration que l'on s'est fixés (CIS, ANSSI…), mesuré par Qualys Policy Audit."
-      summary={c?.rate != null ? <><span>taux de conformité <b>{fmt(c.rate)} %</b></span><span><b>{fmt(c.policies.length)}</b> politiques</span></> : undefined}>
+      icon={ClipboardCheck}
+      metrics={c?.rate != null ? [
+        { value: `${fmt(c.rate)} %`, label: "taux de conformité", tone: c.rate >= 90 ? "green" : c.rate >= 70 ? "amber" : "red" },
+        { value: fmt(c.policies.length), label: "politiques" },
+        { value: fmt(c.failed), label: "contrôles en échec", tone: c.failed ? "red" : undefined },
+      ] : undefined}>
       <Card>
         <CardContent className="p-4">
           {!c?.collected ? <Pending /> : c.error && c.policies.length === 0 ? (
@@ -1209,7 +1234,7 @@ export default function QualysPanel() {
         <OperationsAxis r={r} d={view} />
         <ComplianceAxis r={r} points={points} />
         <WebAppsAxis r={r} detail={Boolean(view)} />
-        <AxisSection id="history" n="SUIVI" title="Évolution et accès" subtitle="Courbes nuit après nuit et diagnostic des accès aux modules Qualys.">
+        <AxisSection id="history" n="Suivi" icon={LineIcon} title="Évolution et accès" subtitle="Courbes nuit après nuit et diagnostic des accès aux modules Qualys.">
           <History points={points} />
           <AccessDiagnostic />
         </AxisSection>

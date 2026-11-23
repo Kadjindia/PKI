@@ -29,8 +29,13 @@ function readOpen(): Record<string, boolean> {
   try { return JSON.parse(localStorage.getItem(AXES_KEY) ?? "{}"); } catch { return {}; }
 }
 
-export function AxisSection({ id, n, title, subtitle, summary, children }: {
-  readonly id: string; readonly n: number | string; readonly title: string; readonly subtitle: string; readonly summary?: React.ReactNode; readonly children: React.ReactNode;
+/** Indicateur affiché dans l'en-tête d'un axe replié. */
+export interface AxisMetric { value: string; label: string; tone?: "red" | "amber" | "green" }
+const METRIC_TONE = { red: "text-red-600", amber: "text-amber-600", green: "text-emerald-600" } as const;
+
+export function AxisSection({ id, n, title, subtitle, icon: Icon, metrics, children }: {
+  readonly id: string; readonly n: number | string; readonly title: string; readonly subtitle: string; readonly icon: typeof Filter;
+  readonly metrics?: AxisMetric[]; readonly children: React.ReactNode;
 }) {
   const [open, setOpen] = useState<boolean>(() => readOpen()[id] ?? false);
   const flip = () => {
@@ -40,17 +45,32 @@ export function AxisSection({ id, n, title, subtitle, summary, children }: {
   };
   return (
     <section className="space-y-4">
-      <button type="button" onClick={flip} className="w-full text-left flex items-start gap-3 pt-3 border-t border-border group" aria-expanded={open}>
-        <span className="text-xs font-black text-primary-foreground bg-primary rounded px-2 py-0.5 mt-1 shrink-0">{typeof n === "number" ? `AXE ${n}` : n}</span>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-lg font-black text-foreground flex items-center gap-2">
-            {title} {open ? <ChevronDown className="w-5 h-5 text-muted-foreground" /> : <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-foreground" />}
-          </h3>
-          <p className="text-xs text-muted-foreground">{subtitle}</p>
-          {!open && summary && <div className="text-sm mt-1.5 flex flex-wrap gap-x-4 gap-y-1">{summary}</div>}
+      <button type="button" onClick={flip} aria-expanded={open}
+        className={`w-full text-left rounded-xl border bg-card p-4 flex flex-col md:flex-row md:items-center gap-4 transition-all group
+          ${open ? "border-primary/50 shadow-sm" : "border-border hover:border-primary/40 hover:shadow-md"}`}>
+        <div className="flex items-center gap-4 flex-1 min-w-0">
+          <div className={`w-11 h-11 rounded-lg flex items-center justify-center shrink-0 transition-colors ${open ? "bg-primary text-primary-foreground" : "bg-primary/10 text-primary group-hover:bg-primary/20"}`}>
+            <Icon className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-primary">{typeof n === "number" ? `Axe ${n}` : n}</div>
+            <h3 className="text-base font-black text-foreground leading-tight">{title}</h3>
+            <p className="text-xs text-muted-foreground line-clamp-1" title={subtitle}>{subtitle}</p>
+          </div>
         </div>
+        {!open && metrics && metrics.length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:flex md:flex-wrap gap-2 md:justify-end">
+            {metrics.map((m) => (
+              <div key={m.label} className="rounded-lg bg-muted/50 px-3 py-1.5 min-w-[96px] text-right">
+                <div className={`text-lg font-black leading-tight ${m.tone ? METRIC_TONE[m.tone] : "text-foreground"}`}>{m.value}</div>
+                <div className="text-[10px] font-semibold text-muted-foreground leading-tight">{m.label}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        <ChevronDown className={`hidden md:block w-5 h-5 text-muted-foreground shrink-0 transition-transform ${open ? "rotate-180 text-primary" : "group-hover:text-foreground"}`} />
       </button>
-      {open && children}
+      {open && <div className="space-y-4">{children}</div>}
     </section>
   );
 }
