@@ -43,10 +43,12 @@ export function AxisSection({ id, n, title, subtitle, metrics, children }: {
     try { localStorage.setItem(AXES_KEY, JSON.stringify({ ...readOpen(), [id]: next })); } catch { /* stockage indisponible */ }
   };
   return (
-    <section className="space-y-4">
+    <section className={open ? "space-y-4 pb-4" : "space-y-4"}>
       <button type="button" onClick={flip} aria-expanded={open}
-        className="w-full text-left flex items-center gap-4 px-2 py-4 border-b border-border hover:bg-muted/30 transition-colors">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-12 shrink-0">{typeof n === "number" ? `Axe ${n}` : n}</span>
+        className={`w-full text-left flex items-center gap-4 px-3 py-4 border-b border-l-[3px] transition-colors ${open
+          ? "bg-muted/40 border-l-primary border-b-primary/30 rounded-t-md"
+          : "border-l-transparent border-b-border hover:bg-muted/30"}`}>
+        <span className={`text-[11px] font-semibold uppercase tracking-wider w-12 shrink-0 ${open ? "text-primary" : "text-muted-foreground"}`}>{typeof n === "number" ? `Axe ${n}` : n}</span>
         <div className="flex-1 min-w-0">
           <h3 className="text-base font-semibold text-foreground">{title}</h3>
           <p className="text-xs text-muted-foreground truncate" title={subtitle}>{subtitle}</p>
@@ -66,9 +68,9 @@ export function AxisSection({ id, n, title, subtitle, metrics, children }: {
             ))}
           </dl>
         )}
-        <ChevronDown className={`w-4 h-4 text-muted-foreground shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${open ? "rotate-180 text-primary" : "text-muted-foreground"}`} />
       </button>
-      {open && <div className="space-y-4">{children}</div>}
+      {open && <div className="space-y-4 pl-4 border-l-[3px] border-l-primary/20 pb-2">{children}</div>}
     </section>
   );
 }
