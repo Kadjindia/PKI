@@ -302,6 +302,7 @@ describe("Qualys : obsolescence et conformité", () => {
       <GLOSSARY><CONTROL_LIST><CONTROL><CID>1002</CID><STATEMENT><![CDATA[Status of the 'Minimum password length' setting]]></STATEMENT><CRITICALITY><LABEL>SERIOUS</LABEL><VALUE>3</VALUE></CRITICALITY></CONTROL></CONTROL_LIST></GLOSSARY></RESPONSE></COMPLIANCE_POSTURE_INFO_LIST_OUTPUT>`;
     const p = posturePage(xml, "11");
     expect(p).toMatchObject({ policyId: "11", hosts: 2, compliantHosts: 1, passed: 3, failed: 1, errors: 1 });
+    expect(p).toMatchObject({ records: 5, raw: 5, root: "COMPLIANCE_POSTURE_INFO_LIST_OUTPUT" });
     expect(p.controls["1002"]).toEqual([1, 1, 0]);
     const r = buildResults([
       { kind: "policies", agg: { list: [{ id: "11", title: "CIS Windows Server 2019" }] } },
@@ -444,6 +445,7 @@ describe("mergePosture", () => {
     expect(m).toMatchObject({ policyId: "11", hosts: 5, compliantHosts: 4, passed: 9, failed: 1, errors: 1 });
     expect(m.controls).toEqual({ "100": [5, 1, 0], "200": [2, 0, 1] });
     expect(Object.keys(m.glossary)).toEqual(["100", "200"]);
+    expect(m).toMatchObject({ records: 0, raw: 0 });
     expect(mergePosture([])).toBeNull();
   });
 });

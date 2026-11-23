@@ -367,8 +367,9 @@ export function posturePage(xml: string, policyId: string) {
   const controls: Record<string, [number, number, number]> = {};
   const hosts = new Set<string>();
   const failingHosts = new Set<string>();
-  let passed = 0, failed = 0, errors = 0;
+  let passed = 0, failed = 0, errors = 0, records = 0;
   for (const i of blocks(tag(xml, "INFO_LIST") ?? "", "INFO")) {
+    records++;
     const cid = tag(i, "CONTROL_ID");
     const host = tag(i, "HOST_ID");
     const status = (tag(i, "STATUS") ?? "").toLowerCase();
@@ -385,15 +386,20 @@ export function posturePage(xml: string, policyId: string) {
     const cid = tag(c, "CID") ?? tag(c, "ID");
     if (cid) glossary[cid] = [tag(c, "STATEMENT") ?? "", tag(tag(c, "CRITICALITY") ?? "", "LABEL")];
   }
-  return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary };
+  // Contrôle de lecture : enregistrements reconnus face aux balises <INFO> présentes, et racine de la réponse
+  const raw = (xml.match(/<INFO[\s>]/g) ?? []).length;
+  const root = /<([A-Z_]+)[\s>]/.exec(xml.replace(/<\?[^>]*\?>|<!DOCTYPE[^>]*>/g, ""))?.[1] ?? null;
+  return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary, records, raw, root };
 }
 
 /** Cumul des pages de conformité d'une même politique (reprise d'une lecture interrompue). */
 export function mergePosture(parts: Row[]): ReturnType<typeof posturePage> | null {
   if (!parts.length) return null;
   const out = { policyId: String(parts[0].policyId), hosts: 0, compliantHosts: 0, passed: 0, failed: 0, errors: 0,
-    controls: {} as Record<string, [number, number, number]>, glossary: {} as Record<string, [string, string | null]> };
+    controls: {} as Record<string, [number, number, number]>, glossary: {} as Record<string, [string, string | null]>,
+    records: 0, raw: 0, root: (parts[0].root as string | null | undefined) ?? null };
   for (const p of parts) {
+    out.records += Number(p.records) || 0; out.raw += Number(p.raw) || 0;
     out.hosts += Number(p.hosts) || 0; out.compliantHosts += Number(p.compliantHosts) || 0;
     out.passed += Number(p.passed) || 0; out.failed += Number(p.failed) || 0; out.errors += Number(p.errors) || 0;
     for (const [cid, c] of Object.entries((p.controls ?? {}) as Record<string, [number, number, number]>)) {
@@ -829,6 +835,19 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     stopped: Boolean(pcMeta?.stopped),
     rate: rate(allPassed, allFailed),
     passed: allPassed, failed: allFailed,
+    /** Contrôle de lecture de la nuit (toutes pages lues, politiques terminées ou non). */
+    read: (() => {
+      const all = pages.filter((p) => p.kind === "posture").map((p) => p.agg);
+      return {
+        pages: all.length,
+        policies: new Set(all.map((a) => a.policyId)).size,
+        emptyPolicies: [...new Set(all.map((a) => a.policyId))].filter((id) => all.filter((a) => a.policyId === id).every((a) => !Number(a.raw) && !Number(a.records))).length,
+        records: all.reduce((t, a) => t + (Number(a.records) || 0), 0),
+        raw: all.reduce((t, a) => t + (Number(a.raw) || 0), 0),
+        hosts: all.reduce((t, a) => t + (Number(a.hosts) || 0), 0),
+        root: (all.find((a) => a.root)?.root as string | undefined) ?? null,
+      };
+    })(),
     policies,
     topFailed: [...controlStats.entries()].filter(([, c]) => c.failed > 0).sort((a, b) => b[1].failed - a[1].failed).slice(0, 5)
       .map(([cid, c]) => ({ cid, statement: glossary[cid]?.[0] || `Contrôle ${cid}`, criticality: glossary[cid]?.[1] ?? null, failed: c.failed, rate: rate(c.passed, c.failed), policies: c.policies.size })),

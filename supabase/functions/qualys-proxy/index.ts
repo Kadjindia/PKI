@@ -320,9 +320,20 @@ async function previousPolicies(admin: Admin): Promise<Row[]> {
   return (data?.results?.compliance?.policies ?? []) as Row[];
 }
 
-/** Date de dernière évaluation de chaque politique. */
+/** Date de dernière évaluation de chaque politique (y compris celles sans actif, absentes des résultats). */
 async function lastPolicyDates(admin: Admin): Promise<Record<string, string>> {
-  return Object.fromEntries((await previousPolicies(admin)).map((p) => [p.id, p.evaluatedAt ?? ""]));
+  const { data } = await admin.from("qualys_meta").select("value").eq("key", "pc_dates").maybeSingle();
+  const dates: Record<string, string> = { ...((data?.value ?? {}) as Record<string, string>) };
+  for (const p of await previousPolicies(admin)) if ((p.evaluatedAt ?? "") > (dates[p.id] ?? "")) dates[p.id] = p.evaluatedAt;
+  return dates;
+}
+
+/** Politique lue jusqu'au bout : notée, pour ne la relire qu'une fois par semaine. */
+async function markPolicyRead(admin: Admin, policyId: string) {
+  const { data } = await admin.from("qualys_meta").select("value").eq("key", "pc_dates").maybeSingle();
+  const value = { ...((data?.value ?? {}) as Record<string, string>), [policyId]: new Date().toISOString() };
+  const { error } = await admin.from("qualys_meta").upsert({ key: "pc_dates", value });
+  if (error) throw new Error(`Dates de conformité : ${error.message}`);
 }
 
 /** Lecture de conformité interrompue : politique, page suivante et chiffres déjà lus. */
@@ -488,6 +499,7 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
       if (!state.next) {
         state.pcDone = [...(state.pcDone ?? []), state.policyIds[state.policyIdx]];
         if (state.policyIdx === 0) await setPcProgress(admin, null);
+        await markPolicyRead(admin, state.policyIds[state.policyIdx]);
         if (++state.policyIdx >= state.policyIds.length) {
           await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone, total: state.pcTotal ?? state.policyIds.length, stopped: false });
           state.phase = "final";
