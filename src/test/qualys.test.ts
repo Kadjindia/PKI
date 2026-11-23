@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
-  policiesPage, posturePage, mergePosture, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages, qualysDate,
+  policiesPage, posturePage, mergePosture, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages, qualysDate, leaves, kbDetails, wasAppsPage, trimJson,
 } from "../../supabase/functions/qualys-proxy/parse";
 import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
 import { remediationProgress, trendOver } from "../lib/qualys";
@@ -447,5 +447,62 @@ describe("mergePosture", () => {
     expect(Object.keys(m.glossary)).toEqual(["100", "200"]);
     expect(m).toMatchObject({ records: 0, raw: 0 });
     expect(mergePosture([])).toBeNull();
+  });
+});
+
+describe("détail de la photo", () => {
+  it("garde les attributs simples d'un bloc, hors listes ignorées", () => {
+    const x = `<ID>12</ID><DNS><![CDATA[srv01.als.lan]]></DNS><TAGS><TAG><NAME>Prod</NAME></TAG></TAGS><OS>Windows</OS><EMPTY></EMPTY>`;
+    expect(leaves(x, ["TAGS"])).toEqual({ ID: "12", DNS: "srv01.als.lan", OS: "Windows" });
+  });
+
+  it("fiche actif et vulnérabilités par actif", () => {
+    const hosts = `<HOST_LIST><HOST><ID>7</ID><ASSET_ID>99</ASSET_ID><IP>10.0.0.7</IP><TRACKING_METHOD>QAGENT</TRACKING_METHOD><DNS>srv07</DNS><OS>Windows Server 2019</OS>
+      <TRURISK_SCORE>880</TRURISK_SCORE><ASSET_CRITICALITY_SCORE>4</ASSET_CRITICALITY_SCORE><LAST_VULN_SCAN_DATETIME>${daysAgo(2)}</LAST_VULN_SCAN_DATETIME>
+      <TAGS><TAG><TAG_ID>1</TAG_ID><NAME>Production</NAME></TAG></TAGS></HOST></HOST_LIST>`;
+    const h = hostsPage(hosts, NOW);
+    expect(h.rows[0]).toMatchObject({ host_id: 7, asset_id: 99, name: "srv07", asset_type: "server", trurisk: 880, criticality: 4, tags: ["Production"], public_ip: false });
+    expect(h.rows[0].attrs.TRACKING_METHOD).toBe("QAGENT");
+    const det = `<HOST_LIST><HOST><ID>7</ID><IP>10.0.0.7</IP><OS>Windows Server 2019</OS><DETECTION_LIST>
+      ${detection(101, 5, 20)}${detection(102, 4, 3, "<PORT>443</PORT>")}${detection(103, 3, 1, "").replace("<IS_IGNORED>0</IS_IGNORED>", "<IS_IGNORED>1</IS_IGNORED>")}
+      </DETECTION_LIST></HOST></HOST_LIST>`;
+    const d = detectionsPage(det, NOW);
+    expect(d.rows).toHaveLength(1);
+    expect(d.rows[0]).toMatchObject({ host_id: 7, d5: 1, d4: 1, d3: 0, overdue: 1, ignored: 1, qids: [101, 102] });
+    expect(d.rows[0].detections[1]).toEqual([102, 4, daysAgo(3).slice(0, 10), daysAgo(1).slice(0, 10), "A", 0, 0, 0, 443]);
+    expect(d.rows[0].detections[2][4]).toBe("I");
+  });
+
+  it("fiche de vulnérabilité de la base de connaissances", () => {
+    const xml = `<VULN><QID>101</QID><VULN_TYPE>Vulnerability</VULN_TYPE><SEVERITY_LEVEL>5</SEVERITY_LEVEL><TITLE><![CDATA[Apache Log4j RCE]]></TITLE>
+      <CATEGORY>Local</CATEGORY><PUBLISHED_DATETIME>2021-12-10T00:00:00Z</PUBLISHED_DATETIME><PATCHABLE>1</PATCHABLE>
+      <SOFTWARE_LIST><SOFTWARE><PRODUCT><![CDATA[log4j]]></PRODUCT><VENDOR><![CDATA[apache]]></VENDOR></SOFTWARE></SOFTWARE_LIST>
+      <SOLUTION><![CDATA[Mettre à jour vers <b>2.17</b>.<br/>Voir l'éditeur &amp; co.]]></SOLUTION>
+      <CVE_LIST><CVE><ID><![CDATA[CVE-2021-44228]]></ID></CVE></CVE_LIST><CVSS_V3><BASE>10.0</BASE></CVSS_V3>
+      <THREAT_INTELLIGENCE><THREAT_INTEL id="3"><![CDATA[Cisa_Known_Exploited_Vulns]]></THREAT_INTEL></THREAT_INTELLIGENCE></VULN>`;
+    const [k] = kbDetails(xml);
+    expect(k).toMatchObject({ qid: 101, severity: 5, title: "Apache Log4j RCE", cvss3: 10, cves: ["CVE-2021-44228"], products: [["apache", "log4j"]], category: "Local" });
+    expect(k.flags & 1).toBe(1);
+    expect(k.solution).toBe("Mettre à jour vers 2.17.\nVoir l'éditeur & co.");
+  });
+
+  it("inventaire des applications web", () => {
+    const xml = `<ServiceResponse><responseCode>SUCCESS</responseCode><count>1</count><hasMoreRecords>true</hasMoreRecords><lastId>55</lastId><data>
+      <WebApp><id>55</id><name><![CDATA[Portail]]></name><url><![CDATA[https://portail.example]]></url><tags><count>1</count><list><Tag><id>1</id><name>Internet</name></Tag></list></tags>
+      <createdDate>2025-01-02T00:00:00Z</createdDate></WebApp></data></ServiceResponse>`;
+    const r = wasAppsPage(xml);
+    expect(r.next).toBe("55");
+    expect(r.rows[0]).toMatchObject({ app_id: 55, name: "Portail", url: "https://portail.example", tags: ["Internet"] });
+  });
+
+  it("inventaire CSAM et copie allégée", () => {
+    const json = { responseCode: "SUCCESS", hasMore: 0, assetListData: { asset: [{
+      assetId: 5, hostId: 7, assetName: "pc01", address: "10.1.1.1", operatingSystem: { osName: "Windows 10 Pro", lifecycle: { stage: "EOL/EOS", eosDate: "2025-10-14T00:00:00Z" } },
+      sensor: { hasAgent: true }, agent: { lastCheckedIn: { dateTime: daysAgo(1) } }, softwareListData: { software: [{ name: "x" }] },
+    }] } };
+    const { rows } = csamPage(json, NOW);
+    expect(rows[0]).toMatchObject({ asset_id: 5, host_id: 7, name: "pc01", asset_type: "workstation", has_agent: true, lifecycle_stage: "EOL/EOS" });
+    expect(rows[0].attrs.softwareListData).toBeUndefined();
+    expect(trimJson({ a: Array.from({ length: 30 }, (_, i) => i) })).toEqual({ a: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] });
   });
 });

@@ -1,10 +1,11 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, mergePosture, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
-  csamPage, wasPage, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS, TOP_RISK,
+  csamPage, wasPage, wasAppsPage, kbDetails, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS, TOP_RISK,
   type FixedRow,
 } from "./parse.ts";
 import { runDiagnostic, gatewayToken, gatewayUrl } from "./diagnostic.ts";
+import { handleAssets, handleAsset, handleVuln, handleInventory, handleInventoryAsset, handleWebApps } from "./details.ts";
 
 // --- Secrets configurés côté Supabase (Project Settings > Edge Functions > Secrets) ---
 const QUALYS_BASE_URL = (Deno.env.get("QUALYS_BASE_URL") ?? "https://qualysapi.qg2.apps.qualys.eu").trim().replace(/\/$/, "");
@@ -87,7 +88,7 @@ function adminClient(): Admin {
 // ---------------------------------------------------------------------------
 
 const firstUrl = {
-  hosts: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/?action=list&details=All&show_trurisk=1&truncation_limit=${HOST_PAGE}`,
+  hosts: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/?action=list&details=All&show_trurisk=1&show_tags=1&show_asset_id=1&truncation_limit=${HOST_PAGE}`,
   detections: (range: { min?: number; max?: number } = {}) => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}${range.min != null ? `&id_min=${range.min}` : ""}${range.max != null ? `&id_max=${range.max}` : ""}`,
   fixed: (sinceIso: string) => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=Fixed&detection_updated_since=${sinceIso}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
   policies: () => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/policy/?action=list&details=Basic`,
@@ -119,6 +120,24 @@ async function response(admin: Admin, id: number): Promise<Row | null> {
 async function savePage(admin: Admin, snapshotId: string, kind: string, page: number, agg: unknown) {
   const { error } = await admin.from("qualys_pages").upsert({ snapshot_id: snapshotId, kind, page, agg });
   if (error) throw new Error(`Enregistrement de la page : ${error.message}`);
+}
+
+/**
+ * Détail de la photo (actifs, vulnérabilités par actif, fiches, inventaires) : écrit au fil des pages.
+ * Une erreur ici (migration non appliquée…) est notée sans arrêter le calcul : la photo agrégée reste complète.
+ */
+async function saveDetail(admin: Admin, state: Row, table: string, rows: Row[], snapId: string | null, chunk = 500, onConflict?: string) {
+  if (!rows.length) return;
+  try {
+    for (let i = 0; i < rows.length; i += chunk) {
+      const part = rows.slice(i, i + chunk).map((r) => (snapId ? { snapshot_id: snapId, ...r } : r));
+      const { error } = await admin.from(table).upsert(part, onConflict ? { onConflict } : undefined);
+      if (error) throw new Error(error.message);
+    }
+  } catch (e) {
+    state.detailError = `${table} : ${(e as Error).message}`.slice(0, 300);
+    console.error("Détail Qualys :", state.detailError);
+  }
 }
 
 /** Index des vulnérabilités de la photo (recherche d'exposition), et ménage des anciens index. */
@@ -160,12 +179,12 @@ async function directFetch(url: string, init: RequestInit, timeoutMs: number): P
 
 /** Une page de CSAM ou de WAS. Une erreur persistante est notée (csamerror / waserror) et l'on passe à la suite. */
 async function directStep(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>, deadline: number): Promise<StepOutcome> {
-  const phase = state.phase as "csam" | "was";
+  const phase = state.phase as "csam" | "was" | "wasapps";
   // Pas assez de temps dans ce passage pour attendre une réponse : le suivant s'en charge
   const timeoutMs = Math.min(DIRECT_TIMEOUT_MS, deadline - Date.now() - 5_000);
   if (timeoutMs < 30_000) { await save(); return "waiting"; }
   const nextPhase = () => {
-    state.phase = phase === "csam" ? "was" : "policies";
+    state.phase = phase === "csam" ? "was" : phase === "was" ? "wasapps" : "policies";
     if (state.phase === "policies") state.pcStartedAt = new Date().toISOString();
     state.page = 0; state.next = null; state.attempts = 0;
   };
@@ -180,8 +199,22 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
       if (res.status < 200 || res.status >= 300) throw new Error(`CSAM : HTTP ${res.status}`);
       const json = JSON.parse(res.body);
       if (json.responseCode && json.responseCode !== "SUCCESS") throw new Error(`CSAM : ${json.responseCode} ${json.responseMessage ?? ""}`.trim());
-      const { agg, next } = csamPage(json, now);
+      const { agg, rows, next } = csamPage(json, now);
       await savePage(admin, snapId, "csam", state.page, agg);
+      await saveDetail(admin, state, "qualys_csam_assets", rows, snapId, 200);
+      state.page++;
+      state.next = next;
+    } else if (phase === "wasapps") {
+      // Inventaire complet des applications web (y compris celles sans vulnérabilité)
+      const filters = state.next ? `<filters><Criteria field="id" operator="GREATER">${Number(state.next)}</Criteria></filters>` : "";
+      const body = `<ServiceRequest><preferences><limitResults>${WAS_PAGE}</limitResults></preferences>${filters}</ServiceRequest>`;
+      const res = await directFetch(`${QUALYS_BASE_URL}/qps/rest/3.0/search/was/webapp`, {
+        method: "POST", headers: { Authorization: basicAuth(), "Content-Type": "text/xml", Accept: "application/xml", "X-Requested-With": "pki-dashboard" }, body,
+      }, timeoutMs);
+      const code = /<responseCode>([A-Z_]+)<\/responseCode>/.exec(res.body)?.[1];
+      if (res.status < 200 || res.status >= 300 || (code && code !== "SUCCESS")) throw new Error(`WAS (applications) : ${code ?? `HTTP ${res.status}`}`);
+      const { rows, next } = wasAppsPage(res.body);
+      await saveDetail(admin, state, "qualys_was_apps", rows, snapId);
       state.page++;
       state.next = next;
     } else {
@@ -192,8 +225,9 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
       }, timeoutMs);
       const code = /<responseCode>([A-Z_]+)<\/responseCode>/.exec(res.body)?.[1];
       if (res.status < 200 || res.status >= 300 || (code && code !== "SUCCESS")) throw new Error(`WAS : ${code ?? `HTTP ${res.status}`}`);
-      const { agg, next } = wasPage(res.body, now, fixedSince().getTime());
+      const { agg, rows, next } = wasPage(res.body, now, fixedSince().getTime());
       await savePage(admin, snapId, "was", state.page, agg);
+      await saveDetail(admin, state, "qualys_was_findings", rows, snapId);
       state.page++;
       state.next = next;
     }
@@ -291,7 +325,9 @@ async function advanceLanes(admin: Admin, snapId: string, state: Row, save: (pat
         continue;
       }
       lane.attempts = 0;
-      await savePage(admin, snapId, "detections", i * 100_000 + lane.page, detectionsPage(content, Date.now(), state.watch ?? [], state.eolQids ?? []));
+      const { rows, ...agg } = detectionsPage(content, Date.now(), state.watch ?? [], state.eolQids ?? []);
+      await savePage(admin, snapId, "detections", i * 100_000 + lane.page, agg);
+      await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
       lane.page++;
       state.pages++;
       lane.next = nextPageUrl(content, QUALYS_BASE_URL);
@@ -389,7 +425,7 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
   const elapsed = Date.now() - Date.parse(snap.started_at);
   const nearEnd = elapsed > RUN_TIMEOUT_MS - 20 * 60_000;
   const pcOver = (state.phase === "policies" || state.phase === "posture") && state.pcStartedAt && Date.now() - Date.parse(state.pcStartedAt) > COMPLIANCE_BUDGET_MS;
-  if (pcOver || (nearEnd && ["csam", "was", "policies", "posture"].includes(state.phase))) {
+  if (pcOver || (nearEnd && ["csam", "was", "wasapps", "policies", "posture"].includes(state.phase))) {
     if (state.request) await admin.rpc("qualys_http_forget", { request_id: state.request });
     state.request = null;
     await savePcProgress(admin, snapId, state);
@@ -466,6 +502,7 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
     state.attempts = 0;
     if (state.phase === "kb") {
       await savePage(admin, snapId, "kb", state.page, kbPage(content));
+      await saveDetail(admin, state, "qualys_kb", kbDetails(content).map((r) => ({ ...r, updated_at: new Date().toISOString() })), null, 200, "qid");
       state.page++;
       state.next = null;
       if (state.page >= state.kbChunks) { state.phase = "csam"; state.page = 0; }
@@ -506,13 +543,22 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
         }
       }
     } else {
-      const agg = state.phase === "hosts" ? hostsPage(content, now)
-        : state.phase === "detections" ? detectionsPage(content, now, state.watch ?? [], state.eolQids ?? [])
-        : fixedPage(content, Date.parse(state.fixedSince ?? fixedSince().toISOString()), Date.parse(state.fixedUntil ?? new Date().toISOString()));
+      let agg: Row;
+      if (state.phase === "hosts") {
+        const { rows, ...rest } = hostsPage(content, now);
+        agg = rest;
+        await saveDetail(admin, state, "qualys_assets", rows, snapId);
+      } else if (state.phase === "detections") {
+        const { rows, ...rest } = detectionsPage(content, now, state.watch ?? [], state.eolQids ?? []);
+        agg = rest;
+        await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
+      } else {
+        agg = fixedPage(content, Date.parse(state.fixedSince ?? fixedSince().toISOString()), Date.parse(state.fixedUntil ?? new Date().toISOString()));
+      }
       await savePage(admin, snapId, state.phase, state.page, agg);
       state.page++;
       state.pages++;
-      if (state.phase === "hosts") state.hostsTotal = (state.hostsTotal ?? 0) + (agg as Row).total;
+      if (state.phase === "hosts") state.hostsTotal = (state.hostsTotal ?? 0) + agg.total;
       state.next = nextPageUrl(content, QUALYS_BASE_URL);
       if (!state.next) {
         if (state.phase === "hosts") {
@@ -550,6 +596,10 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
     const fixedDaily = await mergeFixed(admin, snapId, pages ?? [], state);
     const results = buildResults(pages ?? [], Date.now(), { previousPolicies: await previousPolicies(admin), fixedDaily });
     await saveIndex(admin, snapId, vulnIndex(pages ?? []));
+    // Détail : indicateurs de menace par actif et ménage des photos précédentes
+    const { error: fe } = await admin.rpc("qualys_finalize_details", { snap: snapId });
+    if (fe) state.detailError ??= `Finalisation du détail : ${fe.message}`.slice(0, 300);
+    (results as Row).details = { available: !state.detailError, error: state.detailError ?? null };
     state.kbIds = undefined;
     state.watch = undefined;
     state.eolQids = undefined;
@@ -562,7 +612,7 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
   }
 
   // 3. Inventaire (CSAM) et applications web (WAS) : appels directs
-  if (state.phase === "csam" || state.phase === "was") return await directStep(admin, snapId, state, save, deadline);
+  if (state.phase === "csam" || state.phase === "was" || state.phase === "wasapps") return await directStep(admin, snapId, state, save, deadline);
 
   // 4. Demande suivante
   const url = state.phase === "kb"
@@ -707,6 +757,12 @@ Deno.serve(async (req) => {
 
     if (body.action === "history") return await handleHistory(adminClient());
     if (body.action === "search") return await handleSearch(adminClient(), body.q);
+    if (body.action === "assets") return jsonResponse(await handleAssets(adminClient()));
+    if (body.action === "asset") return jsonResponse(await handleAsset(adminClient(), body.hostId));
+    if (body.action === "vuln") return jsonResponse(await handleVuln(adminClient(), body.qid));
+    if (body.action === "inventory") return jsonResponse(await handleInventory(adminClient()));
+    if (body.action === "inventory-asset") return jsonResponse(await handleInventoryAsset(adminClient(), body.assetId));
+    if (body.action === "webapps") return jsonResponse(await handleWebApps(adminClient()));
     if (body.action === "diagnostic") return jsonResponse(await runDiagnostic(QUALYS_BASE_URL, QUALYS_USERNAME, QUALYS_PASSWORD, Deno.env.get("QUALYS_GATEWAY_URL")));
     return await handleStatus(adminClient());
   } catch (err) {
