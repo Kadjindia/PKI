@@ -1,7 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, mergePosture, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
-  csamPage, wasPage, wasAppsPage, kbDetails, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS, TOP_RISK,
+  csamPage, wasPage, wasAppsPage, kbDetails, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS,
   type FixedRow,
 } from "./parse.ts";
 import { runDiagnostic, gatewayToken, gatewayUrl } from "./diagnostic.ts";
@@ -327,7 +327,7 @@ async function advanceLanes(admin: Admin, snapId: string, state: Row, save: (pat
         continue;
       }
       lane.attempts = 0;
-      const { rows, ...agg } = detectionsPage(content, Date.now(), state.watch ?? [], state.eolQids ?? []);
+      const { rows, ...agg } = detectionsPage(content, Date.now(), state.eolQids ?? []);
       await savePage(admin, snapId, "detections", i * 100_000 + lane.page, agg);
       await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
       lane.page++;
@@ -552,7 +552,7 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
         agg = rest;
         await saveDetail(admin, state, "qualys_assets", rows, snapId);
       } else if (state.phase === "detections") {
-        const { rows, ...rest } = detectionsPage(content, now, state.watch ?? [], state.eolQids ?? []);
+        const { rows, ...rest } = detectionsPage(content, now, state.eolQids ?? []);
         agg = rest;
         await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
       } else {
@@ -565,12 +565,9 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
       state.next = nextPageUrl(content, QUALYS_BASE_URL);
       if (!state.next) {
         if (state.phase === "hosts") {
-          // Actifs les plus risqués : leurs vulnérabilités seront relevées au passage
-          const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
-          state.watch = (hp ?? []).flatMap((p: Row) => p.agg.topRisk ?? [])
-            .sort((a: Row, b: Row) => b.trurisk - a.trurisk).slice(0, TOP_RISK).map((h: Row) => h.id).filter(Boolean);
           state.eolQids = await knownEolQids(admin);
           // Vulnérabilités ouvertes : deux moitiés du parc lues en parallèle
+          const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
           const ids = (hp ?? []).flatMap((p: Row) => (p.agg.ids ?? []) as number[]);
           state.lanes = splitHosts(ids).map((range) => ({ range, next: null, request: null, requestedAt: null, attempts: 0, page: 0, done: false, waitUntil: null }));
           state.phase = "detections";
@@ -604,7 +601,6 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
     if (fe) state.detailError ??= `Finalisation du détail : ${fe.message}`.slice(0, 300);
     (results as Row).details = { available: !state.detailError, error: state.detailError ?? null };
     state.kbIds = undefined;
-    state.watch = undefined;
     state.eolQids = undefined;
     state.policyIds = undefined;
     state.pcDone = undefined;

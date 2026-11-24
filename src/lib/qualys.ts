@@ -15,31 +15,7 @@ export interface QualysSeverity {
   avgAge?: number | null;
 }
 
-export interface QualysVuln {
-  qid: string;
-  title: string | null;
-  cves: string | null;
-  severity: number;
-  hosts: number;
-  overdue: number;
-  firstFound: string | null;
-  maxQds: number | null;
-  kev: boolean;
-  ransomware: boolean;
-  activeAttacks: boolean;
-  exploitPublic?: boolean;
-  patchable: boolean;
-  /** Détections sur des serveurs. */
-  servers?: number;
-}
-
 export type AssetType = "server" | "workstation" | "other";
-
-export interface QualysRiskHost {
-  id: string | null; name: string | null; ip: string | null; os: string | null;
-  type: AssetType; trurisk: number; criticality: number | null; lastScan: string | null;
-  d5: number | null; d4: number | null; d3?: number | null; overdue: number | null; armed: number | null;
-}
 
 /** Vulnérabilités corrigées sur la période : respect des délais et MTTR. */
 export interface QualysFixView {
@@ -50,8 +26,6 @@ export interface QualysExposure {
   truriskAvg: number | null;
   truriskAssets: number;
   armed: { detections: number; vulns: number; sev5: number; servers: number; exploitPublic: number };
-  topArmed: QualysVuln[];
-  topRisk: QualysRiskHost[];
 }
 
 export interface QualysOperations {
@@ -70,17 +44,6 @@ export interface QualysOperations {
   fixedError?: string | null;
 }
 
-export interface QualysHost {
-  id: string | null;
-  ip: string | null;
-  name: string | null;
-  os: string | null;
-  d5: number;
-  d4: number;
-  overdue: number;
-  qdsCritical: number;
-}
-
 export interface QualysResults {
   date: string;
   /** Détail par actif enregistré (inventaires, fiches) ; erreur éventuelle de son enregistrement. */
@@ -91,17 +54,11 @@ export interface QualysResults {
     byType?: Record<AssetType, { total: number; scanned: number }>;
   };
   hostsWithVulns: number;
-  /** Les champs « sev5 » sont la part de sévérité 5 (absents des photos d'avant le 17/11/2026). */
-  hostsWithSev5?: number;
-  detections: { total: number; potential: number; qdsCritical: number; qdsCriticalSev5?: number; vulns: number };
+  detections: { total: number; potential: number; qdsCritical: number; vulns: number };
   severities: QualysSeverity[];
   kev: { detections: number; vulns: number; sev5?: number };
   ransomware: { detections: number; vulns: number; sev5?: number };
   activeAttacks: { detections: number; vulns: number; sev5?: number };
-  criticalPatchable: number;
-  criticalPatchableSev5?: number;
-  topVulns: QualysVuln[];
-  topHosts: QualysHost[];
   /** Axes 2 et 3 (absents des photos d'avant le 19/11/2026). */
   exposure?: QualysExposure;
   operations?: QualysOperations;
@@ -137,7 +94,6 @@ export interface QualysWebApps {
   error: string | null;
   open: number;
   apps: { id: string; name: string; sev5: number; sev4: number; sev3: number; overdue: number }[];
-  owasp: { name: string; count: number }[];
   fixed: QualysFixView;
 }
 
@@ -150,7 +106,6 @@ export interface QualysObsolescence {
   products: number;
   osProducts: number;
   detections: number;
-  top: { qid: string; title: string; os: boolean; severity: number; hosts: number; servers: number }[];
 }
 
 /** Conformité et durcissement (Policy Audit). */

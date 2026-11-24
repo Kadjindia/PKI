@@ -1,9 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { FunctionsHttpError } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,15 +14,15 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
 } from "recharts";
 import {
-  AGE_LABELS, SEVERITY_LABELS, slaText, HISTORY_METRICS, ASSET_TYPE_LABELS, FLAGS, fmt, pct, daysSince, progressLabel, trendOver, remediationProgress,
-  type QualysState, type QualysHistoryPoint, type QualysVuln, type QualysResults, type QualysSearch, type QualysDiagnostic,
-  type QualysFixView, type AssetType,
+  AGE_LABELS, SEVERITY_LABELS, slaText, HISTORY_METRICS, ASSET_TYPE_LABELS, fmt, pct, progressLabel, trendOver, remediationProgress,
+  type QualysState, type QualysHistoryPoint, type QualysResults, type QualysSearch, type QualysDiagnostic,
+  type QualysFixView,
 } from "@/lib/qualys";
 import {
   indexCatalog, filterAssets, summarize, isFiltered,
   type AssetsPayload, type DAsset, type CatalogIndex, type Summary, type QFilters, type TruTier,
 } from "@/lib/qualysDetails";
-import { QualysContext, FoldTitle, clickable, useQualysCtx } from "./qualys/ui";
+import { QualysContext, FoldTitle, Help, Badge, FlagBadges, clickable, useQualysCtx } from "./qualys/ui";
 import { AssetSheet, VulnSheet } from "./qualys/Sheets";
 import { callQualys } from "./qualys/api";
 import { AxisSection, FilterBar, AssetTable, PriorityFixes, EolList, CsamInventory, WebAppsExplorer } from "./qualys/Explorer";
@@ -34,18 +31,6 @@ import { AxisSection, FilterBar, AssetTable, PriorityFixes, EolList, CsamInvento
 //   1. Visibilité (socle)  2. Exposition aux menaces  3. Efficacité opérationnelle.
 // Photo calculée chaque nuit côté serveur (qualys-proxy) ; l'écran lit la dernière photo.
 
-
-/** Définition d'un indicateur, au clic sur ⓘ. */
-function Help({ children }: { readonly children: React.ReactNode }) {
-  return (
-    <Popover>
-      <PopoverTrigger aria-label="Définition" className="text-muted-foreground hover:text-foreground shrink-0">
-        <Info className="w-4 h-4" />
-      </PopoverTrigger>
-      <PopoverContent className="text-xs leading-relaxed">{children}</PopoverContent>
-    </Popover>
-  );
-}
 
 /** Écart sur 30 jours, en vert quand il va dans le bon sens. */
 function Delta({ value, lowerIsBetter, unit = "" }: { readonly value: number | null; readonly lowerIsBetter: boolean; readonly unit?: string }) {
@@ -73,22 +58,12 @@ function Kpi({ title, help, icon: Icon, color, value, sub }: {
   );
 }
 
-function Badge({ children, tone }: { readonly children: React.ReactNode; readonly tone: "red" | "orange" | "violet" | "sky" | "muted" | "green" }) {
-  const cls = {
-    red: "bg-red-500/10 text-red-600", orange: "bg-orange-500/10 text-orange-600", violet: "bg-violet-500/10 text-violet-600",
-    sky: "bg-sky-500/10 text-sky-600", green: "bg-emerald-500/10 text-emerald-600", muted: "bg-muted text-muted-foreground",
-  }[tone];
-  return <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap ${cls}`}>{children}</span>;
-}
-
-
 /** Section pas encore calculée dans la photo affichée. */
 function Pending({ children = "Disponible après le prochain calcul de nuit." }: { readonly children?: React.ReactNode }) {
   return <p className="text-sm text-muted-foreground py-4 text-center">{children}</p>;
 }
 
 const AGE_COLORS = ["bg-emerald-500", "bg-amber-400", "bg-orange-500", "bg-red-600"];
-const TYPE_TONE: Record<AssetType, "sky" | "muted" | "violet"> = { server: "violet", workstation: "sky", other: "muted" };
 const formatDay = (t: number) => new Date(t).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
 const formatMonth = (m: string) => new Date(`${m}-01T00:00:00Z`).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 const TOOLTIP_STYLE = {
@@ -97,23 +72,6 @@ const TOOLTIP_STYLE = {
   itemStyle: { color: "hsl(var(--foreground))" },
 };
 const AXIS_TICK = { fontSize: 11, fill: "hsl(var(--muted-foreground))" };
-
-function VulnBadges({ v }: { readonly v: Pick<QualysVuln, "kev" | "ransomware" | "activeAttacks" | "exploitPublic" | "patchable"> }) {
-  return (
-    <span className="space-x-1">
-      {v.kev && <Badge tone="red">CISA KEV</Badge>}
-      {v.ransomware && <Badge tone="violet">Ransomware</Badge>}
-      {v.activeAttacks && !v.kev && <Badge tone="orange">Attaques actives</Badge>}
-      {v.exploitPublic && !v.kev && !v.activeAttacks && <Badge tone="orange">Exploit public</Badge>}
-      {v.patchable && <Badge tone="muted">Correctif disponible</Badge>}
-    </span>
-  );
-}
-
-const flagsToBadges = (flags: number) => ({
-  kev: Boolean(flags & FLAGS.kev), ransomware: Boolean(flags & FLAGS.ransomware), activeAttacks: Boolean(flags & FLAGS.activeAttacks),
-  exploitPublic: Boolean(flags & FLAGS.exploitPublic), patchable: Boolean(flags & FLAGS.patchable),
-});
 
 /** Importance d'une règle de configuration (libellés Qualys en anglais). */
 const CRITICALITY_FR: Record<string, string> = { URGENT: "Urgente", CRITICAL: "Critique", SERIOUS: "Sérieuse", HIGH: "Élevée", MEDIUM: "Moyenne", MINIMAL: "Faible", LOW: "Faible" };
@@ -209,7 +167,7 @@ function ExposureSearch() {
                       <TableCell className="text-right font-semibold py-2">{fmt(m.hosts)}</TableCell>
                       <TableCell className="text-right py-2">{fmt(m.servers)}</TableCell>
                       <TableCell className={`text-right py-2 ${m.overdue ? "text-red-600 font-semibold" : "text-muted-foreground"}`}>{fmt(m.overdue)}</TableCell>
-                      <TableCell className="py-2"><VulnBadges v={flagsToBadges(m.flags)} /></TableCell>
+                      <TableCell className="py-2"><FlagBadges flags={m.flags} /></TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -269,83 +227,7 @@ function ExposureAxis({ r, d }: { readonly r: QualysResults; readonly d: DView |
           <AssetTable assets={d.assets} title={<><Server className="w-4 h-4 text-primary" /> Actifs les plus exposés</>} initial={10} csvName="qualys-actifs-exposes.csv"
             help={<>Actifs classés par score de risque TruRisk (0 à 1 000), qui combine leurs vulnérabilités et leur criticité ; tri possible par vulnérabilités, exploitables ou hors délai. Cliquer sur un actif pour voir toutes ses caractéristiques et vulnérabilités. Le type (serveur, poste) est déduit du système d&apos;exploitation.</>} />
         </>
-      ) : !e ? <Card><CardContent><Pending /></CardContent></Card> : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* VULNÉRABILITÉS ARMÉES */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-bold flex items-center gap-2">
-                <Flame className="w-4 h-4 text-orange-500" /> Vulnérabilités exploitables
-                <Help>Vulnérabilités ouvertes qu&apos;un attaquant peut utiliser dès maintenant : exploitées activement (catalogue CISA KEV), utilisées par des ransomwares, attaques actives constatées par Qualys, ou exploit public disponible.</Help>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
-                {[["Exploitées activement (CISA KEV)", r.kev.detections], ["Ransomware", r.ransomware.detections], ["Attaques actives", r.activeAttacks.detections], ["Exploit public", e.armed.exploitPublic]].map(([l, v]) => (
-                  <div key={String(l)} className="rounded-lg bg-muted/50 px-2 py-1.5">
-                    <div className="text-lg font-black">{fmt(Number(v))}</div>
-                    <div className="text-[10px] text-muted-foreground font-semibold">{l}</div>
-                  </div>
-                ))}
-              </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Les plus répandues</TableHead>
-                    <TableHead className="text-right">Actifs</TableHead>
-                    <TableHead className="text-right whitespace-nowrap">dont serveurs</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {e.topArmed.map((v) => (
-                    <TableRow key={v.qid}>
-                      <TableCell className="max-w-[300px] py-1.5">
-                        <div className="text-sm font-medium truncate" title={v.title ?? ""}>{v.title ?? `QID ${v.qid}`}</div>
-                        <div className="text-[11px] text-muted-foreground truncate"><VulnBadges v={v} /> {v.cves && <span className="font-mono">{v.cves}</span>}</div>
-                      </TableCell>
-                      <TableCell className="text-right font-semibold py-1.5">{fmt(v.hosts)}</TableCell>
-                      <TableCell className="text-right py-1.5">{fmt(v.servers ?? null)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-bold flex items-center gap-2">
-                <Server className="w-4 h-4 text-primary" /> Top 10 des actifs les plus exposés
-                <Help>Actifs au score de risque TruRisk le plus élevé (0 à 1 000). La fiche détaillée de chaque actif sera disponible après le prochain calcul.</Help>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Actif</TableHead>
-                    <TableHead className="text-right whitespace-nowrap">TruRisk</TableHead>
-                    <TableHead className="text-right whitespace-nowrap">Crit. / Élev. / Mod.</TableHead>
-                    <TableHead className="text-right whitespace-nowrap">Hors délai</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {e.topRisk.map((h, i) => (
-                    <TableRow key={h.id ?? i}>
-                      <TableCell className="max-w-[240px] py-1.5">
-                        <div className="text-sm font-medium truncate" title={h.name ?? ""}>{h.name ?? h.ip ?? "—"}</div>
-                        <div className="text-[11px] text-muted-foreground truncate"><Badge tone={TYPE_TONE[h.type]}>{ASSET_TYPE_LABELS[h.type]}</Badge> {h.os}</div>
-                      </TableCell>
-                      <TableCell className="text-right font-black py-1.5">{fmt(h.trurisk)}</TableCell>
-                      <TableCell className="text-right py-1.5 whitespace-nowrap">{h.d5 === null ? "—" : `${fmt(h.d5)} / ${fmt(h.d4)}${h.d3 != null ? ` / ${fmt(h.d3)}` : ""}`}</TableCell>
-                      <TableCell className="text-right py-1.5">{fmt(h.overdue)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      ) : <Card><CardContent><Pending>Détail des actifs exposés : en cours de chargement ou disponible après le prochain calcul de nuit.</Pending></CardContent></Card>}
       <ExposureSearch />
     </AxisSection>
   );
@@ -595,7 +477,6 @@ function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
               ))}
             </div>
             {s?.truriskAvg != null && <p className="text-xs text-muted-foreground pt-1">Score moyen de la sélection : <b className="text-foreground">{fmt(s.truriskAvg)}</b> / 1 000</p>}
-            <p className="text-[11px] text-muted-foreground pt-2">Rapprochement avec la CMDB : nécessite un export de la CMDB (ServiceNow), à brancher.</p>
           </div>
         </CardContent>
       </Card>
@@ -605,12 +486,8 @@ function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
       )}
       <InventoryCard r={r} />
       {d && <CsamInventory />}
-      {d ? (
-        <>
-          <OsLifecycleCard r={r} />
-          <EolList assets={d.assets} idx={d.idx} total={d.sum.total} />
-        </>
-      ) : <ObsolescenceCard r={r} />}
+      <OsLifecycleCard r={r} />
+      {d && <EolList assets={d.assets} idx={d.idx} total={d.sum.total} />}
     </AxisSection>
   );
 }
@@ -745,68 +622,6 @@ function OsLifecycle({ r }: { readonly r: QualysResults }) {
   );
 }
 
-function ObsolescenceCard({ r }: { readonly r: QualysResults }) {
-  const o = r.obsolescence;
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-bold flex items-center gap-2">
-          <Archive className="w-4 h-4 text-amber-600" /> Obsolescence : systèmes et logiciels en fin de support
-          <Help>Systèmes d&apos;exploitation et logiciels qui ne reçoivent plus de correctifs de sécurité de leur éditeur. Systèmes : cycle de vie fourni par Qualys CSAM, avec les dates de fin de support. Logiciels : vulnérabilités « EOL/Obsolete » de Qualys VMDR.</Help>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <OsLifecycle r={r} />
-        {!o ? <Pending /> : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="space-y-2 text-sm">
-              <div>
-                <div className="text-3xl font-black">{o.hostsTracked ? fmt(o.hosts) : "—"}</div>
-                <div className="text-xs text-muted-foreground">
-                  {o.hostsTracked ? <>actifs concernés, soit {pct(o.hosts, r.coverage.total) ?? 0} % du parc</> : "actifs concernés : dès la prochaine nuit (la liste des produits en fin de support est apprise d'une nuit sur l'autre)"}
-                </div>
-              </div>
-              {o.hostsTracked && (
-                <dl className="space-y-1 text-xs">
-                  {(["server", "workstation", "other"] as const).map((t) => (
-                    <div key={t} className="flex justify-between gap-2"><dt className="text-muted-foreground">{ASSET_TYPE_LABELS[t]}</dt><dd className="font-semibold">{fmt(o.byType[t])}</dd></div>
-                  ))}
-                </dl>
-              )}
-              <div className="text-xs text-muted-foreground border-t border-border pt-2">{fmt(o.products)} produits en fin de support, dont {fmt(o.osProducts)} systèmes d&apos;exploitation</div>
-            </div>
-            <div className="lg:col-span-2 overflow-x-auto">
-              {o.top.length === 0 ? <p className="text-sm text-emerald-600 font-semibold py-4">Aucun produit en fin de support détecté.</p> : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Produit en fin de support</TableHead>
-                      <TableHead className="text-right">Actifs</TableHead>
-                      <TableHead className="text-right whitespace-nowrap">dont serveurs</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {o.top.map((p) => (
-                      <TableRow key={p.qid}>
-                        <TableCell className="max-w-[420px] py-1.5">
-                          <div className="text-sm font-medium truncate" title={p.title}>{p.title}</div>
-                          <div className="text-[11px] text-muted-foreground"><Badge tone={p.os ? "violet" : "muted"}>{p.os ? "Système" : "Logiciel"}</Badge> <span className="font-mono">QID {p.qid}</span></div>
-                        </TableCell>
-                        <TableCell className="text-right font-semibold py-1.5">{fmt(p.hosts)}</TableCell>
-                        <TableCell className="text-right py-1.5">{fmt(p.servers)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Axe 5 : sécurité applicative (WAS)
 // ---------------------------------------------------------------------------
@@ -834,41 +649,6 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
                 <Stat label="MTTR applicatif" value={w.fixed.mttr === null ? "—" : `${fmt(w.fixed.mttr)} j`} sub={w.fixed.fixed ? `${fmt(w.fixed.fixed)} corrigées en 90 j · ${fmt(w.fixed.slaRate)} % dans les délais` : "aucune correction sur 90 j"}
                   help={<>Délai moyen entre la détection d&apos;une vulnérabilité applicative et sa correction constatée par Qualys, sur les 90 derniers jours. La date de correction est approchée par le dernier test qui ne l&apos;a plus trouvée.</>} />
               </div>
-              {detail ? null : <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="lg:col-span-2 overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Application</TableHead>
-                        <TableHead className="text-right whitespace-nowrap">Crit. / Élev. / Mod.</TableHead>
-                        <TableHead className="text-right whitespace-nowrap">Hors délai</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {w.apps.slice(0, 15).map((a) => (
-                        <TableRow key={a.id}>
-                          <TableCell className="py-1.5 text-sm font-medium max-w-[360px] truncate" title={a.name}>{a.name}</TableCell>
-                          <TableCell className="py-1.5 text-right whitespace-nowrap"><b className={a.sev5 ? "text-red-600" : ""}>{fmt(a.sev5)}</b> / {fmt(a.sev4)} / {fmt(a.sev3)}</TableCell>
-                          <TableCell className={`py-1.5 text-right ${a.overdue ? "text-red-600" : "text-muted-foreground"}`}>{fmt(a.overdue)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground mb-2">
-                    <span>Catégories OWASP Top 10</span>
-                    <Help>Classement des vulnérabilités applicatives ouvertes selon les catégories du référentiel OWASP Top 10 (injection, contrôle d&apos;accès défaillant…), quand Qualys les indique.</Help>
-                  </div>
-                  {w.owasp.length === 0 ? <p className="text-xs text-muted-foreground">Catégories non indiquées par Qualys.</p> : (
-                    <ul className="space-y-1.5 text-xs">
-                      {w.owasp.map((c) => (
-                        <li key={c.name} className="flex justify-between gap-2"><span className="truncate" title={c.name}>{c.name}</span><b>{fmt(c.count)}</b></li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>}
             </>
           )}
         </CardContent>
