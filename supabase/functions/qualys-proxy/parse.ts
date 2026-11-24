@@ -39,7 +39,7 @@ export const RECENT_SCAN_DAYS = 30;
 export const FIXED_WINDOW_DAYS = 90;
 
 export const TOP = 20;
-export const TOP_RISK = 10;
+export const TOP_OS = 10;
 const DAY = 24 * 3600 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -144,12 +144,6 @@ export function isPublicIp(ip: string | null | undefined): boolean {
 // Chiffres d'une page
 // ---------------------------------------------------------------------------
 
-export interface RiskHost {
-  id: string | null; name: string | null; ip: string | null; os: string | null;
-  type: AssetType; trurisk: number; criticality: number | null; lastScan: string | null;
-}
-
-/** Liste des actifs : couverture des scans, score TruRisk, actifs les plus risqués. */
 /** Fiche d'un actif VMDR (table qualys_assets). */
 export interface AssetRow {
   host_id: number; asset_id: number | null; name: string | null; netbios: string | null; ip: string | null; os: string | null;
@@ -157,13 +151,13 @@ export interface AssetRow {
   last_scan: string | null; last_activity: string | null; public_ip: boolean; tags: string[]; attrs: Record<string, string>;
 }
 
+/** Liste des actifs : couverture des scans, score TruRisk, fiches des actifs. */
 export function hostsPage(xml: string, now: number) {
   const rows: AssetRow[] = [];
   const agg = { total: 0, agent: 0, scanned: 0, neverScanned: 0 };
   const tr = { critical: 0, high: 0, medium: 0, low: 0 };
   let truriskSum = 0, truriskCount = 0;
   const byType = emptyByType(() => ({ total: 0, scanned: 0, publicIp: 0 }));
-  const risk: RiskHost[] = [];
   /** Identifiants des actifs : pour partager la lecture des vulnérabilités entre deux appels simultanés. */
   const ids: number[] = [];
   for (const h of blocks(xml, "HOST")) {
@@ -201,15 +195,8 @@ export function hostsPage(xml: string, now: number) {
         attrs: leaves(h, ["TAGS", "DNS_DATA", "CLOUD_PROVIDER_TAGS", "METADATA", "ASSET_GROUP_IDS"]),
       });
     }
-    if (raw !== null && Number.isFinite(score)) {
-      risk.push({
-        id: tag(h, "ID"), name: tag(h, "DNS") || tag(h, "NETBIOS") || null, ip: tag(h, "IP"), os, type,
-        trurisk: score, criticality: Number.isFinite(acs) && acs > 0 ? acs : null, lastScan: last,
-      });
-    }
   }
-  risk.sort((a, b) => b.trurisk - a.trurisk);
-  return { ...agg, trurisk: tr, truriskSum, truriskCount, byType, topRisk: risk.slice(0, TOP_RISK), ids, rows };
+  return { ...agg, trurisk: tr, truriskSum, truriskCount, byType, ids, rows };
 }
 
 /** QID -> [détections, sévérité, hors délai, plus ancienne détection (ms, 0 si inconnue), QDS max, détections QDS >= 90, détections sur serveurs]. */
@@ -226,21 +213,17 @@ export interface AssetVulnRow {
   qids: number[]; detections: (string | number | null)[][];
 }
 
-export function detectionsPage(xml: string, now: number, watch: readonly string[] = [], eolQids: readonly string[] = []) {
+export function detectionsPage(xml: string, now: number, eolQids: readonly string[] = []) {
   const rows: AssetVulnRow[] = [];
   const bySev: Record<string, { total: number; overdue: number; ages: number[]; reopened: number; ageSum: number }> = {};
   for (const s of SEVERITIES) bySev[s] = { total: 0, overdue: 0, ages: [0, 0, 0, 0], reopened: 0, ageSum: 0 };
   const byType = emptyByType(() => ({ total: 0, overdue: 0, sev5: 0 }));
   const ignored = { total: 0, sev5: 0, ages: [0, 0, 0, 0] };
   const qids: Record<string, QidStat> = {};
-  const hosts: Row[] = [];
-  type Watched = { d5: number; d4: number; d3: number; overdue: number; qids: string[] };
-  const watched: Record<string, Watched> = {};
-  const watchSet = new Set(watch);
   const eolSet = new Set(eolQids);
   /** Actifs portant au moins un système ou logiciel en fin de vie (EOL/Obsolete). */
   const eol = emptyByType(() => 0);
-  let hostCount = 0, hostsWithSev5 = 0, qdsCritical = 0, potential = 0;
+  let hostCount = 0, hostsWithVulns = 0, qdsCritical = 0, potential = 0;
   const ageBucket = (age: number) => { const i = AGE_LIMITS.findIndex((l) => age < l); return i === -1 ? AGE_LIMITS.length : i; };
 
   for (const h of blocks(xml, "HOST")) {
@@ -249,11 +232,8 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
     const id = tag(head, "ID");
     const os = tag(head, "OS");
     const type = assetType(os);
-    const host = { id, ip: tag(head, "IP"), name: tag(head, "DNS") || tag(head, "NETBIOS") || null, os, type, d5: 0, d4: 0, d3: 0, overdue: 0, qdsCritical: 0 };
     let hasEol = false;
     const row: AssetVulnRow = { host_id: Number(id), d5: 0, d4: 0, d3: 0, overdue: 0, ignored: 0, reopened: 0, qds_max: 0, qids: [], detections: [] };
-    let w: Watched | null = null;
-    if (id && watchSet.has(id)) w = watched[id] = { d5: 0, d4: 0, d3: 0, overdue: 0, qids: [] };
     for (const d of blocks(h, "DETECTION")) {
       const sev = Number(tag(d, "SEVERITY"));
       const stat = bySev[sev];
@@ -294,16 +274,9 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
       byType[type].total++;
       if (late) byType[type].overdue++;
       if (sev === 5) byType[type].sev5++;
-      if (qds >= 90) { qdsCritical++; host.qdsCritical++; }
-      if (sev === 5) host.d5++; else if (sev === 4) host.d4++; else host.d3++;
-      if (late) host.overdue++;
+      if (qds >= 90) qdsCritical++;
       const qid = tag(d, "QID");
       if (qid && eolSet.has(qid)) hasEol = true;
-      if (w) {
-        if (sev === 5) w.d5++; else if (sev === 4) w.d4++; else w.d3++;
-        if (late) w.overdue++;
-        if (qid) w.qids.push(qid);
-      }
       if (qid) {
         const q = qids[qid] ?? (qids[qid] = [0, sev, 0, 0, 0, 0, 0]);
         q[0]++;
@@ -316,13 +289,9 @@ export function detectionsPage(xml: string, now: number, watch: readonly string[
     }
     if (hasEol) eol[type]++;
     if (Number.isFinite(row.host_id) && row.detections.length) rows.push(row);
-    if (host.d5 + host.d4 + host.d3 > 0) hosts.push(host);
-    if (host.d5 > 0) hostsWithSev5++;
+    if (row.d5 + row.d4 + row.d3 > 0) hostsWithVulns++;
   }
-  // Actifs les plus exposés de la page : vulnérabilités critiques (QDS >= 90), puis sévérité 5
-  const exposure = (x: Row) => x.qdsCritical * 1000 + x.d5 * 10 + x.d4;
-  hosts.sort((a, b) => exposure(b) - exposure(a));
-  return { hosts: hostCount, hostsWithVulns: hosts.length, hostsWithSev5, bySev, byType, ignored, eol, qdsCritical, potential, qids, watched, topHosts: hosts.slice(0, TOP), rows };
+  return { hosts: hostCount, hostsWithVulns, bySev, byType, ignored, eol, qdsCritical, potential, qids, rows };
 }
 
 /** Répartition des délais de correction : jour -> nombre (plafonné à 365). */
@@ -665,7 +634,6 @@ export function wasPage(xml: string, now: number, since: number) {
   const rows: WasFindingRow[] = [];
   /** Application -> [nom, ouvertes sév. 5, ouvertes sév. 4, ouvertes sév. 3, hors délai]. */
   const apps: Record<string, [string, number, number, number, number]> = {};
-  const owasp: Record<string, number> = {};
   const fix = emptyFix();
   let open = 0, lastId: string | null = null;
   for (const f of blocks(tag(xml, "data") ?? "", "Finding")) {
@@ -703,11 +671,9 @@ export function wasPage(xml: string, now: number, since: number) {
     const a = (apps[appId] ??= [appName, 0, 0, 0, 0]);
     if (sev >= 5) a[1]++; else if (sev === 4) a[2]++; else a[3]++;
     if (Number.isFinite(first) && now > deadline(first, Math.min(5, sev))) a[4]++;
-    const cat = tag(tag(f, "owasp") ?? "", "name") ?? null;
-    if (cat) owasp[cat] = (owasp[cat] ?? 0) + 1;
   }
   const more = /<hasMoreRecords>\s*true\s*<\/hasMoreRecords>/i.test(xml);
-  return { agg: { open, apps, owasp, fix }, rows, next: more ? (tag(xml, "lastId") ?? lastId) : null };
+  return { agg: { open, apps, fix }, rows, next: more ? (tag(xml, "lastId") ?? lastId) : null };
 }
 
 /** Application web déclarée dans WAS (table qualys_was_apps). */
@@ -848,42 +814,6 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     }
     return { detections, vulns, sev5, servers };
   };
-  // Critiques au sens du QDS (>= 90) avec un correctif de l'éditeur. La tuile « Critical Patchable »
-  // de VMDR compte les correctifs Qualys Patch Management (isQualysPatchable), absents de l'API.
-  let criticalPatchable = 0, criticalPatchableSev5 = 0, qdsCriticalSev5 = 0;
-  for (const [qid, q] of qids) {
-    if (q[1] === 5) qdsCriticalSev5 += q[5] ?? 0;
-    if (!(flagsOf(qid) & KB_FLAGS.patchable)) continue;
-    criticalPatchable += q[5] ?? 0;
-    if (q[1] === 5) criticalPatchableSev5 += q[5] ?? 0;
-  }
-
-  const vulnView = ([qid, q]: [string, QidStat]) => {
-    const info = kb[qid];
-    const flags = info?.[1] ?? 0;
-    return {
-      qid, title: info?.[0] || null, cves: info?.[2] || null, severity: q[1], hosts: q[0], servers: q[6] ?? 0, overdue: q[2],
-      firstFound: q[3] ? new Date(q[3]).toISOString() : null, maxQds: q[4] || null,
-      kev: Boolean(flags & KB_FLAGS.kev), ransomware: Boolean(flags & KB_FLAGS.ransomware),
-      activeAttacks: Boolean(flags & KB_FLAGS.activeAttacks), exploitPublic: Boolean(flags & KB_FLAGS.exploitPublic),
-      patchable: Boolean(flags & KB_FLAGS.patchable),
-    };
-  };
-  const byHosts = (a: [string, QidStat], b: [string, QidStat]) => b[1][0] - a[1][0];
-  const topVulns = [...qids.entries()].sort(byHosts).slice(0, TOP).map(vulnView);
-  const topArmed = [...qids.entries()].filter(([qid]) => flagsOf(qid) & ARMED).sort(byHosts).slice(0, TOP_RISK).map(vulnView);
-
-  const exposure = (x: Row) => x.qdsCritical * 1000 + x.d5 * 10 + x.d4;
-  const topHosts = detPages.flatMap((p) => p.topHosts ?? []).sort((a, b) => exposure(b) - exposure(a)).slice(0, TOP);
-
-  // Actifs les plus risqués (TruRisk), avec leurs vulnérabilités ouvertes
-  const watched: Record<string, Row> = Object.assign({}, ...detPages.map((p) => p.watched ?? {}));
-  const topRisk = hostsPages.flatMap((p) => (p.topRisk ?? []) as RiskHost[])
-    .sort((a, b) => b.trurisk - a.trurisk).slice(0, TOP_RISK)
-    .map((h) => {
-      const w = h.id ? watched[h.id] : undefined;
-      return { ...h, d5: w?.d5 ?? null, d4: w?.d4 ?? null, d3: w?.d3 ?? null, overdue: w?.overdue ?? null, armed: w ? w.qids.filter((q: string) => flagsOf(q) & ARMED).length : null };
-    });
   const truriskCount = sum(hostsPages, (p) => p.truriskCount);
 
   // Délais de correction réels : cumul jour par jour (table qualys_fixed_daily), ou pages de la photo
@@ -935,7 +865,6 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     products: eolProducts(eolEntries, kb).length,
     osProducts: eolProducts(eolEntries, kb).filter((p) => p.os).length,
     detections: eolEntries.reduce((t, [, q]) => t + q[0], 0),
-    top: eolProducts(eolEntries, kb).slice(0, TOP_RISK),
   };
 
   // Inventaire CSAM (axe 1)
@@ -961,10 +890,10 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     }])),
     osEol: sum(csam, (p) => p.osEol),
     osEos: sum(csam, (p) => p.osEos),
-    osOutdated: [...osMap.entries()].sort((a, b) => b[1][0] - a[1][0]).slice(0, TOP_RISK).map(([os, c]) => ({
+    osOutdated: [...osMap.entries()].sort((a, b) => b[1][0] - a[1][0]).slice(0, TOP_OS).map(([os, c]) => ({
       os, assets: c[0], endOfSupport: c[1] ? new Date(c[1]).toISOString().slice(0, 10) : null, endOfLife: c[2] ? new Date(c[2]).toISOString().slice(0, 10) : null,
     })),
-    recentUnmanaged: csam.flatMap((p) => p.recentUnmanaged ?? []).sort((a: Row, b: Row) => String(b.created).localeCompare(String(a.created))).slice(0, TOP_RISK),
+    recentUnmanaged: csam.flatMap((p) => p.recentUnmanaged ?? []).sort((a: Row, b: Row) => String(b.created).localeCompare(String(a.created))).slice(0, TOP),
     agentStaleDays: AGENT_STALE_DAYS,
     newDays: NEW_ASSET_DAYS,
   };
@@ -975,14 +904,12 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
   const was = pages.filter((p) => p.kind === "was").map((p) => p.agg);
   const wasError: string | null = pages.find((p) => p.kind === "waserror")?.agg?.message ?? null;
   const appMap = new Map<string, [string, number, number, number, number]>();
-  const owaspMap: Record<string, number> = {};
   for (const p of was) {
     for (const [id, a] of Object.entries((p.apps ?? {}) as Record<string, [string, number, number, number, number]>)) {
       const cur = appMap.get(id);
       if (!cur) appMap.set(id, [...a] as [string, number, number, number, number]);
       else { cur[1] += a[1]; cur[2] += a[2]; cur[3] += a[3]; cur[4] += a[4]; }
     }
-    for (const [k, v] of Object.entries((p.owasp ?? {}) as Record<string, number>)) owaspMap[k] = (owaspMap[k] ?? 0) + v;
   }
   const webApps = {
     collected: was.length > 0 || Boolean(wasError),
@@ -990,7 +917,6 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     open: sum(was, (p) => p.open),
     apps: [...appMap.entries()].map(([id, a]) => ({ id, name: a[0], sev5: a[1], sev4: a[2], sev3: a[3], overdue: a[4] }))
       .sort((x, y) => y.sev5 * 1000 + y.sev4 * 10 + y.sev3 - (x.sev5 * 1000 + x.sev4 * 10 + x.sev3)),
-    owasp: Object.entries(owaspMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, count]) => ({ name, count })),
     fixed: fixView(mergeFix(was.map((p) => p.fix))),
   };
 
@@ -1070,23 +996,16 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     generatedAt: new Date(now).toISOString(),
     coverage,
     hostsWithVulns: sum(detPages, (p) => p.hostsWithVulns),
-    hostsWithSev5: sum(detPages, (p) => p.hostsWithSev5),
-    detections: { total, potential: sum(detPages, (p) => p.potential), qdsCritical: sum(detPages, (p) => p.qdsCritical), qdsCriticalSev5, vulns: qids.size },
+    detections: { total, potential: sum(detPages, (p) => p.potential), qdsCritical: sum(detPages, (p) => p.qdsCritical), vulns: qids.size },
     severities,
     kev: flagged(KB_FLAGS.kev),
     ransomware: flagged(KB_FLAGS.ransomware),
     activeAttacks: flagged(KB_FLAGS.activeAttacks),
-    criticalPatchable,
-    criticalPatchableSev5,
-    topVulns,
-    topHosts,
     // Axe 2 : exposition aux menaces
     exposure: {
       truriskAvg: truriskCount ? Math.round(sum(hostsPages, (p) => p.truriskSum) / truriskCount) : null,
       truriskAssets: truriskCount,
       armed: { ...flagged(ARMED), exploitPublic: flagged(KB_FLAGS.exploitPublic).detections },
-      topArmed,
-      topRisk,
     },
     // Axe 3 : efficacité opérationnelle
     operations: {

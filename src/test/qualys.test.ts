@@ -96,7 +96,6 @@ describe("Qualys : chiffres d'une page", () => {
     expect(p.qdsCritical).toBe(1);
     expect(p.qids["100"][0]).toBe(3);
     expect(p.qids["100"][3]).toBe(Date.parse(daysAgo(40))); // plus ancienne détection
-    expect(p.topHosts[0]).toMatchObject({ name: "pc1.corp.local", d5: 2, d4: 1, qdsCritical: 1 });
     // Aucune valeur que le JSON ne sait pas stocker
     expect(JSON.parse(JSON.stringify(p)).qids["200"]).toEqual(p.qids["200"]);
   });
@@ -105,7 +104,6 @@ describe("Qualys : chiffres d'une page", () => {
     const h = (method: string, scan: string | null, trurisk: number) => `<HOST><ID>1</ID><TRACKING_METHOD>${method}</TRACKING_METHOD>${scan ? `<LAST_VULN_SCAN_DATETIME>${scan}</LAST_VULN_SCAN_DATETIME>` : ""}<TRURISK_SCORE>${trurisk}</TRURISK_SCORE></HOST>`;
     const p = hostsPage(`<HOST_LIST_OUTPUT><RESPONSE><HOST_LIST>${h("Cloud Agent", daysAgo(2), 900)}${h("IP", daysAgo(60), 720)}${h("IP", null, 100)}</HOST_LIST></RESPONSE></HOST_LIST_OUTPUT>`, NOW);
     expect(p).toMatchObject({ total: 3, agent: 1, scanned: 1, neverScanned: 1, trurisk: { critical: 1, high: 1, medium: 0, low: 1 }, truriskSum: 1720, truriskCount: 3 });
-    expect(p.topRisk.map((x) => x.trurisk)).toEqual([900, 720, 100]);
   });
 
   it("classe les actifs serveurs / postes d'après le système d'exploitation", () => {
@@ -117,17 +115,15 @@ describe("Qualys : chiffres d'une page", () => {
     expect(assetType(null)).toBe("other");
   });
 
-  it("compte les dérogations à part et suit les actifs les plus risqués", () => {
+  it("compte les dérogations à part", () => {
     const xml = detectionsXml(
       host(1, "srv1", detection(100, 5, 40) + detection(200, 4, 200).replace("<IS_IGNORED>0", "<IS_IGNORED>1"), "Windows Server 2019")
       + host(2, "pc2", detection(100, 5, 5)),
     );
-    const p = detectionsPage(xml, NOW, ["1"]);
+    const p = detectionsPage(xml, NOW);
     expect(p.ignored).toEqual({ total: 1, sev5: 0, ages: [0, 0, 0, 1] });
     expect(p.byType.server).toEqual({ total: 1, overdue: 1, sev5: 1 });
     expect(p.byType.workstation).toEqual({ total: 1, overdue: 0, sev5: 1 });
-    expect(p.watched["1"]).toEqual({ d5: 1, d4: 0, d3: 0, overdue: 1, qids: ["100"] });
-    expect(p.watched["2"]).toBeUndefined();
     expect(p.qids["100"][6]).toBe(1); // une détection sur serveur
     expect(p.bySev[5].ageSum).toBeCloseTo(45);
   });
@@ -188,17 +184,10 @@ describe("Qualys : photo", () => {
     // Sévérités 4 et 5, et part de sévérité 5 (« dont »), comme les filtres de la console
     expect(r.kev).toEqual({ detections: 2, vulns: 1, sev5: 2, servers: 0 });
     expect(r.ransomware).toEqual({ detections: 1, vulns: 1, sev5: 0, servers: 0 });
-    expect(r.detections).toMatchObject({ qdsCritical: 2, qdsCriticalSev5: 1 });
-    expect(r.criticalPatchableSev5).toBe(1);
-    expect(r.hostsWithSev5).toBe(2);
-    // QDS >= 90 et correctif disponible : seule la détection QDS 95 de QID 100 (QID 200 sans correctif)
-    expect(r.criticalPatchable).toBe(1);
-    expect(r.topVulns[0]).toMatchObject({ qid: "100", title: "Vuln 100", hosts: 2, overdue: 2, kev: true, patchable: true, firstFound: new Date(daysAgo(50)).toISOString() });
-    expect(r.topHosts.map((h) => h.name)).toEqual(["pc1.corp.local", "pc2.corp.local"]);
+    expect(r.detections).toMatchObject({ qdsCritical: 2 });
     expect(summaryOf(r)).toMatchObject({ detections: 3, sev5: 2, sev4: 1, overdue: 3, kev: 2, coverage: 75, slaRate: null });
     // Vulnérabilités armées : KEV (100) et ransomware (200)
     expect(r.exposure.armed).toMatchObject({ detections: 3, vulns: 2, sev5: 2 });
-    expect(r.exposure.topArmed.map((v) => v.qid)).toEqual(["100", "200"]);
     expect(r.operations.fixedCollected).toBe(false);
     // Index de recherche : une ligne par QID, sans nom de machine
     const idx = vulnIndex([
@@ -210,17 +199,15 @@ describe("Qualys : photo", () => {
     expect(JSON.stringify(idx)).not.toContain("pc1");
   });
 
-  it("réunit les délais de correction et les actifs les plus risqués", () => {
-    const risk = { id: "1", name: "srv1", ip: null, os: "Windows Server 2019", type: "server", trurisk: 910, criticality: null, lastScan: null };
+  it("réunit les délais de correction", () => {
     const r = buildResults([
-      { kind: "hosts", agg: { total: 1, agent: 1, scanned: 1, neverScanned: 0, trurisk: { critical: 1, high: 0, medium: 0, low: 0 }, truriskSum: 910, truriskCount: 1, topRisk: [risk] } },
-      { kind: "detections", agg: { bySev: {}, qids: { 100: [2, 5, 1, 0, 0, 0, 1] }, watched: { 1: { d5: 2, d4: 0, overdue: 1, qids: ["100", "100"] } } } },
+      { kind: "hosts", agg: { total: 1, agent: 1, scanned: 1, neverScanned: 0, trurisk: { critical: 1, high: 0, medium: 0, low: 0 }, truriskSum: 910, truriskCount: 1 } },
+      { kind: "detections", agg: { bySev: {}, qids: { 100: [2, 5, 1, 0, 0, 0, 1] } } },
       { kind: "fixed", agg: { cells: { "2026-10-20|5|server": { day: "2026-10-20", severity: 5, asset_type: "server", n: 2, in_sla: 1, days_sum: 40, hist: { 10: 1, 30: 1 } } } } },
       { kind: "fixed", agg: { cells: { "2026-11-10|5|server": { day: "2026-11-10", severity: 5, asset_type: "server", n: 2, in_sla: 2, days_sum: 20, hist: { 10: 2 } } } } },
       { kind: "kb", agg: { 100: ["Vuln 100", 1, ""] } },
     ], NOW);
     expect(r.exposure.truriskAvg).toBe(910);
-    expect(r.exposure.topRisk[0]).toMatchObject({ name: "srv1", d5: 2, overdue: 1, armed: 2 });
     expect(r.operations.fixed.bySev[5]).toEqual({ fixed: 4, inSla: 3, slaRate: 75, mttr: 15, median: 10 });
     // Octobre : premier mois des données, commencé le 20 (partiel) ; novembre est le mois en cours
     expect(r.operations.fixed.monthly).toEqual([
@@ -272,14 +259,13 @@ describe("Qualys : obsolescence et conformité", () => {
       host(1, "srv1", detection(900, 5, 400) + detection(901, 4, 400), "Windows Server 2012 R2")
       + host(2, "pc2", detection(100, 5, 5)),
     );
-    const p = detectionsPage(xml, NOW, [], ["900", "901"]);
+    const p = detectionsPage(xml, NOW, ["900", "901"]);
     expect(p.eol).toEqual({ server: 1, workstation: 0, other: 0 }); // un actif, même avec deux produits
     const r = buildResults([
       { kind: "detections", agg: JSON.parse(JSON.stringify(p)) },
       { kind: "kb", agg: { 900: ["EOL/Obsolete Operating System: Windows Server 2012 R2 Detected", 0, ""], 901: ["EOL/Obsolete Software: .NET 4.5 Detected", 0, ""], 100: ["Autre", 0, ""] } },
     ], NOW);
     expect(r.obsolescence).toMatchObject({ hostsTracked: true, hosts: 1, products: 2, osProducts: 1, detections: 2 });
-    expect(r.obsolescence.top[0]).toMatchObject({ title: "Windows Server 2012 R2 Detected", os: true, servers: 1 });
     expect(summaryOf(r).eolHosts).toBe(1);
   });
 
@@ -290,8 +276,6 @@ describe("Qualys : obsolescence et conformité", () => {
       { kind: "kb", agg: { 5003893: ["EOL/Obsolete Software: Microsoft .Net Version 6 Detected", 0, ""], 106247: ["EOL/Obsolete Software: Microsoft .Net Version 6 Detected", 0, ""] } },
     ], NOW);
     expect(r.obsolescence.products).toBe(1);
-    expect(r.obsolescence.top).toHaveLength(1);
-    expect(r.obsolescence.top[0]).toMatchObject({ title: "Microsoft .Net Version 6 Detected", hosts: 2, qid: "106247, 5003893" });
   });
 
   it("lit les politiques et l'état de conformité (Policy Audit)", () => {
@@ -388,7 +372,6 @@ describe("Qualys : inventaire (CSAM), exposition Internet et applications web (W
     expect(agg.open).toBe(3);
     expect(agg.apps["1"]).toEqual(["Appli 1", 1, 0, 1, 1]); // critique ouverte depuis 20 j > 7 j
     expect(agg.apps["2"]).toEqual(["Appli 2", 0, 1, 0, 0]);
-    expect(agg.owasp).toEqual({ "A03 Injection": 1 });
     expect(agg.fix).toMatchObject({ n: 1, inSla: 1, daysSum: 5 });
     const r = buildResults([{ kind: "was", agg: JSON.parse(JSON.stringify(agg)) }], NOW);
     expect(r.webApps.apps[0]).toMatchObject({ name: "Appli 1", sev5: 1 });
