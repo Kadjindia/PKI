@@ -4,7 +4,7 @@ import {
   csamPage, wasPage, wasAppsPage, kbDetails, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS,
   type FixedRow,
 } from "./parse.ts";
-import { runDiagnostic, gatewayToken, gatewayUrl } from "./diagnostic.ts";
+import { gatewayToken, gatewayUrl } from "./gateway.ts";
 import { handleAssets, handleAsset, handleVuln, handleInventory, handleInventoryAsset, handleWebApps } from "./details.ts";
 
 // --- Secrets configurés côté Supabase (Project Settings > Edge Functions > Secrets) ---
@@ -762,7 +762,6 @@ Deno.serve(async (req) => {
     if (body.action === "inventory") return jsonResponse(await handleInventory(adminClient()));
     if (body.action === "inventory-asset") return jsonResponse(await handleInventoryAsset(adminClient(), body.assetId));
     if (body.action === "webapps") return jsonResponse(await handleWebApps(adminClient()));
-    if (body.action === "diagnostic") return jsonResponse(await runDiagnostic(QUALYS_BASE_URL, QUALYS_USERNAME, QUALYS_PASSWORD, Deno.env.get("QUALYS_GATEWAY_URL")));
     return await handleStatus(adminClient());
   } catch (err) {
     console.error("Erreur qualys-proxy:", (err as Error).message);

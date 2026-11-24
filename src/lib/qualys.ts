@@ -146,11 +146,6 @@ export interface QualysSearch {
   query: string; date: string | null; matches: QualysSearchMatch[]; trend: { date: string; hosts: number }[];
 }
 
-export interface QualysProbe {
-  module: string; label: string; purpose: string; status: "ok" | "refused" | "unknown" | "error"; detail: string; count?: number | null;
-}
-
-export interface QualysDiagnostic { checkedAt: string; apiBase: string; gateway: string; results: QualysProbe[] }
 
 export const FLAGS = { kev: 1, ransomware: 2, patchable: 4, activeAttacks: 8, exploitPublic: 16 } as const;
 

@@ -8,14 +8,14 @@ import {
 } from "@/components/ui/table";
 import {
   ShieldAlert, Flame, Hourglass, Radar, Info, Loader2, AlertTriangle, Server, Gauge, Timer, Search,
-  CheckCircle2, XCircle, HelpCircle, KeyRound, RotateCcw, FileWarning, LineChart as LineIcon, Crosshair, Wrench, Archive, ClipboardCheck,
+  CheckCircle2, XCircle, RotateCcw, FileWarning, Crosshair, Archive, ClipboardCheck,
 } from "lucide-react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
 } from "recharts";
 import {
   AGE_LABELS, SEVERITY_LABELS, slaText, HISTORY_METRICS, ASSET_TYPE_LABELS, fmt, pct, progressLabel, trendOver, remediationProgress,
-  type QualysState, type QualysHistoryPoint, type QualysResults, type QualysSearch, type QualysDiagnostic,
+  type QualysState, type QualysHistoryPoint, type QualysResults, type QualysSearch,
   type QualysFixView,
 } from "@/lib/qualys";
 import {
@@ -397,7 +397,7 @@ function OperationsAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
 }
 
 // ---------------------------------------------------------------------------
-// Axe 1 : visibilité (partiel, en attendant CSAM) et diagnostic des accès
+// Axe 1 : visibilité du parc
 // ---------------------------------------------------------------------------
 
 /** Détail de la dernière photo, filtré selon la page. */
@@ -767,62 +767,6 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
   );
 }
 
-const PROBE_STYLE = {
-  ok: { icon: CheckCircle2, cls: "text-emerald-600", label: "Autorisé" },
-  refused: { icon: XCircle, cls: "text-red-600", label: "Refusé" },
-  unknown: { icon: HelpCircle, cls: "text-amber-600", label: "À vérifier" },
-  error: { icon: AlertTriangle, cls: "text-amber-600", label: "Erreur" },
-} as const;
-
-function AccessDiagnostic() {
-  const diag = useMutation({ mutationFn: () => callQualys<QualysDiagnostic>({ action: "diagnostic" }) });
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-bold flex items-center gap-2">
-          <KeyRound className="w-4 h-4 text-primary" /> Accès aux modules Qualys
-          <Help>Un petit appel en lecture seule par module, avec le compte configuré côté serveur. L&apos;API voit exactement ce que voit ce compte dans la console : « refusé » signifie que le module n&apos;est pas ouvert à ce compte, même s&apos;il figure dans la licence. Aucune donnée n&apos;est affichée, seulement le statut.</Help>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <Button variant="outline" size="sm" onClick={() => diag.mutate()} disabled={diag.isPending}>
-          {diag.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wrench className="w-4 h-4" />} {diag.data ? "Relancer le diagnostic" : "Lancer le diagnostic"}
-        </Button>
-        {diag.isPending && <p className="text-xs text-muted-foreground">Un module à la fois, jusqu&apos;à une minute…</p>}
-        {diag.error && <p className="text-sm text-destructive">{(diag.error as Error).message}</p>}
-        {diag.data && (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Module</TableHead>
-                  <TableHead>Sert à</TableHead>
-                  <TableHead>Accès</TableHead>
-                  <TableHead>Détail</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {diag.data.results.map((p) => {
-                  const st = PROBE_STYLE[p.status];
-                  return (
-                    <TableRow key={p.module}>
-                      <TableCell className="py-2"><div className="text-sm font-semibold">{p.module}</div><div className="text-[11px] text-muted-foreground">{p.label}</div></TableCell>
-                      <TableCell className="py-2 text-xs text-muted-foreground">{p.purpose}</TableCell>
-                      <TableCell className={`py-2 text-sm font-bold whitespace-nowrap ${st.cls}`}><st.icon className="w-4 h-4 inline mr-1 -mt-0.5" />{st.label}</TableCell>
-                      <TableCell className="py-2 text-xs">{p.status === "ok" ? (p.count != null ? `${fmt(p.count)} éléments visibles` : "—") : p.detail}</TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            <p className="text-[11px] text-muted-foreground mt-2">Vérifié le {new Date(diag.data.checkedAt).toLocaleString("fr-FR")} · API {diag.data.apiBase} · Gateway {diag.data.gateway}</p>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Évolution dans le temps
 // ---------------------------------------------------------------------------
@@ -833,10 +777,7 @@ function History({ points }: { readonly points: QualysHistoryPoint[] }) {
   const series = points.filter((p) => p[metric] !== null && p[metric] !== undefined).map((p) => ({ time: Date.parse(p.date), value: p[metric] as number }));
   return (
     <Card>
-      <CardHeader className="pb-1">
-        <CardTitle className="text-sm font-bold flex items-center gap-2"><LineIcon className="w-4 h-4 text-primary" /> Évolution dans le temps</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="p-4 space-y-3">
         <div className="flex flex-wrap gap-1.5">
           {HISTORY_METRICS.map((m) => (
             <button key={m.key} type="button" onClick={() => setMetric(m.key)}
@@ -946,7 +887,6 @@ export default function QualysPanel() {
         {!error && !data?.running && (
           <Card><CardContent className="p-6 text-sm text-muted-foreground">Les vulnérabilités n&apos;ont pas encore été calculées : elles le seront automatiquement la nuit prochaine.</CardContent></Card>
         )}
-        <AccessDiagnostic />
       </div>
     );
   }
@@ -1011,9 +951,8 @@ export default function QualysPanel() {
         <OperationsAxis r={r} d={view} />
         <ComplianceAxis r={r} points={points} />
         <WebAppsAxis r={r} detail={Boolean(view)} />
-        <AxisSection id="history" n="Suivi" title="Évolution et accès" subtitle="Courbes nuit après nuit et diagnostic des accès aux modules Qualys.">
+        <AxisSection id="history" n="Suivi" title="Évolution dans le temps" subtitle="Les indicateurs clés, nuit après nuit.">
           <History points={points} />
-          <AccessDiagnostic />
         </AxisSection>
       </div>
       <AssetSheet asset={assetOpen} onClose={() => setAssetOpen(null)} />
