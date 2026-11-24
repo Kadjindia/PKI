@@ -3,7 +3,7 @@ import {
   tag, qualysError, nextPageUrl, hostsPage, detectionsPage, fixedPage, kbPage, buildResults, summaryOf, vulnIndex, assetType, medianOf,
   policiesPage, posturePage, mergePosture, isEol, isEolOs, deadline, isPublicIp, csamPage, wasPage, splitHosts, mergeFixedRows, fixedRowsOfPages, qualysDate, leaves, kbDetails, wasAppsPage, trimJson,
 } from "../../supabase/functions/qualys-proxy/parse";
-import { classify, gatewayUrl } from "../../supabase/functions/qualys-proxy/diagnostic";
+import { gatewayUrl } from "../../supabase/functions/qualys-proxy/gateway";
 import { remediationProgress, trendOver } from "../lib/qualys";
 
 // Extraits au format renvoyé par l'abonnement (API 5.0, plateforme EU 2)
@@ -387,18 +387,7 @@ describe("Qualys : inventaire (CSAM), exposition Internet et applications web (W
   });
 });
 
-describe("Qualys : diagnostic des accès et écran", () => {
-  it("distingue autorisé, refusé et à vérifier", () => {
-    expect(classify(200, "<HOST_LIST_OUTPUT><RESPONSE></RESPONSE></HOST_LIST_OUTPUT>").status).toBe("ok");
-    expect(classify(200, "<ServiceResponse><responseCode>SUCCESS</responseCode><count>42</count></ServiceResponse>")).toEqual({ status: "ok", detail: "Autorisé", count: 42 });
-    expect(classify(200, "<ServiceResponse><responseCode>UNAUTHORIZED</responseCode></ServiceResponse>").status).toBe("refused");
-    expect(classify(401, "").status).toBe("refused");
-    expect(classify(200, "<SIMPLE_RETURN><RESPONSE><CODE>2002</CODE><TEXT>User is not authorized to access this module</TEXT></RESPONSE></SIMPLE_RETURN>").status).toBe("refused");
-    expect(classify(404, "").status).toBe("unknown");
-    expect(classify(409, "").status).toBe("error");
-    expect(classify(200, `{"responseCode":"SUCCESS","count":7}`)).toEqual({ status: "ok", detail: "Autorisé", count: 7 });
-  });
-
+describe("Qualys : politiques, Gateway et écran", () => {
   it("trouve une politique quel que soit le format de la liste", () => {
     const xml = `<POLICY_LIST_OUTPUT><RESPONSE><POLICY_LIST><POLICY>
       <ID><![CDATA[4521]]></ID><TITLE><![CDATA[CIS Windows]]></TITLE><CREATED><DATETIME>x</DATETIME></CREATED></POLICY></POLICY_LIST></RESPONSE></POLICY_LIST_OUTPUT>`;
