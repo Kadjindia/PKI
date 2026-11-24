@@ -59,14 +59,15 @@ function Kpi({ title, help, icon: Icon, color, value, sub }: {
   readonly value: string; readonly sub?: React.ReactNode;
 }) {
   return (
-    <Card className={`border-l-4 ${color}`}>
-      <CardContent className="p-4 space-y-1">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"><Icon className="w-4 h-4 shrink-0" /> {title}</div>
+    <Card className={`h-full border-l-4 ${color}`}>
+      <CardContent className="p-4 h-full flex flex-col">
+        {/* Hauteurs fixes : titres, valeurs et commentaires alignés d'une carte à l'autre */}
+        <div className="flex items-start justify-between gap-2 h-9">
+          <div className="flex items-start gap-1.5 text-xs font-semibold text-muted-foreground leading-tight min-w-0"><Icon className="w-4 h-4 shrink-0" /> <span className="line-clamp-2" title={title}>{title}</span></div>
           <Help>{help}</Help>
         </div>
-        <div className="text-3xl font-black text-foreground">{value}</div>
-        {sub && <div className="text-xs text-muted-foreground space-x-1">{sub}</div>}
+        <div className="text-3xl font-black text-foreground leading-tight mt-1">{value}</div>
+        <div className="text-xs text-muted-foreground mt-1 min-h-[2rem] leading-snug space-x-1">{sub}</div>
       </CardContent>
     </Card>
   );
@@ -1196,14 +1197,14 @@ export default function QualysPanel() {
 
         {/* INDICATEURS CLÉS */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className={view ? clickable(Boolean(filters.tier?.length)) : ""} onClick={view ? () => tierFilter(["critical", "high"]) : undefined} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
+          <div className={`h-full ${view ? clickable(Boolean(filters.tier?.length)) : ""}`} onClick={view ? () => tierFilter(["critical", "high"]) : undefined} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
             <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={sum?.truriskAvg != null ? fmt(sum.truriskAvg) : e?.truriskAvg != null ? fmt(e.truriskAvg) : "—"}
               help={<>Moyenne du score de risque Qualys (0 à 1 000) des actifs{filtered ? " de la sélection" : " du parc"} : la posture de risque globale. Doit baisser dans le temps.</>}
               sub={sum ? <><span>sur 1 000 · {fmt(sum.truriskN)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</> : e ? <><span>sur 1 000 · {fmt(e.truriskAssets)} actifs</span> <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter /></> : "après le prochain calcul"} />
           </div>
-          <div className={view ? clickable(filters.threat === "armed") : ""} onClick={view ? () => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" })) : undefined} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
+          <div className={`h-full ${view ? clickable(filters.threat === "armed") : ""}`} onClick={view ? () => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" })) : undefined} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
             {sum ? (
-              <Kpi title="Actifs exposés à une vulnérabilité exploitable" icon={Flame} color="border-l-orange-500" value={fmt(sum.armedAssets)}
+              <Kpi title="Actifs exploitables" icon={Flame} color="border-l-orange-500" value={fmt(sum.armedAssets)}
                 help={<>Actifs portant au moins une vulnérabilité ouverte exploitée ou exploitable dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
                 sub={<span>{pct(sum.armedAssets, sum.total) ?? 0} % des actifs · dont {fmt(sum.kevAssets)} avec une vulnérabilité CISA KEV</span>} />
             ) : (
@@ -1218,7 +1219,7 @@ export default function QualysPanel() {
           <Kpi title="MTTR – critiques" icon={Timer} color="border-l-sky-500" value={mttr5 === null ? "—" : `${fmt(mttr5)} j`}
             help={<>Délai moyen de correction (MTTR) des vulnérabilités critiques, de la détection à la correction. Délai fixé : 7 jours calendaires, une vulnérabilité critique étant traitée comme un incident de sécurité. Tout le parc (non filtré).</>}
             sub={mttr5 === null ? "après le prochain calcul" : <><span>délai moyen · cible 7 j</span> <Delta value={trendOver(points, "mttr5")} lowerIsBetter unit=" j" /></>} />
-          <div className={view ? clickable(filters.scan === "stale" || filters.scan === "never") : ""} onClick={view ? () => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" })) : undefined} title={view ? "Cliquer pour voir les actifs non analysés récemment" : undefined}>
+          <div className={`h-full ${view ? clickable(filters.scan === "stale" || filters.scan === "never") : ""}`} onClick={view ? () => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" })) : undefined} title={view ? "Cliquer pour voir les actifs non analysés récemment" : undefined}>
             <Kpi title="Couverture des scans" icon={Radar} color="border-l-violet-500" value={coverage === null ? "—" : `${coverage} %`}
               help={<>Part des actifs analysés (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
               sub={sum ? `${fmt(sum.recent)} actifs sur ${fmt(sum.total)} (${r.coverage.recentDays} derniers jours)` : `${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)} (${r.coverage.recentDays} derniers jours)`} />
