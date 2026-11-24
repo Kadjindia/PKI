@@ -15,7 +15,7 @@ import {
   type DAsset, type QFilters, type TruTier, type CatalogIndex, type ScanState, type CsamAsset, type WasApp, type WasFinding,
 } from "@/lib/qualysDetails";
 import { callQualys } from "./api";
-import { Badge, FlagBadges, Help, TYPE_TONE, sevTone, clickable, useQualysCtx } from "./ui";
+import { Badge, FlagBadges, FoldTitle, Help, TYPE_TONE, sevTone, clickable, useQualysCtx } from "./ui";
 
 const TYPES: AssetType[] = ["server", "workstation", "other"];
 const TIERS: TruTier[] = ["critical", "high", "medium", "low", "none"];
@@ -191,6 +191,7 @@ export function AssetTable({ assets, title, help, initial = 25, csvName = "qualy
   const ctx = useQualysCtx()!;
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: defaultSort, desc: true });
   const [limit, setLimit] = useState(initial);
+  const [open, setOpen] = useState(false);
   const sorted = useMemo(() => {
     const v = (a: DAsset): number | string => sort.key === "name" ? (a.name ?? a.ip ?? "").toLowerCase() : sort.key === "vulns" ? a.d5 * 1e6 + a.d4 * 1e3 + a.d3
       : sort.key === "last_scan" ? (a.last_scan ?? "") : sort.key === "criticality" ? a.criticality ?? 0 : sort.key === "trurisk" ? a.trurisk ?? -1 : a[sort.key];
@@ -205,16 +206,16 @@ export function AssetTable({ assets, title, help, initial = 25, csvName = "qualy
   );
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className={open ? "pb-2" : ""}>
         <CardTitle className="text-sm font-bold flex items-center gap-2 flex-wrap">
-          {title} <span className="text-muted-foreground font-normal">({fmt(assets.length)})</span>
+          <FoldTitle open={open} onToggle={() => setOpen(!open)}>{title} <span className="text-muted-foreground font-normal">({fmt(assets.length)})</span></FoldTitle>
           {help && <Help>{help}</Help>}
           <Button variant="outline" size="sm" className="ml-auto" onClick={() => downloadCsv(csvName, toCsv(sorted.map((a) => ({ ...a, typeLabel: ASSET_TYPE_LABELS[a.asset_type], publicLabel: a.public_ip ? "Oui" : "Non" })), ASSET_CSV))}>
             <Download className="w-4 h-4" /> Exporter ({fmt(assets.length)})
           </Button>
         </CardTitle>
       </CardHeader>
-      <CardContent className="overflow-x-auto">
+      {open && <CardContent className="overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -256,7 +257,7 @@ export function AssetTable({ assets, title, help, initial = 25, csvName = "qualy
           </div>
         )}
         {!sorted.length && <p className="text-sm text-muted-foreground py-4 text-center">Aucun actif ne correspond aux filtres.</p>}
-      </CardContent>
+      </CardContent>}
     </Card>
   );
 }
@@ -270,6 +271,7 @@ export function PriorityFixes({ assets, idx }: { readonly assets: DAsset[]; read
   const [onlyArmed, setOnlyArmed] = useState(true);
   const [limit, setLimit] = useState(15);
   const [open, setOpen] = useState<string | null>(null);
+  const [shown, setShown] = useState(false);
   const [q, setQ] = useState("");
   const groups = useMemo(() => productGroups(assets, idx).sort((a, b) => groupPriority(b) - groupPriority(a)), [assets, idx]);
   const list = groups.filter((g) => (!onlyArmed || g.flags & ARMED_FLAGS) && (!q || g.key.toLowerCase().includes(q.toLowerCase())));
@@ -280,17 +282,17 @@ export function PriorityFixes({ assets, idx }: { readonly assets: DAsset[]; read
   }, [assets]);
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className={shown ? "pb-2" : ""}>
         <CardTitle className="text-sm font-bold flex items-center gap-2 flex-wrap">
-          <Wrench className="w-4 h-4 text-orange-500" /> Correctifs prioritaires, par produit
+          <FoldTitle open={shown} onToggle={() => setShown(!shown)}><Wrench className="w-4 h-4 text-orange-500" /> Correctifs prioritaires, par produit <span className="text-muted-foreground font-normal">({fmt(list.length)})</span></FoldTitle>
           <Help>Les vulnérabilités ouvertes regroupées par produit à corriger (ex. toutes les vulnérabilités de jackson-databind sur une ligne) : une ligne correspond à un chantier de remédiation. Classement : exploitées activement (CISA KEV) et ransomware d&apos;abord, puis exploitables, sévérité, nombre de serveurs et d&apos;actifs touchés. Cliquer sur une ligne pour voir ses vulnérabilités ; l&apos;entonnoir filtre toute la page sur ce produit.</Help>
-          <span className="ml-auto flex items-center gap-2">
+          {shown && <span className="ml-auto flex items-center gap-2">
             <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Produit…" className="h-7 w-40 text-xs" />
             <label className="text-xs font-normal flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={onlyArmed} onChange={() => setOnlyArmed(!onlyArmed)} /> exploitables seulement</label>
-          </span>
+          </span>}
         </CardTitle>
       </CardHeader>
-      <CardContent className="overflow-x-auto">
+      {shown && <CardContent className="overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -342,7 +344,7 @@ export function PriorityFixes({ assets, idx }: { readonly assets: DAsset[]; read
         </Table>
         {list.length > limit && <Button variant="ghost" size="sm" onClick={() => setLimit(limit + 30)}>Afficher plus ({fmt(list.length - limit)} produits restants)</Button>}
         {!list.length && <p className="text-sm text-muted-foreground py-4 text-center">Aucune vulnérabilité {onlyArmed ? "exploitable " : ""}sur la sélection.</p>}
-      </CardContent>
+      </CardContent>}
     </Card>
   );
 }
@@ -356,6 +358,7 @@ export function EolList({ assets, idx, total }: { readonly assets: DAsset[]; rea
   const [q, setQ] = useState("");
   const [kind, setKind] = useState<"all" | "os" | "sw">("all");
   const [limit, setLimit] = useState(20);
+  const [open, setOpen] = useState(false);
   const all = useMemo(() => eolProducts(assets, idx), [assets, idx]);
   const list = all.filter((p) => (kind === "all" || (kind === "os") === p.os) && (!q || p.title.toLowerCase().includes(q.toLowerCase())));
   const eolAssets = assets.filter((a) => a.eol > 0);
@@ -363,13 +366,14 @@ export function EolList({ assets, idx, total }: { readonly assets: DAsset[]; rea
   const chip = (active: boolean) => `text-xs px-2 py-1 rounded-full border ${active ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`;
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-bold flex items-center gap-2">
-          <Archive className="w-4 h-4 text-amber-600" /> Obsolescence : systèmes et logiciels en fin de support
+      <CardHeader className={open ? "pb-2" : ""}>
+        <CardTitle className="text-sm font-bold flex items-center gap-2 flex-wrap">
+          <FoldTitle open={open} onToggle={() => setOpen(!open)}><Archive className="w-4 h-4 text-amber-600" /> Obsolescence : systèmes et logiciels en fin de support</FoldTitle>
           <Help>Produits qui ne reçoivent plus de correctifs de sécurité de leur éditeur (vulnérabilités « EOL/Obsolete » de Qualys VMDR). Liste complète, recalculée selon les filtres de la page. Cliquer sur un produit pour voir les actifs concernés.</Help>
+          {!open && <span className="text-xs font-normal text-muted-foreground"><b className="text-foreground">{fmt(eolAssets.length)}</b> actifs concernés · {fmt(all.length)} produits en fin de support</span>}
         </CardTitle>
       </CardHeader>
-      <CardContent className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {open && <CardContent className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="space-y-2 text-sm">
           <button type="button" className={`text-left w-full p-1 ${clickable(Boolean(ctx.filters.eol))}`} onClick={() => ctx.setFilters((f) => ({ ...f, eol: f.eol ? undefined : true }))} title="Filtrer la page sur ces actifs">
             <div className="text-3xl font-black">{fmt(eolAssets.length)}</div>
@@ -419,7 +423,7 @@ export function EolList({ assets, idx, total }: { readonly assets: DAsset[]; rea
           {list.length > limit && <Button variant="ghost" size="sm" onClick={() => setLimit(list.length)}>Afficher les {fmt(list.length)} produits</Button>}
           {!list.length && <p className="text-sm text-emerald-600 font-semibold py-2">Aucun produit en fin de support sur la sélection.</p>}
         </div>
-      </CardContent>
+      </CardContent>}
     </Card>
   );
 }
@@ -458,11 +462,10 @@ export function CsamInventory() {
   const detail = useQuery({ queryKey: ["qualys-inventory-asset", raw], queryFn: () => callQualys<{ asset: Record<string, unknown> }>({ action: "inventory-asset", assetId: raw }), enabled: raw !== null });
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className={show ? "pb-2" : ""}>
         <CardTitle className="text-sm font-bold flex items-center gap-2 flex-wrap">
-          <Radar className="w-4 h-4 text-primary" /> Inventaire complet (CSAM)
+          <FoldTitle open={show} onToggle={() => setShow(!show)}><Radar className="w-4 h-4 text-primary" /> Inventaire complet (CSAM)</FoldTitle>
           <Help>Tous les actifs connus de Qualys CSAM, quel que soit le moyen de découverte (agent, scanner, capteur passif, connecteur cloud). Les filtres de type, système, tag et la recherche de la page s&apos;appliquent. Cliquer sur une ligne pour voir tous ses attributs.</Help>
-          {!show && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setShow(true)}>Afficher l&apos;inventaire</Button>}
           {show && q.data?.available && (
             <Button variant="outline" size="sm" className="ml-auto" onClick={() => downloadCsv("qualys-inventaire-csam.csv", toCsv(list.map((a) => ({
               ...a, typeLabel: ASSET_TYPE_LABELS[a.asset_type], agentLabel: a.has_agent ? "Oui" : "Non", scannerLabel: a.has_scanner ? "Oui" : "Non",
@@ -555,6 +558,7 @@ export function WebAppsExplorer() {
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState<number | null>(null);
   const [limit, setLimit] = useState(50);
+  const [shown, setShown] = useState(false);
   const data = q.data;
   const isOpen = (x: WasFinding) => !/FIXED/i.test(x.status ?? "");
   const apps = useMemo(() => {
@@ -590,12 +594,25 @@ export function WebAppsExplorer() {
   if (!data?.available || (!data.apps.length && !data.findings.length)) return null;
   const chip = (active: boolean) => `text-xs px-2 py-1 rounded-full border ${active ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`;
   const selected = apps.find((a) => a.app_id === app);
+  const openCount = data.findings.filter(isOpen).length;
+  if (!shown) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-bold flex items-center gap-2 flex-wrap">
+            <FoldTitle open={false} onToggle={() => setShown(true)}><Globe className="w-4 h-4 text-primary" /> Applications web et vulnérabilités applicatives</FoldTitle>
+            <span className="text-xs font-normal text-muted-foreground"><b className="text-foreground">{fmt(apps.length)}</b> applications · <b className="text-foreground">{fmt(openCount)}</b> vulnérabilités ouvertes</span>
+          </CardTitle>
+        </CardHeader>
+      </Card>
+    );
+  }
   return (
     <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
       <Card className="xl:col-span-2">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-bold flex items-center gap-2">
-            <Globe className="w-4 h-4 text-primary" /> Applications web <span className="text-muted-foreground font-normal">({fmt(apps.length)})</span>
+            <FoldTitle open onToggle={() => setShown(false)}><Globe className="w-4 h-4 text-primary" /> Applications web <span className="text-muted-foreground font-normal">({fmt(apps.length)})</span></FoldTitle>
             <Help>Inventaire complet des applications web déclarées dans Qualys WAS, y compris celles sans vulnérabilité ouverte. Cliquer sur une application pour filtrer la liste des vulnérabilités.</Help>
           </CardTitle>
         </CardHeader>

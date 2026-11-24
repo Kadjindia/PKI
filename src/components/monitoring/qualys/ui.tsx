@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Info } from "lucide-react";
+import { Info, ChevronRight } from "lucide-react";
 import { FLAGS, type AssetType } from "@/lib/qualys";
 import type { CatalogIndex, QFilters } from "@/lib/qualysDetails";
 
@@ -55,3 +55,14 @@ export interface QualysCtx {
 }
 export const QualysContext = createContext<QualysCtx | null>(null);
 export const useQualysCtx = () => useContext(QualysContext);
+
+/** Titre d'une liste repliable : la liste est masquée par défaut, un clic l'affiche ou la masque. */
+export function FoldTitle({ open, onToggle, children }: { readonly open: boolean; readonly onToggle: () => void; readonly children: React.ReactNode }) {
+  return (
+    <button type="button" onClick={onToggle} aria-expanded={open} title={open ? "Masquer la liste" : "Afficher la liste"}
+      className="flex items-center gap-2 text-left hover:text-primary transition-colors min-w-0">
+      <ChevronRight className={`w-4 h-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />
+      {children}
+    </button>
+  );
+}
