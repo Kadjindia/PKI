@@ -497,7 +497,9 @@ export function posturePage(xml: string, policyId: string) {
   // Contrôle de lecture : enregistrements reconnus face aux balises <INFO> présentes, et racine de la réponse
   const raw = (xml.match(/<INFO[\s>]/g) ?? []).length;
   const root = /<([A-Z_]+)[\s>]/.exec(xml.replace(/<\?[^>]*\?>|<!DOCTYPE[^>]*>/g, ""))?.[1] ?? null;
-  return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary, records, raw, root };
+  // Identifiants des actifs : un actif peut être réparti sur plusieurs pages (Qualys pagine par enregistrement)
+  return { policyId, hosts: hosts.size, compliantHosts: hosts.size - failingHosts.size, passed, failed, errors, controls, glossary, records, raw, root,
+    hostIds: [...hosts], failingIds: [...failingHosts] };
 }
 
 /** Cumul des pages de conformité d'une même politique (reprise d'une lecture interrompue). */
@@ -505,10 +507,15 @@ export function mergePosture(parts: Row[]): ReturnType<typeof posturePage> | nul
   if (!parts.length) return null;
   const out = { policyId: String(parts[0].policyId), hosts: 0, compliantHosts: 0, passed: 0, failed: 0, errors: 0,
     controls: {} as Record<string, [number, number, number]>, glossary: {} as Record<string, [string, string | null]>,
-    records: 0, raw: 0, root: (parts[0].root as string | null | undefined) ?? null };
+    records: 0, raw: 0, root: (parts[0].root as string | null | undefined) ?? null, hostIds: [] as string[], failingIds: [] as string[] };
+  const ids = new Set<string>(), failing = new Set<string>();
+  let untracked = 0, untrackedOk = 0;
   for (const p of parts) {
+    if (Array.isArray(p.hostIds)) {
+      for (const h of p.hostIds) ids.add(String(h));
+      for (const h of p.failingIds ?? []) failing.add(String(h));
+    } else { untracked += Number(p.hosts) || 0; untrackedOk += Number(p.compliantHosts) || 0; }
     out.records += Number(p.records) || 0; out.raw += Number(p.raw) || 0;
-    out.hosts += Number(p.hosts) || 0; out.compliantHosts += Number(p.compliantHosts) || 0;
     out.passed += Number(p.passed) || 0; out.failed += Number(p.failed) || 0; out.errors += Number(p.errors) || 0;
     for (const [cid, c] of Object.entries((p.controls ?? {}) as Record<string, [number, number, number]>)) {
       const cur = (out.controls[cid] ??= [0, 0, 0]);
@@ -516,6 +523,10 @@ export function mergePosture(parts: Row[]): ReturnType<typeof posturePage> | nul
     }
     Object.assign(out.glossary, p.glossary ?? {});
   }
+  out.hostIds = [...ids];
+  out.failingIds = [...failing];
+  out.hosts = ids.size + untracked;
+  out.compliantHosts = ids.size - failing.size + untrackedOk;
   return out;
 }
 
@@ -996,7 +1007,7 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
   const glossary: Record<string, [string, string | null]> = {};
   for (const p of posture) {
     const cur: PolicyStat = byPolicy.get(p.policyId) ?? { id: p.policyId, title: policyTitles[p.policyId] ?? `Politique ${p.policyId}`, hosts: 0, compliantHosts: 0, passed: 0, failed: 0, errors: 0 };
-    cur.hosts += p.hosts; cur.compliantHosts += p.compliantHosts; cur.passed += p.passed; cur.failed += p.failed; cur.errors += p.errors;
+    cur.passed += p.passed; cur.failed += p.failed; cur.errors += p.errors;
     byPolicy.set(p.policyId, cur);
     Object.assign(glossary, p.glossary ?? {});
     for (const [cid, c] of Object.entries((p.controls ?? {}) as Record<string, [number, number, number]>)) {
@@ -1005,6 +1016,11 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
       if (c[1]) st.policies.add(p.policyId);
       controlStats.set(cid, st);
     }
+  }
+  // Actifs distincts par politique (un actif peut être réparti sur plusieurs pages)
+  for (const [id, cur] of byPolicy) {
+    const m = mergePosture(posture.filter((p) => p.policyId === id));
+    if (m) { cur.hosts = m.hosts; cur.compliantHosts = m.compliantHosts; }
   }
   const rate = (ok: number, ko: number) => (ok + ko ? round1((ok / (ok + ko)) * 100) : null);
   const evaluatedAt = new Date(now).toISOString();

@@ -11,7 +11,7 @@ import {
   type Detection, type DAsset,
 } from "@/lib/qualysDetails";
 import { callQualys } from "./api";
-import { Badge, FlagBadges, TYPE_TONE, sevTone, useQualysCtx } from "./ui";
+import { Badge, FlagBadges, FoldTitle, TYPE_TONE, sevTone, useQualysCtx } from "./ui";
 
 const PAGE = 100;
 
@@ -79,6 +79,7 @@ function AssetBody({ hostId }: { readonly hostId: number }) {
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState<number | null>(null);
   const [limit, setLimit] = useState(PAGE);
+  const [showList, setShowList] = useState(false);
   const list = useMemo(() => {
     const s = search.trim().toLowerCase();
     return (q.data?.detections ?? [])
@@ -138,12 +139,13 @@ function AssetBody({ hostId }: { readonly hostId: number }) {
 
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 justify-between">
-          <div className="text-sm font-bold">Vulnérabilités ({fmt(all.length)})</div>
+          <div className="text-sm font-bold"><FoldTitle open={showList} onToggle={() => setShowList(!showList)}>Vulnérabilités ({fmt(all.length)})
+            {!showList && <span className="text-xs font-normal text-muted-foreground">{count((x) => x.severity === 5 && !x.ignored)} critiques · {count((x) => x.overdue)} hors délai · {count((x) => Boolean(x.flags & (FLAGS.kev | FLAGS.ransomware | FLAGS.activeAttacks | FLAGS.exploitPublic)))} exploitables</span>}</FoldTitle></div>
           <Button variant="outline" size="sm" onClick={() => downloadCsv(`qualys-${a.name ?? a.host_id}-vulnerabilites.csv`, toCsv(list.map((x) => ({
             ...x, statusLabel: DETECTION_STATUS[x.status] ?? x.status, overdueLabel: x.overdue ? "Oui" : "Non", threats: threatText(x.flags),
           })), DET_CSV))}><Download className="w-4 h-4" /> Exporter</Button>
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        {showList && <><div className="flex flex-wrap gap-1.5">
           {[5, 4, 3].map((s) => <button key={s} type="button" className={chip(sev === s)} onClick={() => setSev(sev === s ? null : s)}>Sévérité {s} ({count((x) => x.severity === s && !x.ignored)})</button>)}
           <button type="button" className={chip(threat)} onClick={() => setThreat(!threat)}>Exploitables ({count((x) => Boolean(x.flags & (FLAGS.kev | FLAGS.ransomware | FLAGS.activeAttacks | FLAGS.exploitPublic)))})</button>
           <button type="button" className={chip(status === "overdue")} onClick={() => setStatus(status === "overdue" ? null : "overdue")}>Hors délai ({count((x) => x.overdue)})</button>
@@ -192,7 +194,7 @@ function AssetBody({ hostId }: { readonly hostId: number }) {
             </TableBody>
           </Table>
         </div>
-        {list.length > limit && <Button variant="ghost" size="sm" onClick={() => setLimit(limit + PAGE * 2)}>Afficher plus ({fmt(list.length - limit)} restantes)</Button>}
+        {list.length > limit && <Button variant="ghost" size="sm" onClick={() => setLimit(limit + PAGE * 2)}>Afficher plus ({fmt(list.length - limit)} restantes)</Button>}</>}
       </div>
     </div>
   );
@@ -236,6 +238,7 @@ function VulnBody({ qid }: { readonly qid: number }) {
   const [type, setType] = useState<AssetType | null>(null);
   const [overdue, setOverdue] = useState(false);
   const [limit, setLimit] = useState(PAGE);
+  const [showList, setShowList] = useState(false);
   const hosts = useMemo(() => {
     const s = search.trim().toLowerCase();
     return (q.data?.hosts ?? []).filter((h) => (!type || h.asset_type === type) && (!overdue || h.overdue)
@@ -272,7 +275,8 @@ function VulnBody({ qid }: { readonly qid: number }) {
 
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 justify-between">
-          <div className="text-sm font-bold">Actifs touchés ({fmt(all.length)})</div>
+          <div className="text-sm font-bold"><FoldTitle open={showList} onToggle={() => setShowList(!showList)}>Actifs touchés ({fmt(all.length)})
+            {!showList && <span className="text-xs font-normal text-muted-foreground">{all.filter((h) => h.asset_type === "server").length} serveurs · {all.filter((h) => h.overdue).length} hors délai</span>}</FoldTitle></div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => ctx?.setFilters((f) => ({ ...f, qid }))} title="Restreindre toute la page aux actifs touchés"><Filter className="w-4 h-4" /> Filtrer la page</Button>
             <Button variant="outline" size="sm" onClick={() => downloadCsv(`qualys-qid-${qid}-actifs.csv`, toCsv(hosts.map((h) => ({
@@ -280,7 +284,7 @@ function VulnBody({ qid }: { readonly qid: number }) {
             })), VULN_HOST_CSV))}><Download className="w-4 h-4" /> Exporter</Button>
           </div>
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        {showList && <><div className="flex flex-wrap gap-1.5">
           {(["server", "workstation", "other"] as const).map((t) => <button key={t} type="button" className={chip(type === t)} onClick={() => setType(type === t ? null : t)}>{ASSET_TYPE_LABELS[t]} ({all.filter((h) => h.asset_type === t).length})</button>)}
           <button type="button" className={chip(overdue)} onClick={() => setOverdue(!overdue)}>Hors délai ({all.filter((h) => h.overdue).length})</button>
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Nom, IP, système, tag…" className="h-7 w-48 text-xs" />
@@ -310,7 +314,7 @@ function VulnBody({ qid }: { readonly qid: number }) {
             </TableBody>
           </Table>
         </div>
-        {hosts.length > limit && <Button variant="ghost" size="sm" onClick={() => setLimit(limit + PAGE * 2)}>Afficher plus ({fmt(hosts.length - limit)} restants)</Button>}
+        {hosts.length > limit && <Button variant="ghost" size="sm" onClick={() => setLimit(limit + PAGE * 2)}>Afficher plus ({fmt(hosts.length - limit)} restants)</Button>}</>}
       </div>
     </div>
   );

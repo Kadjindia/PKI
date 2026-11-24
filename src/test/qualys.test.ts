@@ -506,3 +506,20 @@ describe("détail de la photo", () => {
     expect(trimJson({ a: Array.from({ length: 30 }, (_, i) => i) })).toEqual({ a: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] });
   });
 });
+
+describe("conformité paginée par enregistrement", () => {
+  it("compte une seule fois un actif réparti sur deux pages", () => {
+    const info = (h: number, c: number, st: string) => `<INFO><ID>${h}${c}</ID><HOST_ID>${h}</HOST_ID><CONTROL_ID>${c}</CONTROL_ID><STATUS>${st}</STATUS></INFO>`;
+    const page = (items: string) => `<POSTURE_INFO_LIST_OUTPUT><RESPONSE><INFO_LIST>${items}</INFO_LIST></RESPONSE></POSTURE_INFO_LIST_OUTPUT>`;
+    const p1 = posturePage(page(info(1, 10, "Passed") + info(1, 11, "Passed") + info(2, 10, "Passed")), "7");
+    const p2 = posturePage(page(info(2, 11, "Failed") + info(3, 10, "Passed")), "7");
+    expect(p1).toMatchObject({ hosts: 2, compliantHosts: 2 });
+    expect(mergePosture([p1, p2])).toMatchObject({ hosts: 3, compliantHosts: 2, passed: 4, failed: 1 });
+    const r = buildResults([
+      { kind: "policies", agg: { list: [{ id: "7", title: "CIS Windows" }] } },
+      { kind: "posture", agg: p1 }, { kind: "posture", agg: p2 },
+      { kind: "pcmeta", agg: { done: ["7"], total: 1, stopped: false } },
+    ], Date.parse("2026-11-24T00:00:00Z"));
+    expect(r.compliance.policies[0]).toMatchObject({ id: "7", hosts: 3, compliantHosts: 2, passed: 4, failed: 1 });
+  });
+});

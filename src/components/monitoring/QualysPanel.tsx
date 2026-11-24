@@ -25,7 +25,7 @@ import {
   indexCatalog, filterAssets, summarize, isFiltered,
   type AssetsPayload, type DAsset, type CatalogIndex, type Summary, type QFilters, type TruTier,
 } from "@/lib/qualysDetails";
-import { QualysContext, clickable, useQualysCtx } from "./qualys/ui";
+import { QualysContext, FoldTitle, clickable, useQualysCtx } from "./qualys/ui";
 import { AssetSheet, VulnSheet } from "./qualys/Sheets";
 import { callQualys } from "./qualys/api";
 import { AxisSection, FilterBar, AssetTable, PriorityFixes, EolList, CsamInventory, WebAppsExplorer } from "./qualys/Explorer";
@@ -648,6 +648,7 @@ const sourceLabel = (src: string | null) => (src ? SOURCE_FR[src.trim().toUpperC
 function InventoryCard({ r }: { readonly r: QualysResults }) {
   const inv = r.inventory;
   const ex = r.internetExposed;
+  const [showRecent, setShowRecent] = useState(false);
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -674,8 +675,8 @@ function InventoryCard({ r }: { readonly r: QualysResults }) {
             </div>
             {inv.recentUnmanaged.length > 0 && (
               <div className="overflow-x-auto">
-                <div className="text-xs font-semibold text-muted-foreground mb-1">Derniers actifs inconnus découverts (à identifier et rattacher)</div>
-                <Table>
+                <div className="text-xs font-semibold text-muted-foreground mb-1"><FoldTitle open={showRecent} onToggle={() => setShowRecent(!showRecent)}>Derniers actifs inconnus découverts, à identifier et rattacher ({inv.recentUnmanaged.length})</FoldTitle></div>
+                {showRecent && <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Actif</TableHead>
@@ -696,7 +697,7 @@ function InventoryCard({ r }: { readonly r: QualysResults }) {
                       </TableRow>
                     ))}
                   </TableBody>
-                </Table>
+                </Table>}
               </div>
             )}
           </>

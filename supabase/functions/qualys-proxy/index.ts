@@ -36,7 +36,9 @@ const CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 const HOST_PAGE = 1000; // actifs par page de la liste des actifs (~1 s par actif chez Qualys)
 const DETECTION_PAGE = 100; // actifs par page de vulnérabilités (sévérités 3 à 5 : pages de taille comparable à 150 actifs en 4-5)
 const KB_CHUNK = 400; // vulnérabilités par appel à la base de connaissances
-const POSTURE_PAGE = 200; // actifs par page de l'état de conformité
+// Enregistrements (actif × contrôle) par page de l'état de conformité : Qualys compte des enregistrements,
+// pas des actifs (environ 150 contrôles par actif), et chaque appel a un coût fixe élevé : grandes pages.
+const POSTURE_PAGE = 10_000;
 const MAX_POLICIES = 20; // politiques de conformité suivies au plus
 const KEEP_INDEX = 60; // photos dont on garde l'index des vulnérabilités (recherche, tendance)
 
@@ -523,7 +525,8 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
       const prog = await pcProgress(admin);
       if (prog && list.some((x) => x.id === prog.policyId)) {
         state.policyIds = [prog.policyId, ...state.policyIds.filter((id: string) => id !== prog.policyId)];
-        state.next = prog.next;
+        // Reprise d'une lecture commencée avec une autre taille de page : on garde la position, pas la taille
+        state.next = String(prog.next).replace(/truncation_limit=\d+/, `truncation_limit=${POSTURE_PAGE}`);
         await savePage(admin, snapId, "posture", 0, prog.agg);
         state.page = 1;
       }
