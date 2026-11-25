@@ -37,12 +37,15 @@ const HOST_PAGE = 1000; // actifs par page de la liste des actifs (~1 s par acti
 const DETECTION_PAGE = 100; // actifs par page de vulnérabilités (sévérités 3 à 5 : pages de taille comparable à 150 actifs en 4-5)
 const KB_CHUNK = 400; // vulnérabilités par appel à la base de connaissances (réduit si Qualys est trop lent)
 const KB_MIN_CHUNK = 25;
+// Finalisation du détail : actifs par lot d'indicateurs, lignes supprimées par table et par appel
+const DETAIL_HOSTS = 300;
+const DETAIL_PURGE = 1000;
 // Fiches de la base de connaissances déjà enregistrées (qualys_kb) : relues au plus une fois par semaine
 const KB_REFRESH_MS = 7 * 24 * 3600 * 1000;
 const KB_REFRESH_PER_NIGHT = 4000;
 // Enregistrements (actif × contrôle) par page de l'état de conformité : Qualys compte des enregistrements,
 // pas des actifs (environ 150 contrôles par actif), et chaque appel a un coût fixe élevé : grandes pages.
-const POSTURE_PAGE = 10_000;
+const POSTURE_PAGE = 25_000;
 const MAX_POLICIES = 20; // politiques de conformité suivies au plus
 const KEEP_INDEX = 60; // photos dont on garde l'index des vulnérabilités (recherche, tendance)
 
@@ -637,20 +640,43 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
 
   // 2. Fin : photo
   if (state.phase === "final") {
+    // Détail : indicateurs de menace par actif, puis ménage des photos précédentes, par petits lots,
+    // sur autant de passages que nécessaire
+    if (!state.detailDone) {
+      if (!state.detailRanges) {
+        const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
+        const ids = (hp ?? []).flatMap((p: Row) => (p.agg.ids ?? []) as number[]).sort((a: number, b: number) => a - b);
+        const ranges: [number, number][] = [];
+        for (let i = 0; i < ids.length; i += DETAIL_HOSTS) ranges.push([ids[i], ids[Math.min(i + DETAIL_HOSTS, ids.length) - 1]]);
+        state.detailRanges = ranges;
+        state.detailPos = 0;
+      }
+      while (state.detailPos < state.detailRanges.length && Date.now() < deadline - 25_000) {
+        const [a, b] = state.detailRanges[state.detailPos];
+        const { error: ce } = await admin.rpc("qualys_detail_counts", { snap: snapId, host_min: a, host_max: b });
+        if (ce) { state.detailError ??= `Indicateurs du détail : ${ce.message}`.slice(0, 300); state.detailPos = state.detailRanges.length; break; }
+        state.detailPos++;
+      }
+      while (state.detailPos >= state.detailRanges.length && !state.detailDone && Date.now() < deadline - 25_000) {
+        const { data: n, error: pe } = await admin.rpc("qualys_detail_purge", { snap: snapId, max_rows: DETAIL_PURGE });
+        // Un ménage incomplet sera repris à la photo suivante : il ne bloque pas celle-ci
+        if (pe || !Number(n)) state.detailDone = true;
+      }
+      await save();
+      return "advanced";
+    }
     const { data: pages, error } = await admin.from("qualys_pages").select("kind, agg").eq("snapshot_id", snapId);
     if (error) throw new Error(error.message);
     const fixedDaily = await mergeFixed(admin, snapId, pages ?? [], state);
     const results = buildResults(pages ?? [], Date.now(), { previousPolicies: await previousPolicies(admin), fixedDaily });
     await saveIndex(admin, snapId, vulnIndex(pages ?? []));
-    // Détail : indicateurs de menace par actif et ménage des photos précédentes
-    const { error: fe } = await admin.rpc("qualys_finalize_details", { snap: snapId });
-    if (fe) state.detailError ??= `Finalisation du détail : ${fe.message}`.slice(0, 300);
     (results as Row).details = { available: !state.detailError, error: state.detailError ?? null, kbSkipped: state.kbSkipped ?? 0 };
     state.kbIds = undefined;
     state.eolQids = undefined;
     state.policyIds = undefined;
     state.pcDone = undefined;
     state.lanes = undefined;
+    state.detailRanges = undefined;
     await save({ status: "done", results, summary: summaryOf(results), finished_at: new Date().toISOString() });
     await admin.from("qualys_pages").delete().eq("snapshot_id", snapId);
     return "finished";
