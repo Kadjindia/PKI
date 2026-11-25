@@ -911,6 +911,7 @@ export default function QualysPanel() {
           {details.data && !details.data.available && <span className="ml-2">Détail par actif (inventaires, fiches, filtres) disponible après le prochain calcul de nuit.</span>}
           {details.error && <span className="ml-2 text-amber-600">Détail indisponible : {(details.error as Error).message}</span>}
           {r.details?.error && <span className="ml-2 text-amber-600">Détail partiel : {r.details.error}</span>}
+          {r.details?.kbSkipped ? <span className="ml-2 text-amber-600">{fmt(r.details.kbSkipped)} fiches de vulnérabilités non relues cette nuit (Qualys trop lent) : titres et menaces de la veille ou manquants.</span> : null}
         </p>
 
         {view && <FilterBar assets={view.all} shown={view.assets.length} />}

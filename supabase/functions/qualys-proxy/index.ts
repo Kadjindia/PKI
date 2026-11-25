@@ -35,7 +35,11 @@ const CRON_SECRET = Deno.env.get("POSTURE_CRON_SECRET");
 
 const HOST_PAGE = 1000; // actifs par page de la liste des actifs (~1 s par actif chez Qualys)
 const DETECTION_PAGE = 100; // actifs par page de vulnérabilités (sévérités 3 à 5 : pages de taille comparable à 150 actifs en 4-5)
-const KB_CHUNK = 400; // vulnérabilités par appel à la base de connaissances
+const KB_CHUNK = 400; // vulnérabilités par appel à la base de connaissances (réduit si Qualys est trop lent)
+const KB_MIN_CHUNK = 25;
+// Fiches de la base de connaissances déjà enregistrées (qualys_kb) : relues au plus une fois par semaine
+const KB_REFRESH_MS = 7 * 24 * 3600 * 1000;
+const KB_REFRESH_PER_NIGHT = 4000;
 // Enregistrements (actif × contrôle) par page de l'état de conformité : Qualys compte des enregistrements,
 // pas des actifs (environ 150 contrôles par actif), et chaque appel a un coût fixe élevé : grandes pages.
 const POSTURE_PAGE = 10_000;
@@ -246,13 +250,40 @@ async function directStep(admin: Admin, snapId: string, state: Row, save: (patch
   }
 }
 
-/** Liste des vulnérabilités rencontrées, pour la base de connaissances (titres, menaces). */
+/**
+ * Liste des vulnérabilités rencontrées, pour la base de connaissances (titres, menaces). Les fiches déjà
+ * enregistrées (qualys_kb) sont reprises telles quelles ; Qualys n'est interrogé que pour les nouvelles
+ * vulnérabilités et pour les fiches de plus d'une semaine (4 000 au plus par nuit, les plus anciennes d'abord).
+ */
 async function enterKb(admin: Admin, snapId: string, state: Row) {
   const { data: pages } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "detections");
-  const ids = [...new Set((pages ?? []).flatMap((p: Row) => Object.keys(p.agg.qids ?? {})))].sort((a, b) => Number(a) - Number(b));
-  state.kbIds = ids;
-  state.kbChunks = Math.ceil(ids.length / KB_CHUNK);
-  state.phase = ids.length ? "kb" : "csam";
+  const ids: string[] = [...new Set<string>((pages ?? []).flatMap((p: Row) => Object.keys(p.agg.qids ?? {})))].sort((a, b) => Number(a) - Number(b));
+  const since = new Date(Date.now() - KB_REFRESH_MS).toISOString();
+  const rows: Row[] = [];
+  let tableOk = true;
+  for (let i = 0; i < ids.length; i += 300) {
+    const { data, error } = await admin.from("qualys_kb").select("qid, title, flags, cves, updated_at").in("qid", ids.slice(i, i + 300));
+    if (error) { tableOk = false; break; } // table absente : tout est relu chez Qualys
+    rows.push(...(data ?? []));
+  }
+  // Fiches de plus d'une semaine : relues par lots (les plus anciennes d'abord), pour étaler la charge
+  const stale = new Set(rows.filter((k) => String(k.updated_at) < since).sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at)))
+    .slice(0, KB_REFRESH_PER_NIGHT).map((k) => String(k.qid)));
+  const known = new Set<string>();
+  let cached: Record<string, [string, number, string]> = {};
+  let cachedPage = 100_000;
+  for (const k of tableOk ? rows : []) {
+    if (stale.has(String(k.qid))) continue;
+    known.add(String(k.qid));
+    cached[String(k.qid)] = [k.title ?? "", Number(k.flags) || 0, ((k.cves ?? []) as string[]).slice(0, 5).join(", ")];
+    if (Object.keys(cached).length >= 1000) { await savePage(admin, snapId, "kb", cachedPage++, cached); cached = {}; }
+  }
+  if (Object.keys(cached).length) await savePage(admin, snapId, "kb", cachedPage, cached);
+  state.kbIds = ids.filter((id) => !known.has(id));
+  state.kbPos = 0;
+  state.kbChunk = KB_CHUNK;
+  state.kbSkipped = 0;
+  state.phase = state.kbIds.length ? "kb" : "csam";
   state.page = 0;
 }
 
@@ -482,6 +513,20 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
       await save();
       return "advanced";
     }
+    if (err && state.phase === "kb") {
+      // Paquet trop lent : redemandé deux fois plus petit ; au plus petit, ces fiches sont sautées pour la nuit
+      if (state.kbChunk > KB_MIN_CHUNK) {
+        state.kbChunk = Math.max(KB_MIN_CHUNK, Math.floor(state.kbChunk / 2));
+        state.attempts = 0;
+      } else if (++state.attempts >= MAX_ATTEMPTS) {
+        state.kbSkipped = (state.kbSkipped ?? 0) + Math.min(state.kbChunk, state.kbIds.length - state.kbPos);
+        state.kbPos += state.kbChunk;
+        state.attempts = 0;
+        if (state.kbPos >= state.kbIds.length) { state.phase = "csam"; state.page = 0; }
+      }
+      await save();
+      return "waiting";
+    }
     if (err && (state.phase === "policies" || state.phase === "posture")) {
       // Conformité indisponible (droits, module) : on le note et on termine la photo
       if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${res.status_code}`)) { await save(); return "waiting"; }
@@ -507,7 +552,8 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
       await saveDetail(admin, state, "qualys_kb", kbDetails(content).map((r) => ({ ...r, updated_at: new Date().toISOString() })), null, 200, "qid");
       state.page++;
       state.next = null;
-      if (state.page >= state.kbChunks) { state.phase = "csam"; state.page = 0; }
+      state.kbPos = (state.kbPos ?? 0) + (state.kbReq ?? KB_CHUNK);
+      if (state.kbPos >= state.kbIds.length) { state.phase = "csam"; state.page = 0; }
     } else if (state.phase === "policies") {
       const list = policiesPage(content).slice(0, MAX_POLICIES);
       await savePage(admin, snapId, "policies", 0, { list });
@@ -599,7 +645,7 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
     // Détail : indicateurs de menace par actif et ménage des photos précédentes
     const { error: fe } = await admin.rpc("qualys_finalize_details", { snap: snapId });
     if (fe) state.detailError ??= `Finalisation du détail : ${fe.message}`.slice(0, 300);
-    (results as Row).details = { available: !state.detailError, error: state.detailError ?? null };
+    (results as Row).details = { available: !state.detailError, error: state.detailError ?? null, kbSkipped: state.kbSkipped ?? 0 };
     state.kbIds = undefined;
     state.eolQids = undefined;
     state.policyIds = undefined;
@@ -615,7 +661,7 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
 
   // 4. Demande suivante
   const url = state.phase === "kb"
-    ? firstUrl.kb(state.kbIds.slice(state.page * KB_CHUNK, (state.page + 1) * KB_CHUNK))
+    ? firstUrl.kb(state.kbIds.slice(state.kbPos ?? 0, (state.kbPos ?? 0) + (state.kbReq = state.kbChunk ?? KB_CHUNK)))
     : state.phase === "policies" ? firstUrl.policies()
     : state.phase === "posture" ? state.next ?? firstUrl.posture(state.policyIds[state.policyIdx])
     : state.phase === "fixed" ? state.next ?? firstUrl.fixed(qualysDate(state.fixedSince))
