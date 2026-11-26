@@ -20,7 +20,8 @@ function RawAttributes({ attrs, title = "Tous les attributs Qualys" }: { readonl
   const [open, setOpen] = useState(false);
   const entries = Object.entries(attrs ?? {}).filter(([, v]) => v !== null && v !== "" && v !== undefined);
   if (!entries.length) return null;
-  const show = (v: unknown) => (typeof v === "object" ? JSON.stringify(v) : String(v));
+  /** Valeur lisible : texte tel quel, objet ou liste en JSON. */
+  const show = (v: unknown) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v) : JSON.stringify(v));
   return (
     <div className="border border-border rounded-lg">
       <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground">
@@ -248,7 +249,11 @@ function VulnBody({ qid }: { readonly qid: number }) {
   if (q.isLoading) return <div className="flex items-center gap-2 py-10 justify-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin" /> Chargement…</div>;
   if (q.error) return <p className="text-sm text-destructive py-6">{(q.error as Error).message}</p>;
   const k = (q.data?.kb ?? {}) as Record<string, unknown>;
-  const str = (x: unknown) => (x === null || x === undefined || x === "" ? null : String(x));
+  const str = (x: unknown) => {
+    if (typeof x === "string") return x || null;
+    if (typeof x === "number" || typeof x === "boolean") return String(x);
+    return null;
+  };
   const list = (x: unknown) => (Array.isArray(x) ? x : []) as unknown[];
   const all = q.data?.hosts ?? [];
   const chip = (active: boolean) => `text-xs px-2 py-1 rounded-full border ${active ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`;
@@ -263,7 +268,7 @@ function VulnBody({ qid }: { readonly qid: number }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Field label="Publiée le">{fmtDate(str(k.published))}</Field>
         <Field label="Correctif publié le">{fmtDate(str(k.patch_published))}</Field>
-        <Field label="Produits">{list(k.products).map((p) => (Array.isArray(p) ? p.filter(Boolean).join(" ") : String(p))).join(", ") || "—"}</Field>
+        <Field label="Produits">{list(k.products).map((p) => (Array.isArray(p) ? p.filter(Boolean).join(" ") : str(p) ?? "")).filter(Boolean).join(", ") || "—"}</Field>
         <Field label="Type">{str(k.vuln_type)}</Field>
       </div>
       {list(k.cves).length > 0 && <div className="text-xs"><b>CVE :</b> <span className="font-mono">{list(k.cves).join(", ")}</span></div>}

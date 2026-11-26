@@ -130,7 +130,7 @@ function ExposureSearch() {
               <div className="rounded-lg border border-border px-3 py-2">
                 <div className="text-[11px] font-semibold text-muted-foreground">Avancement de la correction</div>
                 <div className="text-2xl font-black">{progress?.pct === null || !progress ? "—" : `${progress.pct} %`}</div>
-                <div className="text-[11px] text-muted-foreground">{progress && progress.peak ? `jusqu'à ${fmt(progress.peak)} actifs touchés` : "après plusieurs nuits de calcul"}</div>
+                <div className="text-[11px] text-muted-foreground">{progress?.peak ? `jusqu'à ${fmt(progress.peak)} actifs touchés` : "après plusieurs nuits de calcul"}</div>
               </div>
               <div className="rounded-lg border border-border px-3 py-2 h-[86px]">
                 {series.length < 2 ? <div className="text-[11px] text-muted-foreground pt-6 text-center">La courbe apparaîtra après deux nuits.</div> : (
@@ -344,7 +344,7 @@ function OperationsAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
                   </span>
                 </div>
                 <div className="flex h-3 rounded-full overflow-hidden bg-muted">
-                  {s.ages.map((n, i) => <div key={i} className={AGE_COLORS[i]} style={{ width: `${(n / Math.max(1, s.total)) * 100}%` }} title={`${AGE_LABELS[i]} : ${fmt(n)}`} />)}
+                  {s.ages.map((n, i) => <div key={AGE_LABELS[i]} className={AGE_COLORS[i]} style={{ width: `${(n / Math.max(1, s.total)) * 100}%` }} title={`${AGE_LABELS[i]} : ${fmt(n)}`} />)}
                 </div>
               </div>
             ))}
@@ -652,7 +652,6 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
           {!w?.collected ? <Pending /> : w.error && !w.apps.length ? (
             <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Applications web non disponibles : {w.error}</p>
           ) : (
-            <>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <Stat label="Vulnérabilités ouvertes" value={fmt(w.open)} sub={`sur ${fmt(w.apps.length)} applications`} help={<>Vulnérabilités de sévérité 3 à 5 encore présentes sur les applications web analysées par Qualys WAS (injections SQL, XSS…).</>} />
                 <Stat label="Critiques" value={fmt(tot("sev5"))} sub={`${fmt(tot("sev4"))} élevées · ${fmt(tot("sev3"))} modérées`} tone={tot("sev5") ? "red" : undefined} help={<>Vulnérabilités applicatives de sévérité 5.</>} />
@@ -660,7 +659,6 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
                 <Stat label="MTTR applicatif" value={w.fixed.mttr === null ? "—" : `${fmt(w.fixed.mttr)} j`} sub={w.fixed.fixed ? `${fmt(w.fixed.fixed)} corrigées en 90 j · ${fmt(w.fixed.slaRate)} % dans les délais` : "aucune correction sur 90 j"}
                   help={<>Délai moyen entre la détection d&apos;une vulnérabilité applicative et sa correction constatée par Qualys, sur les 90 derniers jours. La date de correction est approchée par le dernier test qui ne l&apos;a plus trouvée.</>} />
               </div>
-            </>
           )}
         </CardContent>
       </Card>

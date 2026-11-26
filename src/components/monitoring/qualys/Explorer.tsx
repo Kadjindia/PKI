@@ -158,7 +158,7 @@ export function FilterBar({ assets, shown }: { readonly assets: DAsset[]; readon
         {list.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             {list.map((c) => (
-              <button key={`${String(c.key)}-${String(c.value)}`} type="button" onClick={() => { set((x) => removeChip(x, c)); if (c.key === "search") setSearch(""); }}
+              <button key={`${c.key}-${JSON.stringify(c.value ?? null)}`} type="button" onClick={() => { set((x) => removeChip(x, c)); if (c.key === "search") setSearch(""); }}
                 className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20">
                 {c.label} <X className="w-3 h-3" />
               </button>

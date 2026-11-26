@@ -108,7 +108,8 @@ const pollSingleQueryAttempt = async (queryId: string) => {
 const attemptStartQuery = async (payload: any, checkCancelled: () => boolean) => {
   for (let retry = 0; retry < 3; retry++) {
     if (checkCancelled()) return null;
-    const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload);
+    // Essais successifs volontaires : Cortex limite le nombre d'appels
+    const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload); // NOSONAR
     if ([450, 429, 500].includes(startRes.status)) {
       await new Promise(r => setTimeout(r, 3000));
       continue;
@@ -423,9 +424,10 @@ export default function CortexPanel() {
           const currentFrom = offsets[cursor];
           cursor += 1;
           try {
-            const res = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, { request_data: { search_from: currentFrom, search_to: currentFrom + BATCH_SIZE } });
+            // Un lot après l'autre dans chaque lecteur : le parallélisme est limité au nombre de lecteurs
+            const res = await apiCall(`/public_api/v1/endpoints/get_endpoint/`, { request_data: { search_from: currentFrom, search_to: currentFrom + BATCH_SIZE } }); // NOSONAR
             if (!res.ok) continue;
-            const data = await res.json();
+            const data = await res.json(); // NOSONAR
             allEndpoints = [...allEndpoints, ...(data.reply?.endpoints || [])];
           } catch (err) { console.error(`Erreur sur le batch ${currentFrom}:`, err); }
         }

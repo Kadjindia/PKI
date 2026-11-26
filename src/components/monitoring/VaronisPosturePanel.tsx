@@ -191,7 +191,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
   const inactive = inactiveTotal(r);
   // Une tranche plafonnée par Varonis ne donne pas un chiffre fiable : on ne l'affiche pas
   const inactiveUnreliable = INACTIVE_BUCKETS.some((b) => r[b.key]?.status === "done" && r[b.key]?.capped);
-  const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => !x || x.status !== "done");
+  const inactiveStatus = INACTIVE_BUCKETS.map((b) => r[b.key]).find((x) => x?.status !== "done");
   // Dossiers sensibles : ceux qui cumulent le plus de problèmes d'abord, puis les plus gros
   const priority = priorityZones(r);
   // Clic sur une barre ou un chiffre : le tableau montre les dossiers de ce cas

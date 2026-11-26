@@ -516,7 +516,7 @@ const PhishingTabContent = ({ campaigns, setSelectedCampaign, phishingView, setP
                 </div>
               ))}
 
-              <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+              <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
                 <polyline points={sortedCampaigns.map((c, i) => `${sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50},${100 - (calculatePercentage(c.clickedCount, c.targetCount) / scaleMax * 100)}`).join(' ')} fill="none" className="stroke-amber-500" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
                 <polyline points={sortedCampaigns.map((c, i) => `${sortedCampaigns.length > 1 ? (i / (sortedCampaigns.length - 1)) * 100 : 50},${100 - (calculatePercentage(c.compromisedCount, c.targetCount) / scaleMax * 100)}`).join(' ')} fill="none" className="stroke-rose-500" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" />
               </svg>
