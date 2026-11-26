@@ -47,7 +47,13 @@ export const RECENT_SCAN_DAYS = 30;
 
 export type TruTier = "critical" | "high" | "medium" | "low" | "none";
 export const TIER_LABELS: Record<TruTier, string> = { critical: "Critique (≥ 850)", high: "Élevé (700-849)", medium: "Moyen (500-699)", low: "Faible (< 500)", none: "Sans score" };
-export const truTier = (s: number | null): TruTier => (s === null ? "none" : s >= 850 ? "critical" : s >= 700 ? "high" : s >= 500 ? "medium" : "low");
+export function truTier(s: number | null): TruTier {
+  if (s === null) return "none";
+  if (s >= 850) return "critical";
+  if (s >= 700) return "high";
+  if (s >= 500) return "medium";
+  return "low";
+}
 
 /** Famille de système : nom et version majeure (« Windows Server 2019 », « Debian Linux 13 »). */
 export function osFamily(os: string | null): string {
@@ -122,24 +128,32 @@ export function indexCatalog(catalog: DCatalog[]): CatalogIndex {
   return { byQid: new Map(catalog.map((c) => [c.qid, c])), product: new Map(catalog.map((c) => [c.qid, productKey(c)])) };
 }
 
-export function assetMatches(a: DAsset, f: QFilters, idx: CatalogIndex, now = Date.now()): boolean {
-  if (f.type?.length && !f.type.includes(a.asset_type)) return false;
-  if (f.tier?.length && !f.tier.includes(truTier(a.trurisk))) return false;
-  if (f.criticality?.length && !f.criticality.includes(a.criticality ?? 0)) return false;
-  if (f.tag?.length && !f.tag.some((t) => a.tags.includes(t))) return false;
-  if (f.os?.length && !f.os.includes(osFamily(a.os))) return false;
-  if (f.scan && scanState(a, now) !== f.scan) return false;
-  if (f.agent !== undefined && hasAgent(a) !== f.agent) return false;
-  if (f.publicIp !== undefined && a.public_ip !== f.publicIp) return false;
-  if (f.threat && !(f.threat === "kev" ? a.kev : f.threat === "ransomware" ? a.ransomware : a.armed)) return false;
-  if (f.eol && !a.eol) return false;
-  if (f.overdue && !a.overdue) return false;
-  if (f.sev5 && !a.d5) return false;
-  if (f.qid !== undefined && !a.qids.includes(f.qid)) return false;
-  if (f.product && !a.qids.some((q) => idx.product.get(q) === f.product)) return false;
-  if (f.search && !matchText(a, f.search)) return false;
-  return true;
-}
+/** Compteur de vulnérabilités de l'actif correspondant à une menace. */
+const THREAT_COUNT: Record<Threat, (a: DAsset) => number> = { kev: (a) => a.kev, ransomware: (a) => a.ransomware, armed: (a) => a.armed };
+
+/** Un filtre de la page : vrai si l'actif le satisfait (ou si le filtre n'est pas posé). */
+type AssetCheck = (a: DAsset, f: QFilters, idx: CatalogIndex, now: number) => boolean;
+const inList = <T,>(list: T[] | undefined, v: T) => !list?.length || list.includes(v);
+const ASSET_CHECKS: AssetCheck[] = [
+  (a, f) => inList(f.type, a.asset_type),
+  (a, f) => inList(f.tier, truTier(a.trurisk)),
+  (a, f) => inList(f.criticality, a.criticality ?? 0),
+  (a, f) => !f.tag?.length || f.tag.some((t) => a.tags.includes(t)),
+  (a, f) => inList(f.os, osFamily(a.os)),
+  (a, f, _i, now) => !f.scan || scanState(a, now) === f.scan,
+  (a, f) => f.agent === undefined || hasAgent(a) === f.agent,
+  (a, f) => f.publicIp === undefined || a.public_ip === f.publicIp,
+  (a, f) => !f.threat || THREAT_COUNT[f.threat](a) > 0,
+  (a, f) => !f.eol || a.eol > 0,
+  (a, f) => !f.overdue || a.overdue > 0,
+  (a, f) => !f.sev5 || a.d5 > 0,
+  (a, f) => f.qid === undefined || a.qids.includes(f.qid),
+  (a, f, idx) => !f.product || a.qids.some((q) => idx.product.get(q) === f.product),
+  (a, f) => !f.search || matchText(a, f.search),
+];
+
+export const assetMatches = (a: DAsset, f: QFilters, idx: CatalogIndex, now = Date.now()): boolean =>
+  ASSET_CHECKS.every((check) => check(a, f, idx, now));
 
 export const filterAssets = (assets: DAsset[], f: QFilters, idx: CatalogIndex, now = Date.now()) => assets.filter((a) => assetMatches(a, f, idx, now));
 
@@ -158,24 +172,34 @@ export function toggle<K extends keyof QFilters>(f: QFilters, key: K, value: Non
 
 export interface Chip { key: keyof QFilters; value?: unknown; label: string }
 
+/** Pastilles des filtres à choix multiple. */
+function listChips(f: QFilters, typeLabels: Record<AssetType, string>): Chip[] {
+  return [
+    ...(f.type ?? []).map((t) => ({ key: "type" as const, value: t, label: typeLabels[t] })),
+    ...(f.tier ?? []).map((t) => ({ key: "tier" as const, value: t, label: `TruRisk ${TIER_LABELS[t].toLowerCase()}` })),
+    ...(f.criticality ?? []).map((c) => ({ key: "criticality" as const, value: c, label: c ? `Criticité ${c}/5` : "Criticité non renseignée" })),
+    ...(f.tag ?? []).map((t) => ({ key: "tag" as const, value: t, label: `Tag : ${t}` })),
+    ...(f.os ?? []).map((o) => ({ key: "os" as const, value: o, label: o })),
+  ];
+}
+
+/** Libellé de chaque filtre simple posé (undefined si le filtre n'est pas posé). */
+const SIMPLE_CHIPS: [keyof QFilters, (f: QFilters, catalog?: CatalogIndex) => string | undefined][] = [
+  ["scan", (f) => f.scan && SCAN_LABELS[f.scan]],
+  ["agent", (f) => { if (f.agent === undefined) return undefined; return f.agent ? "Avec agent Qualys" : "Sans agent Qualys"; }],
+  ["publicIp", (f) => { if (f.publicIp === undefined) return undefined; return f.publicIp ? "Exposés sur Internet" : "Non exposés sur Internet"; }],
+  ["threat", (f) => f.threat && THREAT_LABELS[f.threat]],
+  ["eol", (f) => (f.eol ? "Produit en fin de support" : undefined)],
+  ["overdue", (f) => (f.overdue ? "Vulnérabilités hors délai" : undefined)],
+  ["sev5", (f) => (f.sev5 ? "Vulnérabilités critiques" : undefined)],
+  ["qid", (f, catalog) => (f.qid === undefined ? undefined : `${catalog?.byQid.get(f.qid)?.title?.slice(0, 50) || "QID"} (${f.qid})`)],
+  ["product", (f) => f.product && `Produit : ${f.product}`],
+  ["search", (f) => f.search && `« ${f.search} »`],
+];
+
 export function chips(f: QFilters, typeLabels: Record<AssetType, string>, catalog?: CatalogIndex): Chip[] {
-  const out: Chip[] = [];
-  for (const t of f.type ?? []) out.push({ key: "type", value: t, label: typeLabels[t] });
-  for (const t of f.tier ?? []) out.push({ key: "tier", value: t, label: `TruRisk ${TIER_LABELS[t].toLowerCase()}` });
-  for (const c of f.criticality ?? []) out.push({ key: "criticality", value: c, label: c ? `Criticité ${c}/5` : "Criticité non renseignée" });
-  for (const t of f.tag ?? []) out.push({ key: "tag", value: t, label: `Tag : ${t}` });
-  for (const o of f.os ?? []) out.push({ key: "os", value: o, label: o });
-  if (f.scan) out.push({ key: "scan", label: SCAN_LABELS[f.scan] });
-  if (f.agent !== undefined) out.push({ key: "agent", label: f.agent ? "Avec agent Qualys" : "Sans agent Qualys" });
-  if (f.publicIp !== undefined) out.push({ key: "publicIp", label: f.publicIp ? "Exposés sur Internet" : "Non exposés sur Internet" });
-  if (f.threat) out.push({ key: "threat", label: THREAT_LABELS[f.threat] });
-  if (f.eol) out.push({ key: "eol", label: "Produit en fin de support" });
-  if (f.overdue) out.push({ key: "overdue", label: "Vulnérabilités hors délai" });
-  if (f.sev5) out.push({ key: "sev5", label: "Vulnérabilités critiques" });
-  if (f.qid !== undefined) out.push({ key: "qid", label: `${catalog?.byQid.get(f.qid)?.title?.slice(0, 50) || "QID"} (${f.qid})` });
-  if (f.product) out.push({ key: "product", label: `Produit : ${f.product}` });
-  if (f.search) out.push({ key: "search", label: `« ${f.search} »` });
-  return out;
+  const simple = SIMPLE_CHIPS.map(([key, label]) => ({ key, label: label(f, catalog) })).filter((c): c is Chip => Boolean(c.label));
+  return [...listChips(f, typeLabels), ...simple];
 }
 
 export function removeChip(f: QFilters, c: Chip): QFilters {
@@ -191,34 +215,49 @@ export function removeChip(f: QFilters, c: Chip): QFilters {
 // Chiffres recalculés sur la sélection
 // ---------------------------------------------------------------------------
 
+const emptySummary = (total: number) => ({
+  total, agent: 0, recent: 0, stale: 0, never: 0, publicIp: 0,
+  byType: { server: 0, workstation: 0, other: 0 } as Record<AssetType, number>,
+  recentByType: { server: 0, workstation: 0, other: 0 } as Record<AssetType, number>,
+  tiers: { critical: 0, high: 0, medium: 0, low: 0, none: 0 } as Record<TruTier, number>,
+  truriskSum: 0, truriskN: 0,
+  d5: 0, d4: 0, d3: 0, overdue: 0, ignored: 0, reopened: 0,
+  withVulns: 0, withSev5: 0, withOverdue: 0, kevAssets: 0, ransomwareAssets: 0, armedAssets: 0, eolAssets: 0,
+  armedServers: 0,
+});
+type SummaryCounts = ReturnType<typeof emptySummary>;
+
+/** Couverture d'un actif : agent, dernier scan, exposition, type, score. */
+function addCoverage(s: SummaryCounts, a: DAsset, now: number) {
+  if (hasAgent(a)) s.agent++;
+  const st = scanState(a, now);
+  s[st]++;
+  if (st === "recent") s.recentByType[a.asset_type]++;
+  if (a.public_ip) s.publicIp++;
+  s.byType[a.asset_type]++;
+  s.tiers[truTier(a.trurisk)]++;
+  if (a.trurisk !== null) { s.truriskSum += a.trurisk; s.truriskN++; }
+}
+
+/** Vulnérabilités et menaces d'un actif. */
+function addExposure(s: SummaryCounts, a: DAsset) {
+  s.d5 += a.d5; s.d4 += a.d4; s.d3 += a.d3; s.overdue += a.overdue; s.ignored += a.ignored; s.reopened += a.reopened;
+  const count = (cond: number | boolean) => (cond ? 1 : 0);
+  s.withVulns += count(a.d5 + a.d4 + a.d3);
+  s.withSev5 += count(a.d5);
+  s.withOverdue += count(a.overdue);
+  s.kevAssets += count(a.kev);
+  s.ransomwareAssets += count(a.ransomware);
+  s.armedAssets += count(a.armed);
+  s.armedServers += count(a.armed && a.asset_type === "server");
+  s.eolAssets += count(a.eol);
+}
+
 export function summarize(assets: DAsset[], now = Date.now()) {
-  const s = {
-    total: assets.length, agent: 0, recent: 0, stale: 0, never: 0, publicIp: 0,
-    byType: { server: 0, workstation: 0, other: 0 } as Record<AssetType, number>,
-    recentByType: { server: 0, workstation: 0, other: 0 } as Record<AssetType, number>,
-    tiers: { critical: 0, high: 0, medium: 0, low: 0, none: 0 } as Record<TruTier, number>,
-    truriskSum: 0, truriskN: 0,
-    d5: 0, d4: 0, d3: 0, overdue: 0, ignored: 0, reopened: 0,
-    withVulns: 0, withSev5: 0, withOverdue: 0, kevAssets: 0, ransomwareAssets: 0, armedAssets: 0, eolAssets: 0,
-    armedServers: 0,
-  };
+  const s = emptySummary(assets.length);
   for (const a of assets) {
-    if (hasAgent(a)) s.agent++;
-    const st = scanState(a, now);
-    s[st]++;
-    if (st === "recent") s.recentByType[a.asset_type]++;
-    if (a.public_ip) s.publicIp++;
-    s.byType[a.asset_type]++;
-    s.tiers[truTier(a.trurisk)]++;
-    if (a.trurisk !== null) { s.truriskSum += a.trurisk; s.truriskN++; }
-    s.d5 += a.d5; s.d4 += a.d4; s.d3 += a.d3; s.overdue += a.overdue; s.ignored += a.ignored; s.reopened += a.reopened;
-    if (a.d5 + a.d4 + a.d3) s.withVulns++;
-    if (a.d5) s.withSev5++;
-    if (a.overdue) s.withOverdue++;
-    if (a.kev) s.kevAssets++;
-    if (a.ransomware) s.ransomwareAssets++;
-    if (a.armed) { s.armedAssets++; if (a.asset_type === "server") s.armedServers++; }
-    if (a.eol) s.eolAssets++;
+    addCoverage(s, a, now);
+    addExposure(s, a);
   }
   return { ...s, truriskAvg: s.truriskN ? Math.round(s.truriskSum / s.truriskN) : null };
 }
@@ -245,36 +284,46 @@ export interface ProductGroup {
  * Vulnérabilités regroupées par produit à corriger, sur la sélection : nombre d'actifs distincts touchés,
  * menaces, sévérité maximale. Une ligne = un chantier de remédiation.
  */
+type GroupAcc = ProductGroup & { qidSet: Set<number> };
+const newGroup = (key: string): GroupAcc =>
+  ({ key, qids: [], qidSet: new Set(), hosts: 0, servers: 0, publicHosts: 0, maxSeverity: 0, maxCvss: null, flags: 0, armedQids: 0, kevQids: 0, detections: 0, categories: [] });
+
+/** Première rencontre d'une vulnérabilité dans un chantier : sévérité, CVSS, menaces, catégorie. */
+function addVulnToGroup(g: GroupAcc, c: DCatalog) {
+  g.maxSeverity = Math.max(g.maxSeverity, c.severity ?? 0);
+  if (c.cvss3 !== null) g.maxCvss = Math.max(g.maxCvss ?? 0, Number(c.cvss3));
+  g.flags |= c.flags;
+  if (c.flags & ARMED_FLAGS) g.armedQids++;
+  if (c.flags & FLAGS.kev) g.kevQids++;
+  if (c.category && !g.categories.includes(c.category)) g.categories.push(c.category);
+}
+
+/** Un actif compté une seule fois par chantier. */
+function addAssetToGroup(g: GroupAcc, a: DAsset) {
+  g.hosts++;
+  if (a.asset_type === "server") g.servers++;
+  if (a.public_ip) g.publicHosts++;
+}
+
+/**
+ * Vulnérabilités regroupées par produit à corriger, sur la sélection : nombre d'actifs distincts touchés,
+ * menaces, sévérité maximale. Une ligne = un chantier de remédiation.
+ */
 export function productGroups(assets: DAsset[], idx: CatalogIndex): ProductGroup[] {
-  const groups = new Map<string, ProductGroup & { qidSet: Set<number> }>();
+  const groups = new Map<string, GroupAcc>();
   for (const a of assets) {
     const seen = new Set<string>();
     for (const q of a.qids) {
-      const c = idx.byQid.get(q);
       const key = idx.product.get(q) ?? `QID ${q}`;
-      let g = groups.get(key);
-      if (!g) {
-        g = { key, qids: [], qidSet: new Set(), hosts: 0, servers: 0, publicHosts: 0, maxSeverity: 0, maxCvss: null, flags: 0, armedQids: 0, kevQids: 0, detections: 0, categories: [] };
-        groups.set(key, g);
-      }
+      const g = groups.get(key) ?? newGroup(key);
+      groups.set(key, g);
       g.detections++;
+      const c = idx.byQid.get(q);
       if (!g.qidSet.has(q)) {
         g.qidSet.add(q);
-        if (c) {
-          g.maxSeverity = Math.max(g.maxSeverity, c.severity ?? 0);
-          if (c.cvss3 !== null) g.maxCvss = Math.max(g.maxCvss ?? 0, Number(c.cvss3));
-          g.flags |= c.flags;
-          if (c.flags & ARMED_FLAGS) g.armedQids++;
-          if (c.flags & FLAGS.kev) g.kevQids++;
-          if (c.category && !g.categories.includes(c.category)) g.categories.push(c.category);
-        }
+        if (c) addVulnToGroup(g, c);
       }
-      if (!seen.has(key)) {
-        seen.add(key);
-        g.hosts++;
-        if (a.asset_type === "server") g.servers++;
-        if (a.public_ip) g.publicHosts++;
-      }
+      if (!seen.has(key)) { seen.add(key); addAssetToGroup(g, a); }
     }
   }
   return [...groups.values()].map(({ qidSet, ...g }) => ({ ...g, qids: [...qidSet] }));
@@ -319,8 +368,13 @@ export const wasStatusLabel = (s: string | null) => (s ? WAS_STATUS[s.toUpperCas
 export const fmtDate = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleDateString("fr-FR") : "—");
 
 export function toCsv(rows: Record<string, unknown>[], columns: { key: string; label: string }[]): string {
+  const text = (v: unknown) => {
+    if (v === null || v === undefined) return "";
+    if (Array.isArray(v)) return v.join(", ");
+    return typeof v === "object" ? JSON.stringify(v) : String(v);
+  };
   const cell = (v: unknown) => {
-    const s = v === null || v === undefined ? "" : Array.isArray(v) ? v.join(", ") : String(v);
+    const s = text(v);
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return "﻿" + [columns.map((c) => cell(c.label)).join(";"), ...rows.map((r) => columns.map((c) => cell(r[c.key])).join(";"))].join("\r\n");

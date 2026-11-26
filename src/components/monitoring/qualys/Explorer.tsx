@@ -118,6 +118,17 @@ export function FilterBar({ assets, shown }: { readonly assets: DAsset[]; readon
   const tierCount = useMemo(() => Object.fromEntries(TIERS.map((t) => [t, assets.filter((a) => truTier(a.trurisk) === t).length])), [assets]);
   const [search, setSearch] = useState(f.search ?? "");
   const one = <K extends keyof QFilters>(key: K, value: QFilters[K]) => set((x) => ({ ...x, [key]: x[key] === value ? undefined : value }));
+  // Options « Couverture » : scan:<état>, agent:<0|1>, public:1.
+  const coverageOn = (v: string) => {
+    if (v.startsWith("scan:")) return f.scan === v.slice(5);
+    if (v.startsWith("agent:")) return f.agent === (v === "agent:1");
+    return f.publicIp === true;
+  };
+  const coverageToggle = (v: string) => {
+    if (v.startsWith("scan:")) one("scan", v.slice(5) as ScanState);
+    else if (v.startsWith("agent:")) one("agent", v === "agent:1");
+    else one("publicIp", true);
+  };
   const list = chips(f, ASSET_TYPE_LABELS, ctx.idx ?? undefined);
   return (
     <Card className="sticky top-0 z-20 shadow-sm">
@@ -144,8 +155,7 @@ export function FilterBar({ assets, shown }: { readonly assets: DAsset[]; readon
               { value: "agent:1", label: "Avec agent Qualys" }, { value: "agent:0", label: "Sans agent Qualys" },
               { value: "public:1", label: "Exposés sur Internet (IP publique)" },
             ]}
-            isOn={(v) => (v.startsWith("scan:") ? f.scan === v.slice(5) : v.startsWith("agent:") ? f.agent === (v === "agent:1") : f.publicIp === true)}
-            onToggle={(v) => (v.startsWith("scan:") ? one("scan", v.slice(5) as ScanState) : v.startsWith("agent:") ? one("agent", v === "agent:1") : one("publicIp", true))} />
+            isOn={coverageOn} onToggle={coverageToggle} />
           <FacetMenu label="Menaces" active={Boolean(f.threat || f.eol || f.overdue || f.sev5)}
             options={[
               ...(["kev", "ransomware", "armed"] as const).map((t) => ({ value: `threat:${t}`, label: THREAT_LABELS[t] })),
@@ -177,6 +187,30 @@ export function FilterBar({ assets, shown }: { readonly assets: DAsset[]; readon
 // ---------------------------------------------------------------------------
 
 type SortKey = "name" | "trurisk" | "vulns" | "armed" | "overdue" | "last_scan" | "criticality";
+/** Valeur de tri d'un actif pour une colonne. */
+function sortValue(a: DAsset, key: SortKey): number | string {
+  switch (key) {
+    case "name": return (a.name ?? a.ip ?? "").toLowerCase();
+    case "vulns": return a.d5 * 1e6 + a.d4 * 1e3 + a.d3;
+    case "last_scan": return a.last_scan ?? "";
+    case "criticality": return a.criticality ?? 0;
+    case "trurisk": return a.trurisk ?? -1;
+    default: return a[key];
+  }
+}
+
+function compare(a: number | string, b: number | string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/** Couleur du score TruRisk : rouge dès 850 (critique), orange dès 700 (élevé). */
+function truriskClass(v: number | null): string {
+  if ((v ?? 0) >= 850) return "text-red-600";
+  if ((v ?? 0) >= 700) return "text-orange-600";
+  return "";
+}
+
 const ASSET_CSV = [
   { key: "name", label: "Actif" }, { key: "ip", label: "Adresse IP" }, { key: "typeLabel", label: "Type" }, { key: "os", label: "Système" },
   { key: "trurisk", label: "TruRisk" }, { key: "criticality", label: "Criticité" }, { key: "tracking", label: "Suivi" }, { key: "last_scan", label: "Dernier scan" },
@@ -193,9 +227,7 @@ export function AssetTable({ assets, title, help, initial = 25, csvName = "qualy
   const [limit, setLimit] = useState(initial);
   const [open, setOpen] = useState(false);
   const sorted = useMemo(() => {
-    const v = (a: DAsset): number | string => sort.key === "name" ? (a.name ?? a.ip ?? "").toLowerCase() : sort.key === "vulns" ? a.d5 * 1e6 + a.d4 * 1e3 + a.d3
-      : sort.key === "last_scan" ? (a.last_scan ?? "") : sort.key === "criticality" ? a.criticality ?? 0 : sort.key === "trurisk" ? a.trurisk ?? -1 : a[sort.key];
-    return [...assets].sort((x, y) => { const a = v(x), b = v(y); const c = a < b ? -1 : a > b ? 1 : 0; return sort.desc ? -c : c; });
+    return [...assets].sort((x, y) => { const c = compare(sortValue(x, sort.key), sortValue(y, sort.key)); return sort.desc ? -c : c; });
   }, [assets, sort]);
   const head = (key: SortKey, label: string, right = true) => (
     <TableHead className={`${right ? "text-right" : ""} whitespace-nowrap`}>
@@ -240,7 +272,7 @@ export function AssetTable({ assets, title, help, initial = 25, csvName = "qualy
                     <span className="font-mono">{a.ip}</span> · {a.os}
                   </div>
                 </TableCell>
-                <TableCell className={`text-right font-black py-1.5 ${(a.trurisk ?? 0) >= 850 ? "text-red-600" : (a.trurisk ?? 0) >= 700 ? "text-orange-600" : ""}`}>{fmt(a.trurisk)}</TableCell>
+                <TableCell className={`text-right font-black py-1.5 ${truriskClass(a.trurisk)}`}>{fmt(a.trurisk)}</TableCell>
                 <TableCell className="text-right py-1.5">{a.criticality ? `${a.criticality}/5` : "—"}</TableCell>
                 <TableCell className="text-right py-1.5 whitespace-nowrap">{fmt(a.d5)} / {fmt(a.d4)} / {fmt(a.d3)}</TableCell>
                 <TableCell className="text-right py-1.5">{fmt(a.armed)}{a.kev ? <span className="text-red-600 text-[11px]"> · {fmt(a.kev)} KEV</span> : null}</TableCell>
@@ -442,6 +474,12 @@ const CSAM_CSV = [
 
 type CsamView = "all" | "agent" | "shadow" | "stale" | "eos";
 
+function AgentCell({ a, stale }: { readonly a: CsamAsset; readonly stale: boolean }) {
+  if (a.has_agent) return <span className={stale ? "text-amber-600" : ""}>Oui · {fmtDate(a.agent_last_checkin)}</span>;
+  if (a.has_scanner) return <>Scanner seul</>;
+  return <span className="text-red-600 font-semibold">Non géré</span>;
+}
+
 export function CsamInventory() {
   const ctx = useQualysCtx()!;
   const [show, setShow] = useState(false);
@@ -455,8 +493,19 @@ export function CsamInventory() {
   const isEos = (a: CsamAsset) => Boolean((a.eos && Date.parse(a.eos) < now) || /EOS|EOL|end of/i.test(a.lifecycle_stage ?? ""));
   const scoped = useMemo(() => (q.data?.assets ?? []).filter((a) => (!f.type?.length || f.type.includes(a.asset_type)) && (!f.os?.length || f.os.includes(osFamily(a.os)))
     && (!f.tag?.length || f.tag.some((t) => a.tags.includes(t))) && (!f.search || [a.name, a.ip, a.os, ...a.tags].some((x) => (x ?? "").toLowerCase().includes(f.search!.toLowerCase())))), [q.data, f]);
-  const counts = { all: scoped.length, agent: scoped.filter((a) => a.has_agent).length, shadow: scoped.filter((a) => !a.has_agent && !a.has_scanner).length, stale: scoped.filter(isStale).length, eos: scoped.filter(isEos).length };
-  const list = scoped.filter((a) => view === "all" || (view === "agent" ? a.has_agent : view === "shadow" ? !a.has_agent && !a.has_scanner : view === "stale" ? isStale(a) : isEos(a)));
+  const inView: Record<CsamView, (a: CsamAsset) => boolean> = {
+    all: () => true, agent: (a) => a.has_agent, shadow: (a) => !a.has_agent && !a.has_scanner, stale: isStale, eos: isEos,
+  };
+  const counts = Object.fromEntries((Object.keys(inView) as CsamView[]).map((k) => [k, scoped.filter(inView[k]).length])) as Record<CsamView, number>;
+  const list = scoped.filter(inView[view]);
+  const openRow = (a: CsamAsset) => {
+    if (a.host_id) ctx.openAsset(a.host_id);
+    else setRaw(raw === a.asset_id ? null : a.asset_id);
+  };
+  let status: React.ReactNode = null;
+  if (q.isLoading) status = <div className="flex items-center gap-2 py-6 justify-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin" /> Chargement de l&apos;inventaire…</div>;
+  else if (q.error) status = <p className="text-sm text-destructive">{(q.error as Error).message}</p>;
+  else if (!q.data?.available || !q.data.assets.length) status = <p className="text-sm text-muted-foreground py-2">Inventaire CSAM pas encore disponible : il le sera après le prochain calcul de nuit réussi.</p>;
   const labels: Record<CsamView, string> = { all: "Tous", agent: "Avec agent", shadow: "Shadow IT (ni agent ni scan)", stale: "Agents silencieux (> 7 j)", eos: "Système hors support" };
   const chip = (active: boolean) => `text-xs px-2 py-1 rounded-full border ${active ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`;
   const detail = useQuery({ queryKey: ["qualys-inventory-asset", raw], queryFn: () => callQualys<{ asset: Record<string, unknown> }>({ action: "inventory-asset", assetId: raw }), enabled: raw !== null });
@@ -475,10 +524,7 @@ export function CsamInventory() {
       </CardHeader>
       {show && (
         <CardContent className="space-y-2">
-          {q.isLoading ? <div className="flex items-center gap-2 py-6 justify-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin" /> Chargement de l&apos;inventaire…</div>
-            : q.error ? <p className="text-sm text-destructive">{(q.error as Error).message}</p>
-            : !q.data?.available || !q.data.assets.length ? <p className="text-sm text-muted-foreground py-2">Inventaire CSAM pas encore disponible : il le sera après le prochain calcul de nuit réussi.</p>
-            : (
+          {status ?? (
               <>
                 <div className="flex flex-wrap gap-1.5">
                   {(Object.keys(labels) as CsamView[]).map((k) => <button key={k} type="button" className={chip(view === k)} onClick={() => { setView(k); setLimit(50); }}>{labels[k]} ({fmt(counts[k])})</button>)}
@@ -498,12 +544,12 @@ export function CsamInventory() {
                     <TableBody>
                       {list.slice(0, limit).map((a) => (
                         <Fragment key={a.asset_id}>
-                          <TableRow className="cursor-pointer hover:bg-muted/50" onClick={() => (a.host_id ? ctx.openAsset(a.host_id) : setRaw(raw === a.asset_id ? null : a.asset_id))}>
+                          <TableRow className="cursor-pointer hover:bg-muted/50" onClick={() => openRow(a)}>
                             <TableCell className="py-1.5 max-w-[300px]">
                               <div className="text-sm font-medium truncate">{a.name ?? a.ip ?? a.asset_id}</div>
                               <div className="text-[11px] text-muted-foreground truncate"><Badge tone={TYPE_TONE[a.asset_type]}>{ASSET_TYPE_LABELS[a.asset_type]}</Badge> <span className="font-mono">{a.ip}</span> · {a.os}</div>
                             </TableCell>
-                            <TableCell className="py-1.5 text-xs whitespace-nowrap">{a.has_agent ? <span className={isStale(a) ? "text-amber-600" : ""}>Oui · {fmtDate(a.agent_last_checkin)}</span> : a.has_scanner ? "Scanner seul" : <span className="text-red-600 font-semibold">Non géré</span>}</TableCell>
+                            <TableCell className="py-1.5 text-xs whitespace-nowrap"><AgentCell a={a} stale={isStale(a)} /></TableCell>
                             <TableCell className="py-1.5 text-xs">{a.lifecycle_stage ?? "—"}{a.eos && <div className={isEos(a) ? "text-red-600" : "text-muted-foreground"}>fin de support {fmtDate(a.eos)}</div>}</TableCell>
                             <TableCell className="py-1.5 text-xs max-w-[200px] truncate" title={a.hardware ?? ""}>{a.hardware ?? "—"}</TableCell>
                             <TableCell className="py-1.5 text-xs">{a.sources ?? "—"}</TableCell>
