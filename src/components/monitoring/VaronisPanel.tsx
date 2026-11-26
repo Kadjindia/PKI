@@ -313,7 +313,7 @@ export default function VaronisPanel() {
     );
   }
 
-  const statusOptions = [...new Set((data?.alerts ?? []).map((a) => formatStatus(a.status)))].sort();
+  const statusOptions = [...new Set((data?.alerts ?? []).map((a) => formatStatus(a.status)))].sort((a, b) => a.localeCompare(b));
   const severityData = SEVERITY_ORDER
     .map((s) => ({ key: s, name: SEVERITY_LABELS[s], value: summary.bySeverity[s] }))
     .filter((d) => d.value > 0);
@@ -524,25 +524,25 @@ export default function VaronisPanel() {
                     <>
                       <div className="flex h-3 rounded-full overflow-hidden bg-muted">
                         {segs.map((sg) => (
-                          <div key={sg.label} onClick={() => toggle("age", sg.key)} className={`${sg.color} cursor-pointer ${filters.age && filters.age !== sg.key ? "opacity-40" : ""}`} style={{ width: `${(sg.value / total) * 100}%` }} />
+                          <button type="button" key={sg.label} aria-label={`${sg.label} : ${sg.value}`} onClick={() => toggle("age", sg.key)} className={` ${sg.color} cursor-pointer ${filters.age && filters.age !== sg.key ? "opacity-40" : ""}`} style={{ width: `${(sg.value / total) * 100}%` }} />
                         ))}
                       </div>
                       <div className="grid grid-cols-3 gap-2 text-center">
                         {segs.map((sg) => (
-                          <div key={sg.label} onClick={() => toggle("age", sg.key)} className={`py-1 ${clickable(filters.age === sg.key, Boolean(filters.age) && filters.age !== sg.key)}`} title="Cliquer pour filtrer">
+                          <button type="button" key={sg.label} onClick={() => toggle("age", sg.key)} className={`block w-full text-center py-1 ${clickable(filters.age === sg.key, Boolean(filters.age) && filters.age !== sg.key)}`} title="Cliquer pour filtrer">
                             <div className="text-xl font-black text-foreground">{sg.value}</div>
                             <div className="text-[11px] text-muted-foreground flex items-center justify-center gap-1">
                               <span className={`w-2 h-2 rounded-full ${sg.color}`} /> {sg.label}
                             </div>
-                          </div>
+                          </button>
                         ))}
                       </div>
-                      <p className={`text-xs text-muted-foreground border-t border-border pt-3 ${view.ages.highGt7 > 0 ? "cursor-pointer hover:text-foreground" : ""}`} onClick={() => view.ages.highGt7 > 0 && patch({ severity: ["high"], age: "gt7" })}>
+                      <button type="button" className={`block w-full text-left text-xs text-muted-foreground border-t border-border pt-3 ${view.ages.highGt7 > 0 ? "cursor-pointer hover:text-foreground" : ""}`} onClick={() => view.ages.highGt7 > 0 && patch({ severity: ["high"], age: "gt7" })}>
                         {view.ages.highGt7 > 0
                           ? <><span className="font-bold text-red-500">{view.ages.highGt7}</span> alerte{view.ages.highGt7 > 1 ? "s" : ""} élevée{view.ages.highGt7 > 1 ? "s" : ""} ouverte{view.ages.highGt7 > 1 ? "s" : ""} depuis plus de 7 jours</>
                           : "Aucune alerte élevée ouverte depuis plus de 7 jours"}
                         {view.ages.oldestDays !== null && ` · plus ancienne : ${view.ages.oldestDays} j`}
-                      </p>
+                      </button>
                     </>
                   );
                 })()}
@@ -550,10 +550,10 @@ export default function VaronisPanel() {
                   <p className="text-[11px] font-bold uppercase text-muted-foreground mb-2">Escalades Varonis en attente de votre action</p>
                   <div className="grid grid-cols-3 gap-2 text-center">
                     {ESCALATION_ORDER.map((t) => (
-                      <div key={t} onClick={() => toggle("escalation", t)} title="Cliquer pour filtrer" className={`rounded-lg border p-2 ${t === "MITIGATION" && view.escalations[t] > 0 ? "border-red-500/40 bg-red-500/5" : "border-border"} ${clickable(filters.escalation === t, Boolean(filters.escalation) && filters.escalation !== t)}`}>
+                      <button type="button" key={t} onClick={() => toggle("escalation", t)} title="Cliquer pour filtrer" className={`block w-full text-center rounded-lg border p-2 ${t === "MITIGATION" && view.escalations[t] > 0 ? "border-red-500/40 bg-red-500/5" : "border-border"} ${clickable(filters.escalation === t, Boolean(filters.escalation) && filters.escalation !== t)}`}>
                         <div className={`text-lg font-black ${t === "MITIGATION" && view.escalations[t] > 0 ? "text-red-500" : "text-foreground"}`}>{view.escalations[t]}</div>
                         <div className="text-[11px] text-muted-foreground">{ESCALATION_LABELS[t]}</div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -612,13 +612,13 @@ export default function VaronisPanel() {
               <CardContent className="pt-2">
                 <ul>
                   {view.noise.slice(0, 5).map((p) => (
-                    <li key={p.name} onClick={() => toggle("policy", p.name)} title="Cliquer pour filtrer" className={`flex items-center justify-between gap-3 py-1.5 px-1 border-b border-border/50 last:border-0 text-sm ${clickable(filters.policy === p.name, Boolean(filters.policy) && filters.policy !== p.name)}`}>
+                    <li key={p.name}><button type="button" onClick={() => toggle("policy", p.name)} title="Cliquer pour filtrer" className={`w-full text-left flex items-center justify-between gap-3 py-1.5 px-1 border-b border-border/50 last:border-0 text-sm ${clickable(filters.policy === p.name, Boolean(filters.policy) && filters.policy !== p.name)}`}>
                       <span className="truncate text-foreground" title={p.name}>{p.name}</span>
                       <span className="flex items-center gap-2 shrink-0">
                         {p.noisy && <Badge variant="outline" className="bg-violet-500/15 text-violet-600 border-violet-500/30">Bruit</Badge>}
                         <b>{p.total}</b>
                       </span>
-                    </li>
+                    </button></li>
                   ))}
                 </ul>
               </CardContent>
@@ -749,7 +749,7 @@ export default function VaronisPanel() {
                     { key: "internal" as const, label: "Équipe interne", value: internal, color: "bg-sky-500" },
                     { key: "varonis" as const, label: "Varonis (MDR)", value: varonis, color: "bg-violet-500" },
                   ].map((r) => (
-                    <div key={r.label} onClick={() => toggle("handling", r.key)} title="Cliquer pour filtrer" className={`space-y-1 p-1 ${clickable(filters.handling === r.key, Boolean(filters.handling) && filters.handling !== r.key)}`}>
+                    <button type="button" key={r.label} onClick={() => toggle("handling", r.key)} title="Cliquer pour filtrer" className={`block w-full text-left space-y-1 p-1 ${clickable(filters.handling === r.key, Boolean(filters.handling) && filters.handling !== r.key)}`}>
                       <div className="flex justify-between text-sm">
                         <span className="text-foreground">{r.label}</span>
                         <span className="font-bold">{r.value} <span className="text-muted-foreground font-normal">({Math.round((r.value / total) * 100)} %)</span></span>
@@ -757,7 +757,7 @@ export default function VaronisPanel() {
                       <div className="h-2 rounded-full bg-muted overflow-hidden">
                         <div className={`h-full ${r.color}`} style={{ width: `${(r.value / total) * 100}%` }} />
                       </div>
-                    </div>
+                    </button>
                   ));
                 })()}
               </CardContent>
@@ -780,24 +780,24 @@ export default function VaronisPanel() {
                   <>
                     <div className="flex h-3 rounded-full overflow-hidden bg-muted">
                       {(["truePositive", "falsePositive", "other"] as Verdict[]).map((k) => (
-                        <div key={k} onClick={() => toggle("verdict", k)} className={`${VERDICT_COLORS[k]} cursor-pointer ${filters.verdict && filters.verdict !== k ? "opacity-40" : ""}`} style={{ width: `${(view.verdicts[k] / view.verdicts.classified) * 100}%` }} />
+                        <button type="button" key={k} aria-label={`${VERDICT_LABELS[k]} : ${view.verdicts[k]}`} onClick={() => toggle("verdict", k)} className={` ${VERDICT_COLORS[k]} cursor-pointer ${filters.verdict && filters.verdict !== k ? "opacity-40" : ""}`} style={{ width: `${(view.verdicts[k] / view.verdicts.classified) * 100}%` }} />
                       ))}
                     </div>
                     <ul className="space-y-1.5">
                       {(["truePositive", "falsePositive", "other"] as Verdict[]).map((k) => (
-                        <li key={k} onClick={() => toggle("verdict", k)} title="Cliquer pour filtrer" className={`flex justify-between gap-3 text-sm px-1 ${clickable(filters.verdict === k, Boolean(filters.verdict) && filters.verdict !== k)}`}>
+                        <li key={k}><button type="button" onClick={() => toggle("verdict", k)} title="Cliquer pour filtrer" className={`w-full text-left flex justify-between gap-3 text-sm px-1 ${clickable(filters.verdict === k, Boolean(filters.verdict) && filters.verdict !== k)}`}>
                           <span className="flex items-center gap-2 text-foreground"><span className={`w-2.5 h-2.5 rounded-full ${VERDICT_COLORS[k]}`} />{VERDICT_LABELS[k]}</span>
                           <span className="font-bold">{view.verdicts[k]} <span className="text-muted-foreground font-normal">({Math.round((view.verdicts[k] / view.verdicts.classified) * 100)} %)</span></span>
-                        </li>
+                        </button></li>
                       ))}
                     </ul>
                     <div className="border-t border-border pt-2">
                       <p className="text-[11px] font-bold uppercase text-muted-foreground mb-1">Motifs les plus fréquents</p>
                       {view.verdicts.reasons.slice(0, 4).map((r) => (
-                        <div key={r.name} onClick={() => toggle("closeReason", r.name)} className={`flex justify-between gap-3 text-xs px-1 ${clickable(filters.closeReason === r.name, Boolean(filters.closeReason) && filters.closeReason !== r.name)}`}>
+                        <button type="button" key={r.name} onClick={() => toggle("closeReason", r.name)} className={`flex w-full text-left flex justify-between gap-3 text-xs px-1 ${clickable(filters.closeReason === r.name, Boolean(filters.closeReason) && filters.closeReason !== r.name)}`}>
                           <span className="truncate text-muted-foreground" title={r.name}>{r.name}</span>
                           <span className="font-semibold">{r.count}</span>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   </>
@@ -813,7 +813,7 @@ export default function VaronisPanel() {
               </CardHeader>
               <CardContent className="pt-4 space-y-3">
                 {view.sources.map((src) => (
-                  <div key={src.label} onClick={() => toggle("source", src.label)} title="Cliquer pour filtrer" className={`space-y-1 p-1 ${clickable(filters.source === src.label, Boolean(filters.source) && filters.source !== src.label)}`}>
+                  <button type="button" key={src.label} onClick={() => toggle("source", src.label)} title="Cliquer pour filtrer" className={`block w-full text-left space-y-1 p-1 ${clickable(filters.source === src.label, Boolean(filters.source) && filters.source !== src.label)}`}>
                     <div className="flex justify-between gap-3 text-sm">
                       <span className="truncate text-foreground" title={src.label}>{src.label}</span>
                       <span className="font-bold shrink-0">{src.total}{src.open > 0 && <span className="text-amber-500 font-semibold"> · {src.open} ouverte{src.open > 1 ? "s" : ""}</span>}</span>
@@ -821,7 +821,7 @@ export default function VaronisPanel() {
                     <div className="h-2 rounded-full bg-muted overflow-hidden">
                       <div className="h-full bg-indigo-500" style={{ width: `${(src.total / Math.max(1, view.sources[0]?.total ?? 1)) * 100}%` }} />
                     </div>
-                  </div>
+                  </button>
                 ))}
               </CardContent>
             </Card>
@@ -841,7 +841,7 @@ export default function VaronisPanel() {
                     { key: "varonis" as const, label: "Varonis (MDR)", value: c.varonis, color: "bg-violet-500" },
                     ...(c.unknown > 0 ? [{ key: "unknown" as const, label: "Non renseigné", value: c.unknown, color: "bg-slate-400" }] : []),
                   ].map((r) => (
-                    <div key={r.label} onClick={() => toggle("closer", r.key)} title="Cliquer pour filtrer" className={`space-y-1 p-1 ${clickable(filters.closer === r.key, Boolean(filters.closer) && filters.closer !== r.key)}`}>
+                    <button type="button" key={r.label} onClick={() => toggle("closer", r.key)} title="Cliquer pour filtrer" className={`block w-full text-left space-y-1 p-1 ${clickable(filters.closer === r.key, Boolean(filters.closer) && filters.closer !== r.key)}`}>
                       <div className="flex justify-between text-sm">
                         <span className="text-foreground">{r.label}</span>
                         <span className="font-bold">{r.value} <span className="text-muted-foreground font-normal">({Math.round((r.value / total) * 100)} %)</span></span>
@@ -849,17 +849,17 @@ export default function VaronisPanel() {
                       <div className="h-2 rounded-full bg-muted overflow-hidden">
                         <div className={`h-full ${r.color}`} style={{ width: `${(r.value / total) * 100}%` }} />
                       </div>
-                    </div>
+                    </button>
                   ));
                 })()}
                 {view.closers.analysts.length > 0 && (
                   <div className="border-t border-border pt-2">
                     <p className="text-[11px] font-bold uppercase text-muted-foreground mb-1">Analystes internes</p>
                     {view.closers.analysts.map((a) => (
-                      <div key={a.name} onClick={() => toggle("analyst", a.name)} className={`flex justify-between gap-3 text-xs px-1 ${clickable(filters.analyst === a.name, Boolean(filters.analyst) && filters.analyst !== a.name)}`}>
+                      <button type="button" key={a.name} onClick={() => toggle("analyst", a.name)} className={`flex w-full text-left flex justify-between gap-3 text-xs px-1 ${clickable(filters.analyst === a.name, Boolean(filters.analyst) && filters.analyst !== a.name)}`}>
                         <span className="truncate text-muted-foreground" title={a.name}>{a.name}</span>
                         <span className="font-semibold">{a.count}</span>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -889,10 +889,10 @@ export default function VaronisPanel() {
                 </div>
                 <ul className="space-y-1.5 border-t border-border pt-3">
                   {summary.byStatus.map((st) => (
-                    <li key={st.name} onClick={() => toggle("status", st.name)} title="Cliquer pour filtrer" className={`flex justify-between gap-3 text-sm px-1 ${clickable(filters.status?.includes(st.name) ?? false, Boolean(filters.status?.length) && !filters.status?.includes(st.name))}`}>
+                    <li key={st.name}><button type="button" onClick={() => toggle("status", st.name)} title="Cliquer pour filtrer" className={`w-full text-left flex justify-between gap-3 text-sm px-1 ${clickable(filters.status?.includes(st.name) ?? false, Boolean(filters.status?.length) && !filters.status?.includes(st.name))}`}>
                       <span className="text-foreground">{st.name}</span>
                       <span className="font-bold">{st.count}</span>
-                    </li>
+                    </button></li>
                   ))}
                 </ul>
                 {summary.byCategory.length > 0 && (
@@ -909,9 +909,9 @@ export default function VaronisPanel() {
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
                   <Clock className="w-4 h-4 text-sky-500" /> Répartition horaire
                 </CardTitle>
-                <p className={`text-[11px] text-muted-foreground pt-1 cursor-pointer hover:text-foreground ${filters.offHours ? "font-bold" : ""}`} onClick={() => toggle("offHours", true)} title="Filtrer sur les alertes hors heures ouvrées">
+                <button type="button" className={`block w-full text-left text-[11px] text-muted-foreground pt-1 cursor-pointer hover:text-foreground ${filters.offHours ? "font-bold" : ""}`} onClick={() => toggle("offHours", true)} title="Filtrer sur les alertes hors heures ouvrées">
                   <span className="font-bold text-violet-500">{view.offHoursPct} %</span> hors heures ouvrées (avant 8 h, après 19 h, week-end)
-                </p>
+                </button>
               </CardHeader>
               <CardContent className="pt-4 h-[280px]">
                 <ResponsiveContainer width="100%" height="100%">

@@ -142,7 +142,7 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
       }
     };
 
-    fetchUserData();
+    void fetchUserData();
   }, [user]);
 
   return (

@@ -140,7 +140,7 @@ export default function ExecutiveSummary() {
       {/* Jauge Centrale de l'Indice de Posture (1/3 de l'espace) */}
       <div className="glass-panel flex flex-col items-center justify-center py-8 shadow-sm border border-border">
         <div className="relative w-32 h-32">
-          <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
+          <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120" aria-hidden="true">
             <circle cx="60" cy="60" r="54" fill="none" className="stroke-slate-200 dark:stroke-slate-800" strokeWidth="8" />
             <circle
               cx="60"

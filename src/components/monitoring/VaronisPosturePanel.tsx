@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { pressable } from "@/lib/a11y";
 import { useQuery } from "@tanstack/react-query";
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
@@ -328,7 +329,7 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
                 return (
                   <div
                     key={issue.key}
-                    onClick={() => showZones(issue.key)}
+                    {...pressable(() => showZones(issue.key))}
                     title="Cliquer pour afficher ces dossiers"
                     className={`grid grid-cols-[150px_1fr_210px] items-center gap-3 px-2 py-1.5 rounded-md cursor-pointer hover:bg-muted/60 ${zoneView === issue.key ? "ring-2 ring-primary/60 bg-muted/40" : ""} ${zoneView && zoneView !== issue.key ? "opacity-50" : ""}`}
                   >
@@ -447,15 +448,15 @@ export default function VaronisPosturePanel({ onOpenInventory }: { readonly onOp
 
             <dl className="border-t border-border pt-3 space-y-2 text-sm">
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={inventory("admins")} title="Voir la liste des administrateurs">Administrateurs</dt>
+                <dt className="text-muted-foreground"><button type="button" className="text-left hover:text-foreground hover:underline" onClick={inventory("admins")} title="Voir la liste des administrateurs">Administrateurs</button></dt>
                 <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.admins)}</Status></dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={inventory("services")} title="Voir la liste des comptes de service">Comptes de service</dt>
+                <dt className="text-muted-foreground"><button type="button" className="text-left hover:text-foreground hover:underline" onClick={inventory("services")} title="Voir la liste des comptes de service">Comptes de service</button></dt>
                 <dd className="font-semibold"><Status r={priv}>{formatCount(priv?.services)}</Status></dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground cursor-pointer hover:text-foreground hover:underline" onClick={inventory("expired")} title="Voir la liste des comptes expirés">Comptes expirés encore actifs</dt>
+                <dt className="text-muted-foreground"><button type="button" className="text-left hover:text-foreground hover:underline" onClick={inventory("expired")} title="Voir la liste des comptes expirés">Comptes expirés encore actifs</button></dt>
                 <dd className="font-semibold"><Status r={r.expiredEnabled}>{formatCount(r.expiredEnabled?.count)}</Status></dd>
               </div>
             </dl>

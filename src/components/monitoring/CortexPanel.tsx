@@ -87,9 +87,9 @@ const apiCall = async (endpoint: string, payload: any) => {
   });
   if (error) {
     console.error(`[Cortex Proxy] Erreur sur ${endpoint}:`, error.message);
-    return { ok: false, status: 500, json: async () => ({}) };
+    return { ok: false, status: 500, json: () => Promise.resolve({}) };
   }
-  return { ok: true, status: 200, json: async () => data };
+  return { ok: true, status: 200, json: () => Promise.resolve(data) };
 };
 
 const pollSingleQueryAttempt = async (queryId: string) => {
@@ -601,7 +601,7 @@ export default function CortexPanel() {
       }
     };
 
-    fetchGlobalKPIs();
+    void fetchGlobalKPIs();
     return () => { isCancelled = true; };
   }, [timePrefix, timeValue, timeUnit]);
 
@@ -1076,7 +1076,7 @@ export default function CortexPanel() {
                     onClick={() => {
                       setIsInventoryOpen(true);
                       setInventoryError(null);
-                      fetchInventory();
+                      void fetchInventory();
                     }}
                     className="text-[10px] font-bold text-indigo-600 bg-indigo-500/10 px-2 py-1 rounded-md border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors flex items-center gap-1"
                   >

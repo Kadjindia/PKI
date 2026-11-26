@@ -22,6 +22,7 @@ import {
   indexCatalog, filterAssets, summarize, isFiltered,
   type AssetsPayload, type DAsset, type CatalogIndex, type Summary, type QFilters, type TruTier,
 } from "@/lib/qualysDetails";
+import { pressable } from "@/lib/a11y";
 import { QualysContext, FoldTitle, Help, Badge, FlagBadges, clickable, useQualysCtx } from "./qualys/ui";
 import { AssetSheet, VulnSheet } from "./qualys/Sheets";
 import { callQualys } from "./qualys/api";
@@ -408,9 +409,15 @@ const TIER_BAR: [TruTier, string, string][] = [["critical", "bg-red-600", "criti
 /** Ligne « libellé : valeur » qui filtre la page au clic. */
 function FilterLine({ label, value, active, onClick }: { readonly label: string; readonly value: string; readonly active?: boolean; readonly onClick?: () => void }) {
   return (
-    <div className={`flex justify-between gap-2 px-1.5 py-0.5 ${onClick ? clickable(Boolean(active)) : ""}`} onClick={onClick} title={onClick ? "Cliquer pour filtrer la page" : undefined}>
-      <dt className="text-muted-foreground">{label}</dt><dd className="font-semibold">{value}</dd>
-    </div>
+    onClick ? (
+      <button type="button" className={`flex w-full justify-between gap-2 px-1.5 py-0.5 text-left ${clickable(Boolean(active))}`} onClick={onClick} title="Cliquer pour filtrer la page">
+        <span className="text-muted-foreground">{label}</span><span className="font-semibold">{value}</span>
+      </button>
+    ) : (
+      <div className="flex justify-between gap-2 px-1.5 py-0.5">
+        <span className="text-muted-foreground">{label}</span><span className="font-semibold">{value}</span>
+      </div>
+    )
   );
 }
 
@@ -436,7 +443,7 @@ function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
       ]}>
       <Card>
         <CardContent className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
-          <dl className="space-y-1">
+          <div className="space-y-1">
             <FilterLine label={d && isFiltered(f) ? "Actifs de la sélection" : "Actifs suivis par Qualys"} value={fmt(total)} />
             <FilterLine label="Équipés de l'agent Qualys" value={`${fmt(agent)} (${pct(agent, total) ?? 0} %)`} active={f.agent === true}
               onClick={set && d ? () => set((x) => ({ ...x, agent: x.agent === true ? undefined : true })) : undefined} />
@@ -456,24 +463,28 @@ function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
             })}
             {s && <FilterLine label="Exposés sur Internet (IP publique)" value={fmt(s.publicIp)} active={f.publicIp === true}
               onClick={set ? () => set((x) => ({ ...x, publicIp: x.publicIp ? undefined : true })) : undefined} />}
-          </dl>
+          </div>
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
               <span>Score de risque des actifs (TruRisk)</span>
               <Help>Score de risque Qualys de chaque actif (0 à 1 000), qui combine ses vulnérabilités et sa criticité. Critique : 850 et plus ; élevé : 700 à 849 ; moyen : 500 à 699. Cliquer sur une tranche pour filtrer la page.</Help>
             </div>
             <div className="flex h-3 rounded-full overflow-hidden bg-muted">
-              {TIER_BAR.map(([k, c]) => (
-                <div key={k} className={`${c} ${d ? "cursor-pointer" : ""} ${f.tier?.length && !f.tier.includes(k) ? "opacity-30" : ""}`} style={{ width: `${(tiers[k] / trTotal) * 100}%` }}
-                  onClick={set && d ? () => set((x) => ({ ...x, tier: x.tier?.length === 1 && x.tier[0] === k ? undefined : [k] })) : undefined} />
+              {TIER_BAR.map(([k, c, l]) => set && d ? (
+                <button type="button" key={k} aria-label={`TruRisk ${l} : ${fmt(tiers[k])} actifs`} className={`${c} cursor-pointer ${f.tier?.length && !f.tier.includes(k) ? "opacity-30" : ""}`} style={{ width: `${(tiers[k] / trTotal) * 100}%` }}
+                  onClick={() => set((x) => ({ ...x, tier: x.tier?.length === 1 && x.tier[0] === k ? undefined : [k] }))} />
+              ) : (
+                <div key={k} className={c} style={{ width: `${(tiers[k] / trTotal) * 100}%` }} />
               ))}
             </div>
             <div className="grid grid-cols-4 text-center text-[11px] text-muted-foreground">
-              {TIER_BAR.map(([k, , l]) => (
-                <span key={k} className={d ? clickable(Boolean(f.tier?.includes(k)), Boolean(f.tier?.length && !f.tier.includes(k))) : ""}
-                  onClick={set && d ? () => set((x) => ({ ...x, tier: x.tier?.length === 1 && x.tier[0] === k ? undefined : [k] })) : undefined}>
+              {TIER_BAR.map(([k, , l]) => set && d ? (
+                <button type="button" key={k} className={clickable(Boolean(f.tier?.includes(k)), Boolean(f.tier?.length && !f.tier.includes(k)))}
+                  onClick={() => set((x) => ({ ...x, tier: x.tier?.length === 1 && x.tier[0] === k ? undefined : [k] }))}>
                   <b className="text-foreground">{fmt(tiers[k])}</b><br />{l}
-                </span>
+                </button>
+              ) : (
+                <span key={k}><b className="text-foreground">{fmt(tiers[k])}</b><br />{l}</span>
               ))}
             </div>
             {s?.truriskAvg != null && <p className="text-xs text-muted-foreground pt-1">Score moyen de la sélection : <b className="text-foreground">{fmt(s.truriskAvg)}</b> / 1 000</p>}
@@ -918,12 +929,12 @@ export default function QualysPanel() {
 
         {/* INDICATEURS CLÉS */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className={`h-full ${view ? clickable(Boolean(filters.tier?.length)) : ""}`} onClick={view ? () => tierFilter(["critical", "high"]) : undefined} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
+          <div className={`h-full ${view ? clickable(Boolean(filters.tier?.length)) : ""}`} {...(view ? pressable(() => tierFilter(["critical", "high"])) : {})} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
             <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={sum?.truriskAvg != null ? fmt(sum.truriskAvg) : e?.truriskAvg != null ? fmt(e.truriskAvg) : "—"}
               help={<>Moyenne du score de risque Qualys (0 à 1 000) des actifs{filtered ? " de la sélection" : " du parc"} : la posture de risque globale. Doit baisser dans le temps.</>}
               sub={sum ? <><span>sur 1 000 · {fmt(sum.truriskN)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</> : e ? <><span>sur 1 000 · {fmt(e.truriskAssets)} actifs</span> <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter /></> : "après le prochain calcul"} />
           </div>
-          <div className={`h-full ${view ? clickable(filters.threat === "armed") : ""}`} onClick={view ? () => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" })) : undefined} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
+          <div className={`h-full ${view ? clickable(filters.threat === "armed") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" }))) : {})} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
             {sum ? (
               <Kpi title="Actifs exploitables" icon={Flame} color="border-l-orange-500" value={fmt(sum.armedAssets)}
                 help={<>Actifs portant au moins une vulnérabilité ouverte exploitée ou exploitable dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
@@ -940,7 +951,7 @@ export default function QualysPanel() {
           <Kpi title="MTTR – critiques" icon={Timer} color="border-l-sky-500" value={mttr5 === null ? "—" : `${fmt(mttr5)} j`}
             help={<>Délai moyen de correction (MTTR) des vulnérabilités critiques, de la détection à la correction. Délai fixé : 7 jours calendaires, une vulnérabilité critique étant traitée comme un incident de sécurité. Tout le parc (non filtré).</>}
             sub={mttr5 === null ? "après le prochain calcul" : <><span>délai moyen · cible 7 j</span> <Delta value={trendOver(points, "mttr5")} lowerIsBetter unit=" j" /></>} />
-          <div className={`h-full ${view ? clickable(filters.scan === "stale" || filters.scan === "never") : ""}`} onClick={view ? () => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" })) : undefined} title={view ? "Cliquer pour voir les actifs non analysés récemment" : undefined}>
+          <div className={`h-full ${view ? clickable(filters.scan === "stale" || filters.scan === "never") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" }))) : {})} title={view ? "Cliquer pour voir les actifs non analysés récemment" : undefined}>
             <Kpi title="Couverture des scans" icon={Radar} color="border-l-violet-500" value={coverage === null ? "—" : `${coverage} %`}
               help={<>Part des actifs analysés (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
               sub={sum ? `${fmt(sum.recent)} actifs sur ${fmt(sum.total)} (${r.coverage.recentDays} derniers jours)` : `${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)} (${r.coverage.recentDays} derniers jours)`} />

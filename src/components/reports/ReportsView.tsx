@@ -2,6 +2,7 @@ import React from "react";
 
 // Imports originaux mis en commentaire temporairement pour éviter les erreurs "unused variables"
 /*
+import { pressable } from "@/lib/a11y";
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from "@/integrations/supabase/client";
@@ -187,7 +188,7 @@ export default function ReportsView() {
             <h2 className="text-sm font-bold uppercase text-muted-foreground">1. Format du Livrable</h2>
             <div className="flex flex-col gap-3">
 
-              <div onClick={() => handleFormatSelect('one-pager')} className={`p-4 rounded-xl border-2 cursor-pointer flex items-center gap-3 transition-all ${reportFormat === 'one-pager' ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-secondary/20'}`}>
+              <div {...pressable(() => handleFormatSelect('one-pager'))} aria-pressed={reportFormat === 'one-pager'} className={`p-4 rounded-xl border-2 cursor-pointer flex items-center gap-3 transition-all ${reportFormat === 'one-pager' ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-secondary/20'}`}>
                 <File className={`w-6 h-6 ${reportFormat === 'one-pager' ? 'text-primary' : 'text-muted-foreground'}`} />
                 <div>
                   <h3 className={`font-bold ${reportFormat === 'one-pager' ? 'text-primary' : 'text-foreground'}`}>One-Pager (Comex)</h3>
@@ -195,7 +196,7 @@ export default function ReportsView() {
                 </div>
               </div>
 
-              <div onClick={() => handleFormatSelect('standard')} className={`p-4 rounded-xl border-2 cursor-pointer flex items-center gap-3 transition-all ${reportFormat === 'standard' ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-secondary/20'}`}>
+              <div {...pressable(() => handleFormatSelect('standard'))} aria-pressed={reportFormat === 'standard'} className={`p-4 rounded-xl border-2 cursor-pointer flex items-center gap-3 transition-all ${reportFormat === 'standard' ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-secondary/20'}`}>
                 <LayoutTemplate className={`w-6 h-6 ${reportFormat === 'standard' ? 'text-primary' : 'text-muted-foreground'}`} />
                 <div>
                   <h3 className={`font-bold ${reportFormat === 'standard' ? 'text-primary' : 'text-foreground'}`}>Standard (Modulable)</h3>
@@ -203,7 +204,7 @@ export default function ReportsView() {
                 </div>
               </div>
 
-              <div onClick={() => handleFormatSelect('qualys')} className={`p-4 rounded-xl border-2 cursor-pointer flex items-center gap-3 transition-all ${reportFormat === 'qualys' ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-secondary/20'}`}>
+              <div {...pressable(() => handleFormatSelect('qualys'))} aria-pressed={reportFormat === 'qualys'} className={`p-4 rounded-xl border-2 cursor-pointer flex items-center gap-3 transition-all ${reportFormat === 'qualys' ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-secondary/20'}`}>
                 <Layers className={`w-6 h-6 ${reportFormat === 'qualys' ? 'text-primary' : 'text-muted-foreground'}`} />
                 <div>
                   <h3 className={`font-bold ${reportFormat === 'qualys' ? 'text-primary' : 'text-foreground'}`}>Audit Complet (Qualys-like)</h3>

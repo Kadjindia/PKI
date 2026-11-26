@@ -252,7 +252,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     setFile(f);
     const ext = f.name.split(".").pop()?.toLowerCase();
     if (ext === "csv") parseCSV(f);
-    else if (ext === "xlsx" || ext === "xls") parseExcel(f);
+    else if (ext === "xlsx" || ext === "xls") void parseExcel(f);
   };
 
   const computeValue = useCallback(() => {
@@ -336,7 +336,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     setFile(f);
     const ext = f.name.split(".").pop()?.toLowerCase();
     if (ext === "csv") parseCSV(f);
-    else if (ext === "xlsx" || ext === "xls") parseExcel(f);
+    else if (ext === "xlsx" || ext === "xls") void parseExcel(f);
   }, []);
 
   return (
