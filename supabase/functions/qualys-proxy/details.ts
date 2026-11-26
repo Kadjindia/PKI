@@ -56,7 +56,8 @@ export async function handleAssets(admin: Admin) {
   const qids = index.map((r) => r.qid);
   const kb = new Map<number, Row>();
   for (let i = 0; i < qids.length; i += 500) {
-    const { data, error } = await admin.from("qualys_kb").select(KB_LIGHT).in("qid", qids.slice(i, i + 500));
+    // Lots de 500 lus un par un (taille des requêtes limitée)
+    const { data, error } = await admin.from("qualys_kb").select(KB_LIGHT).in("qid", qids.slice(i, i + 500)); // NOSONAR
     if (error) throw new Error(error.message);
     for (const k of data ?? []) kb.set(Number(k.qid), k);
   }
@@ -85,7 +86,8 @@ export async function handleAsset(admin: Admin, hostId: unknown) {
   const qids = [...new Set(detections.map((d) => Number(d[0])))];
   const kb = new Map<number, Row>();
   for (let i = 0; i < qids.length; i += 500) {
-    const { data } = await admin.from("qualys_kb").select("qid, severity, title, category, cvss3, cves, flags, products, solution, patch_published").in("qid", qids.slice(i, i + 500));
+    // Lots de 500 lus un par un (taille des requêtes limitée)
+    const { data } = await admin.from("qualys_kb").select("qid, severity, title, category, cvss3, cves, flags, products, solution, patch_published").in("qid", qids.slice(i, i + 500)); // NOSONAR
     for (const k of data ?? []) kb.set(Number(k.qid), k);
   }
   let csam: Row | null = null;
@@ -126,7 +128,8 @@ export async function handleVuln(admin: Admin, qidRaw: unknown) {
   const ids = [...new Set((hits ?? []).map((h: Row) => Number(h.host_id)))] as number[];
   const assets = new Map<number, Row>();
   for (let i = 0; i < ids.length; i += 500) {
-    const { data } = await admin.from("qualys_assets").select("host_id, name, ip, os, asset_type, trurisk, criticality, public_ip, tags, last_scan")
+    // Lots de 500 lus un par un (taille des requêtes limitée)
+    const { data } = await admin.from("qualys_assets").select("host_id, name, ip, os, asset_type, trurisk, criticality, public_ip, tags, last_scan") // NOSONAR
       .eq("snapshot_id", snap.id).in("host_id", ids.slice(i, i + 500));
     for (const a of data ?? []) assets.set(Number(a.host_id), a);
   }

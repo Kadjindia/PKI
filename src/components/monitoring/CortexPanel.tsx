@@ -111,7 +111,7 @@ const attemptStartQuery = async (payload: any, checkCancelled: () => boolean) =>
     // Essais successifs volontaires : Cortex limite le nombre d'appels
     const startRes = await apiCall(`/public_api/v1/xql/start_xql_query/`, payload); // NOSONAR
     if ([450, 429, 500].includes(startRes.status)) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 3000)); // NOSONAR : attente avant le nouvel essai
       continue;
     }
     if (!startRes.ok) return null;

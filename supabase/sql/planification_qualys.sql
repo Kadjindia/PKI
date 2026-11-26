@@ -39,7 +39,5 @@ REVOKE ALL ON FUNCTION public.call_qualys(boolean) FROM PUBLIC, anon, authentica
 SELECT cron.schedule('qualys-nuit',   '0 1 * * *',   $$ SELECT public.call_qualys(true) $$);
 SELECT cron.schedule('qualys-avance', '*/2 * * * *', $$ SELECT public.call_qualys(false) $$);
 
--- Vérifications utiles :
---   SELECT status, started_at, finished_at, state->>'phase' AS etape, state->>'pages' AS pages, last_error
---     FROM public.qualys_snapshots ORDER BY started_at DESC LIMIT 5;
--- Lancer un calcul tout de suite : SELECT public.call_qualys(true);
+-- Vérifications : voir controles_planification.sql.
+-- Lancer un calcul tout de suite : appeler la fonction public.call_qualys avec le paramètre true.
