@@ -36,7 +36,8 @@ AS $$
 $$;
 REVOKE ALL ON FUNCTION public.call_qualys(boolean) FROM PUBLIC, anon, authenticated;
 
-SELECT cron.schedule('qualys-nuit',   '0 1 * * *',   $$ SELECT public.call_qualys(true) $$);
+-- Calcul complet en 4 à 5 h : démarré à 20 h UTC (21 h à Paris l'hiver), fini avant l'arrivée des équipes
+SELECT cron.schedule('qualys-nuit',   '0 20 * * *',  $$ SELECT public.call_qualys(true) $$);
 SELECT cron.schedule('qualys-avance', '*/2 * * * *', $$ SELECT public.call_qualys(false) $$);
 
 -- Vérifications : voir controles_planification.sql.
