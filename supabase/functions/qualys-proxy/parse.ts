@@ -387,7 +387,7 @@ export function kbPage(xml: string) {
 /** Texte lisible d'un champ HTML de la base de connaissances (solution, conséquence…). */
 export const plainText = (html: string | null, max: number) =>
   (html ?? "").replace(/<br\s*\/?>|<\/p>|<\/li>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim().slice(0, max) || null;
+    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/\r/g, "").replace(/[ \t]+/g, " ").replace(/\n(?:[ \t]*\n)+/g, "\n").trim().slice(0, max) || null;
 
 /** Fiche d'une vulnérabilité de la base de connaissances (table qualys_kb). */
 export interface KbRow {
@@ -833,8 +833,8 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     const cell = ((monthCells[m] ??= {})[r.severity] ??= [0, 0, 0]);
     cell[0] += r.n; cell[1] += r.in_sla; cell[2] += Number(r.days_sum);
   }
-  const firstDay = fixedRows.map((r) => r.day).sort()[0] ?? null;
-  const monthly = Object.keys(monthCells).sort().map((m) => {
+  const firstDay = fixedRows.map((r) => r.day).sort((a, b) => a.localeCompare(b))[0] ?? null;
+  const monthly = Object.keys(monthCells).sort((a, b) => a.localeCompare(b)).map((m) => {
     const cells = Object.values(monthCells[m]);
     const fixed = cells.reduce((t, c) => t + c[0], 0);
     const inSla = cells.reduce((t, c) => t + c[1], 0);

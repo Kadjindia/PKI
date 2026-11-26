@@ -326,13 +326,13 @@ export function PriorityFixes({ assets, idx }: { readonly assets: DAsset[]; read
                     <TableCell colSpan={6} className="bg-muted/30 py-2">
                       <ul className="space-y-1">
                         {g.qids.map((x) => idx.byQid.get(x)).filter(Boolean).sort((a, b) => (b!.severity ?? 0) - (a!.severity ?? 0) || (hostsByQid.get(b!.qid) ?? 0) - (hostsByQid.get(a!.qid) ?? 0)).map((c) => (
-                          <li key={c!.qid} className="flex items-center gap-2 text-xs cursor-pointer hover:underline" onClick={() => ctx.openVuln(c!.qid)}>
+                          <li key={c!.qid}><button type="button" className="flex w-full items-center gap-2 text-left text-xs cursor-pointer hover:underline" onClick={() => ctx.openVuln(c!.qid)}>
                             <Badge tone={sevTone(c!.severity)}>{c!.severity ?? "?"}</Badge>
                             <span className="flex-1 truncate" title={c!.title}>{c!.title || `QID ${c!.qid}`}</span>
                             <FlagBadges flags={c!.flags} compact />
                             <span className="font-mono text-muted-foreground whitespace-nowrap">{c!.cves.slice(0, 2).join(", ")}</span>
                             <b className="whitespace-nowrap">{fmt(hostsByQid.get(c!.qid) ?? 0)} actifs</b>
-                          </li>
+                          </button></li>
                         ))}
                       </ul>
                     </TableCell>
@@ -379,14 +379,14 @@ export function EolList({ assets, idx, total }: { readonly assets: DAsset[]; rea
             <div className="text-3xl font-black">{fmt(eolAssets.length)}</div>
             <div className="text-xs text-muted-foreground">actifs concernés, soit {pct(eolAssets.length, total) ?? 0} % de la sélection</div>
           </button>
-          <dl className="space-y-1 text-xs">
+          <div className="space-y-1 text-xs">
             {TYPES.map((t) => (
-              <div key={t} className={`flex justify-between gap-2 px-1 ${clickable(Boolean(ctx.filters.eol && ctx.filters.type?.includes(t)))}`}
+              <button type="button" key={t} className={`flex w-full justify-between gap-2 px-1 text-left ${clickable(Boolean(ctx.filters.eol && ctx.filters.type?.includes(t)))}`}
                 onClick={() => ctx.setFilters((f) => ({ ...f, eol: true, type: [t] }))}>
-                <dt className="text-muted-foreground">{ASSET_TYPE_LABELS[t]}</dt><dd className="font-semibold">{fmt(byType[t])}</dd>
-              </div>
+                <span className="text-muted-foreground">{ASSET_TYPE_LABELS[t]}</span><span className="font-semibold">{fmt(byType[t])}</span>
+              </button>
             ))}
-          </dl>
+          </div>
           <div className="text-xs text-muted-foreground border-t border-border pt-2">{fmt(all.length)} produits en fin de support, dont {fmt(all.filter((p) => p.os).length)} systèmes d&apos;exploitation</div>
         </div>
         <div className="lg:col-span-2 space-y-2">

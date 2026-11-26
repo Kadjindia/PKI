@@ -24,7 +24,7 @@ export default function ProfileModal({ isOpen, onClose, userEmail, currentInitia
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
-      fetchUserProfile();
+      void fetchUserProfile();
     } else {
       document.body.style.overflow = 'unset';
     }

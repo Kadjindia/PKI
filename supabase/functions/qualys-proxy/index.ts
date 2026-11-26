@@ -298,7 +298,7 @@ async function enterFixed(admin: Admin, state: Row) {
     cursor = data?.value ?? null;
   } catch { cursor = null; }
   // Dates toujours ramenées à la forme ISO « …Z » (la base renvoie « …+00:00 »)
-  const cursorMs = cursor ? Date.parse(String(cursor)) : NaN;
+  const cursorMs = cursor ? Date.parse(String(cursor)) : Number.NaN;
   const floorMs = fixedSince().getTime();
   const untilMs = Date.now() - FIXED_LAG_MS;
   const sinceMs = Math.min(Number.isFinite(cursorMs) && cursorMs > floorMs ? cursorMs : floorMs, untilMs - 1000);

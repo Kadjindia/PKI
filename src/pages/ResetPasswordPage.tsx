@@ -19,7 +19,7 @@ export default function ResetPasswordPage() {
          setError("Lien invalide ou expiré. Veuillez demander une nouvelle réinitialisation.");
       }
     };
-    checkUser();
+    void checkUser();
   }, []);
 
   const handlePasswordReset = async (e: FormEvent) => {

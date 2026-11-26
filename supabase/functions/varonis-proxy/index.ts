@@ -1095,7 +1095,7 @@ function withGroups(r: Record<string, Row>, items: Row[] | undefined): Row[] | u
     // Appartenance directe = profondeur la plus faible du compte (0 ou 1 selon le tenant)
     const direct = Math.min(...raw.map((g) => g.depth ?? 99));
     const groups: Row[] = raw.map((g) => ({ ...g, inherited: (g.depth ?? 99) > direct }));
-    const apps = [...new Set(groups.flatMap((g) => g.apps ?? []))].sort();
+    const apps = [...new Set<string>(groups.flatMap((g) => g.apps ?? []))].sort((a, b) => a.localeCompare(b));
     return { ...a, groups, groupNames: groups.map((g) => g.name), apps };
   });
 }

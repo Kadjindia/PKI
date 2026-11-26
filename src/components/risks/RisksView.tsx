@@ -1073,7 +1073,7 @@ export default function RisksView() {
         setIsInitialized(true);
       }
     };
-    fetchRisks();
+    void fetchRisks();
   }, []);
 
   useEffect(() => {
