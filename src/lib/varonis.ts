@@ -529,39 +529,64 @@ export function buildInsights(
   allAlerts: VaronisAlert[] = current,
   now = new Date(),
 ): Insight[] {
-  const insights: Insight[] = [];
-  if (current.length === 0) return insights;
+  if (current.length === 0) return [];
   const s = summarizeAlerts(current);
+  const treated = s.total - s.open;
+  return [
+    ...urgentInsights(current, allAlerts, s, now),
+    ...exposureInsights(current, allAlerts, s, now),
+    ...trendInsights(current, previous),
+    { level: "info", text: `Taux de traitement : ${Math.round((treated / s.total) * 100)} % des alertes de la période sont fermées.`, filter: { state: "closed" } },
+  ];
+}
 
+type AlertSummary = ReturnType<typeof summarizeAlerts>;
+
+/** Points critiques : alertes graves ouvertes, anciennes, escaladées, rançongiciel. */
+function urgentInsights(current: VaronisAlert[], allAlerts: VaronisAlert[], s: AlertSummary, now: Date): Insight[] {
+  const out: Insight[] = [];
   if (s.openHigh > 0) {
-    insights.push({ level: "critical", text: `${s.openHigh} ${plural(s.openHigh, "alerte", "alertes")} de sévérité élevée ${plural(s.openHigh, "est encore ouverte", "sont encore ouvertes")}.`, filter: { state: "open", severity: ["high"] } });
+    out.push({ level: "critical", text: `${s.openHigh} ${plural(s.openHigh, "alerte", "alertes")} de sévérité élevée ${plural(s.openHigh, "est encore ouverte", "sont encore ouvertes")}.`, filter: { state: "open", severity: ["high"] } });
   }
   const ages = openAgeBuckets(allAlerts, now);
   if (ages.highGt7 > 0) {
-    insights.push({ level: "critical", text: `${ages.highGt7} ${plural(ages.highGt7, "alerte élevée est ouverte", "alertes élevées sont ouvertes")} depuis plus de 7 jours (toutes périodes confondues).`, filter: { severity: ["high"], age: "gt7" } });
+    out.push({ level: "critical", text: `${ages.highGt7} ${plural(ages.highGt7, "alerte élevée est ouverte", "alertes élevées sont ouvertes")} depuis plus de 7 jours (toutes périodes confondues).`, filter: { severity: ["high"], age: "gt7" } });
   }
   const mitigation = openEscalations(allAlerts).MITIGATION;
   if (mitigation > 0) {
-    insights.push({ level: "critical", text: `${mitigation} ${plural(mitigation, "alerte escaladée par Varonis attend", "alertes escaladées par Varonis attendent")} une action de remédiation de votre part.`, filter: { escalation: "MITIGATION" } });
+    out.push({ level: "critical", text: `${mitigation} ${plural(mitigation, "alerte escaladée par Varonis attend", "alertes escaladées par Varonis attendent")} une action de remédiation de votre part.`, filter: { escalation: "MITIGATION" } });
   }
   const ransomware = current.filter((a) => threatFamily(a) === "ransomware" && isOpen(a)).length;
   if (ransomware > 0) {
-    insights.push({ level: "critical", text: `${ransomware} ${plural(ransomware, "alerte ouverte évoque", "alertes ouvertes évoquent")} un comportement de rançongiciel.`, filter: { state: "open", threat: "ransomware" } });
+    out.push({ level: "critical", text: `${ransomware} ${plural(ransomware, "alerte ouverte évoque", "alertes ouvertes évoquent")} un comportement de rançongiciel.`, filter: { state: "open", threat: "ransomware" } });
   }
+  return out;
+}
+
+/** Points de vigilance : ressources taguées ou sensibles, arriéré. */
+function exposureInsights(current: VaronisAlert[], allAlerts: VaronisAlert[], s: AlertSummary, now: Date): Insight[] {
+  const out: Insight[] = [];
   const taggedOpen = current.filter((a) => isOpen(a) && a.hasTaggedResource).length;
   if (taggedOpen > 0) {
-    insights.push({ level: "warning", text: `${taggedOpen} ${plural(taggedOpen, "alerte ouverte touche", "alertes ouvertes touchent")} des ressources taguées (données critiques).`, filter: { state: "open", tagged: true } });
+    out.push({ level: "warning", text: `${taggedOpen} ${plural(taggedOpen, "alerte ouverte touche", "alertes ouvertes touchent")} des ressources taguées (données critiques).`, filter: { state: "open", tagged: true } });
   }
   if (s.sensitive > 0) {
-    insights.push({ level: "warning", text: `${s.sensitive} ${plural(s.sensitive, "alerte ouverte concerne", "alertes ouvertes concernent")} des données sensibles.`, filter: { state: "open", sensitive: true } });
+    out.push({ level: "warning", text: `${s.sensitive} ${plural(s.sensitive, "alerte ouverte concerne", "alertes ouvertes concernent")} des données sensibles.`, filter: { state: "open", sensitive: true } });
   }
-  if (ages.gt30 > 0) {
-    insights.push({ level: "warning", text: `Arriéré (toutes périodes) : ${ages.gt30} ${plural(ages.gt30, "alerte ouverte", "alertes ouvertes")} depuis plus de 30 jours.`, filter: { age: "gt30" } });
+  const gt30 = openAgeBuckets(allAlerts, now).gt30;
+  if (gt30 > 0) {
+    out.push({ level: "warning", text: `Arriéré (toutes périodes) : ${gt30} ${plural(gt30, "alerte ouverte", "alertes ouvertes")} depuis plus de 30 jours.`, filter: { age: "gt30" } });
   }
+  return out;
+}
+
+/** Tendances : volume, heures, faux positifs, politiques bruyantes. */
+function trendInsights(current: VaronisAlert[], previous: VaronisAlert[]): Insight[] {
+  const out: Insight[] = [];
   const evo = variation(current.length, previous.length);
   // Seulement sur une base significative (au moins 10 alertes la période précédente)
   if (evo !== null && Math.abs(evo) >= 20 && previous.length >= 10) {
-    insights.push({
+    out.push({
       level: evo > 0 ? "warning" : "info",
       text: `Volume d'alertes en ${evo > 0 ? "hausse" : "baisse"} de ${Math.abs(evo)} % par rapport à la période précédente.`,
     });
@@ -569,22 +594,20 @@ export function buildInsights(
   const off = current.filter((a) => { const d = alertDate(a); return d ? isOffHours(d) : false; }).length;
   const offPct = Math.round((off / current.length) * 100);
   if (offPct >= 30) {
-    insights.push({ level: "warning", text: `${offPct} % des alertes surviennent hors heures ouvrées (soir, nuit ou week-end).`, filter: { offHours: true } });
+    out.push({ level: "warning", text: `${offPct} % des alertes surviennent hors heures ouvrées (soir, nuit ou week-end).`, filter: { offHours: true } });
   }
   const v = verdictStats(current);
   if (v.classified >= 10) {
     const fp = Math.round((v.falsePositive / v.classified) * 100);
     if (fp >= 50) {
-      insights.push({ level: "warning", text: `${fp} % des alertes clôturées sont des faux positifs ou une activité légitime : des politiques sont à régler.`, filter: { verdict: "falsePositive" } });
+      out.push({ level: "warning", text: `${fp} % des alertes clôturées sont des faux positifs ou une activité légitime : des politiques sont à régler.`, filter: { verdict: "falsePositive" } });
     }
   }
   const noisy = policyNoise(current).filter((p) => p.noisy);
   if (noisy.length > 0) {
-    insights.push({ level: "info", text: `${noisy.length} ${plural(noisy.length, "politique génère", "politiques génèrent")} surtout du bruit (alertes peu graves ou faux positifs) : réglage à envisager (« ${noisy[0].name} »).`, filter: { policy: noisy[0].name } });
+    out.push({ level: "info", text: `${noisy.length} ${plural(noisy.length, "politique génère", "politiques génèrent")} surtout du bruit (alertes peu graves ou faux positifs) : réglage à envisager (« ${noisy[0].name} »).`, filter: { policy: noisy[0].name } });
   }
-  const treated = s.total - s.open;
-  insights.push({ level: "info", text: `Taux de traitement : ${Math.round((treated / s.total) * 100)} % des alertes de la période sont fermées.`, filter: { state: "closed" } });
-  return insights;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -619,37 +642,51 @@ const AGE_LABELS: Record<AgeFilter, string> = {
   lt7: "ouvertes depuis moins de 7 jours", d7to30: "ouvertes depuis 7 à 30 jours",
   gt30: "ouvertes depuis plus de 30 jours", gt7: "ouvertes depuis plus de 7 jours",
 };
+const HANDLING_LABELS: Record<NonNullable<AlertFilters["handling"]>, string> = { varonis: "Varonis (MDR)", internal: "Équipe interne" };
 const CLOSER_LABELS: Record<CloserKind, string> = { varonis: "Varonis (MDR)", internal: "Équipe interne", unknown: "Non renseigné" };
 
-export function matchesFilters(a: VaronisAlert, f: AlertFilters, now = new Date()): boolean {
-  const open = isOpen(a);
-  if (f.state === "open" && !open) return false;
-  if (f.state === "closed" && open) return false;
-  if (f.severity?.length && !f.severity.includes(normalizeSeverity(a.policy?.severity))) return false;
-  if (f.status?.length && !f.status.includes(formatStatus(a.status))) return false;
-  if (f.threat && threatFamily(a) !== f.threat) return false;
-  if (f.policy && (a.policy?.name || "Politique inconnue") !== f.policy) return false;
-  if (f.category && (a.policy?.category || "Non catégorisée") !== f.category) return false;
-  if (f.source && !(a.dataSource ?? []).some((d) => dataSourceLabel(d?.type, d?.name) === f.source)) return false;
-  if (f.verdict && closeVerdict(a) !== f.verdict) return false;
-  if (f.closeReason && (a.closeReason?.name ?? "") !== f.closeReason) return false;
-  if (f.closer && closerKind(a) !== f.closer) return false;
-  if (f.analyst && (closerKind(a) !== "internal" || (a.closedBy?.name ?? "").trim() !== f.analyst)) return false;
-  if (f.handling && (!open || (f.handling === "varonis") !== Boolean(a.isAssignedToVaronis))) return false;
-  if (f.escalation && (!open || (a.escalationType ?? "").toUpperCase() !== f.escalation)) return false;
-  if (f.age) {
-    const age = open ? ageInDays(a, now) : null;
-    if (age === null) return false;
-    const ok = f.age === "lt7" ? age < 7 : f.age === "d7to30" ? age >= 7 && age <= 30 : f.age === "gt30" ? age > 30 : age >= 7;
-    if (!ok) return false;
+/** Ancienneté d'une alerte ouverte dans la tranche demandée. */
+function ageMatches(age: number, f: AgeFilter): boolean {
+  switch (f) {
+    case "lt7": return age < 7;
+    case "d7to30": return age >= 7 && age <= 30;
+    case "gt30": return age > 30;
+    default: return age >= 7;
   }
-  const d = alertDate(a);
-  if (f.hour !== undefined && (!d || d.getHours() !== f.hour)) return false;
-  if (f.offHours && (!d || !isOffHours(d))) return false;
-  if (f.sensitive && !a.hasSensitiveResource) return false;
-  if (f.tagged && !a.hasTaggedResource) return false;
-  if (f.bucket && (!d || d.getTime() < f.bucket.from || d.getTime() >= f.bucket.to)) return false;
-  return true;
+}
+
+type AlertCheck = (a: VaronisAlert, f: AlertFilters, x: { open: boolean; now: Date; d: Date | null }) => boolean;
+
+/** Critères d'alerte : chacun renvoie true si l'alerte passe le filtre correspondant (ou s'il n'est pas posé). */
+const ALERT_CHECKS: AlertCheck[] = [
+  (_a, f, x) => !(f.state === "open" && !x.open) && !(f.state === "closed" && x.open),
+  (a, f) => !f.severity?.length || f.severity.includes(normalizeSeverity(a.policy?.severity)),
+  (a, f) => !f.status?.length || f.status.includes(formatStatus(a.status)),
+  (a, f) => !f.threat || threatFamily(a) === f.threat,
+  (a, f) => !f.policy || (a.policy?.name || "Politique inconnue") === f.policy,
+  (a, f) => !f.category || (a.policy?.category || "Non catégorisée") === f.category,
+  (a, f) => !f.source || (a.dataSource ?? []).some((d) => dataSourceLabel(d?.type, d?.name) === f.source),
+  (a, f) => !f.verdict || closeVerdict(a) === f.verdict,
+  (a, f) => !f.closeReason || (a.closeReason?.name ?? "") === f.closeReason,
+  (a, f) => !f.closer || closerKind(a) === f.closer,
+  (a, f) => !f.analyst || (closerKind(a) === "internal" && (a.closedBy?.name ?? "").trim() === f.analyst),
+  (a, f, x) => !f.handling || (x.open && (f.handling === "varonis") === Boolean(a.isAssignedToVaronis)),
+  (a, f, x) => !f.escalation || (x.open && (a.escalationType ?? "").toUpperCase() === f.escalation),
+  (a, f, x) => {
+    if (!f.age) return true;
+    const age = x.open ? ageInDays(a, x.now) : null;
+    return age !== null && ageMatches(age, f.age);
+  },
+  (_a, f, x) => f.hour === undefined || x.d?.getHours() === f.hour,
+  (_a, f, x) => !f.offHours || (x.d !== null && isOffHours(x.d)),
+  (a, f) => !f.sensitive || Boolean(a.hasSensitiveResource),
+  (a, f) => !f.tagged || Boolean(a.hasTaggedResource),
+  (_a, f, x) => !f.bucket || (x.d !== null && x.d.getTime() >= f.bucket.from && x.d.getTime() < f.bucket.to),
+];
+
+export function matchesFilters(a: VaronisAlert, f: AlertFilters, now = new Date()): boolean {
+  const x = { open: isOpen(a), now, d: alertDate(a) };
+  return ALERT_CHECKS.every((check) => check(a, f, x));
 }
 
 export function applyFilters(alerts: VaronisAlert[], f: AlertFilters, now = new Date()): VaronisAlert[] {
@@ -691,27 +728,36 @@ export function applyFilterPatch(f: AlertFilters, patch: AlertFilters): AlertFil
 export interface FilterChip { key: keyof AlertFilters; value?: unknown; label: string }
 
 /** Filtres actifs, en libellés lisibles (une pastille par valeur). */
+/** Libellé de chaque filtre à valeur unique (undefined s'il n'est pas posé), dans l'ordre d'affichage après les listes. */
+const SINGLE_CHIPS: [keyof AlertFilters, (f: AlertFilters) => string | undefined][] = [
+  ["threat", (f) => f.threat && (THREAT_FAMILIES.find((t) => t.key === f.threat)?.label ?? f.threat)],
+  ["policy", (f) => f.policy && `Politique : ${f.policy}`],
+  ["category", (f) => f.category && `Catégorie : ${f.category}`],
+  ["source", (f) => f.source && `Source : ${f.source}`],
+  ["verdict", (f) => f.verdict && `Verdict : ${VERDICT_LABELS[f.verdict]}`],
+  ["closeReason", (f) => f.closeReason && `Motif : ${f.closeReason}`],
+  ["closer", (f) => f.closer && `Clôturées par : ${CLOSER_LABELS[f.closer]}`],
+  ["analyst", (f) => f.analyst && `Analyste : ${f.analyst}`],
+  ["handling", (f) => f.handling && `Prise en charge : ${HANDLING_LABELS[f.handling]}`],
+  ["escalation", (f) => f.escalation && `Escalade : ${ESCALATION_LABELS[f.escalation]}`],
+  ["age", (f) => f.age && AGE_LABELS[f.age]],
+  ["hour", (f) => (f.hour === undefined ? undefined : `${f.hour}h – ${f.hour + 1}h`)],
+  ["offHours", (f) => (f.offHours ? "Hors heures ouvrées" : undefined)],
+  ["sensitive", (f) => (f.sensitive ? "Données sensibles" : undefined)],
+  ["tagged", (f) => (f.tagged ? "Ressources taguées" : undefined)],
+  ["bucket", (f) => f.bucket && `Période : ${f.bucket.label}`],
+];
+
+/** Filtres actifs, en libellés lisibles (une pastille par valeur). */
 export function filterChips(f: AlertFilters): FilterChip[] {
   const chips: FilterChip[] = [];
   if (f.state) chips.push({ key: "state", label: f.state === "open" ? "Ouvertes" : "Clôturées" });
   for (const s of f.severity ?? []) chips.push({ key: "severity", value: s, label: `Sévérité : ${SEVERITY_LABELS[s]}` });
   for (const s of f.status ?? []) chips.push({ key: "status", value: s, label: `Statut : ${s}` });
-  if (f.threat) chips.push({ key: "threat", label: THREAT_FAMILIES.find((t) => t.key === f.threat)?.label ?? f.threat });
-  if (f.policy) chips.push({ key: "policy", label: `Politique : ${f.policy}` });
-  if (f.category) chips.push({ key: "category", label: `Catégorie : ${f.category}` });
-  if (f.source) chips.push({ key: "source", label: `Source : ${f.source}` });
-  if (f.verdict) chips.push({ key: "verdict", label: `Verdict : ${VERDICT_LABELS[f.verdict]}` });
-  if (f.closeReason) chips.push({ key: "closeReason", label: `Motif : ${f.closeReason}` });
-  if (f.closer) chips.push({ key: "closer", label: `Clôturées par : ${CLOSER_LABELS[f.closer]}` });
-  if (f.analyst) chips.push({ key: "analyst", label: `Analyste : ${f.analyst}` });
-  if (f.handling) chips.push({ key: "handling", label: `Prise en charge : ${f.handling === "varonis" ? "Varonis (MDR)" : "Équipe interne"}` });
-  if (f.escalation) chips.push({ key: "escalation", label: `Escalade : ${ESCALATION_LABELS[f.escalation]}` });
-  if (f.age) chips.push({ key: "age", label: AGE_LABELS[f.age] });
-  if (f.hour !== undefined) chips.push({ key: "hour", label: `${f.hour}h – ${f.hour + 1}h` });
-  if (f.offHours) chips.push({ key: "offHours", label: "Hors heures ouvrées" });
-  if (f.sensitive) chips.push({ key: "sensitive", label: "Données sensibles" });
-  if (f.tagged) chips.push({ key: "tagged", label: "Ressources taguées" });
-  if (f.bucket) chips.push({ key: "bucket", label: `Période : ${f.bucket.label}` });
+  for (const [key, label] of SINGLE_CHIPS) {
+    const text = label(f);
+    if (text) chips.push({ key, label: text });
+  }
   return chips;
 }
 
