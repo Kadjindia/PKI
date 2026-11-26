@@ -862,8 +862,10 @@ export default function QualysPanel() {
     </div>
   );
 
-  if (isLoading) {
-    return <div className="space-y-6">{header}<div className="flex items-center justify-center gap-2 py-24 text-muted-foreground"><Loader2 className="w-6 h-6 animate-spin text-primary" /> Chargement…</div></div>;
+  // On attend aussi le détail par actif : sinon la page s'afficherait d'abord avec les chiffres agrégés,
+  // puis changerait de valeurs quelques secondes plus tard
+  if (isLoading || (r && details.isLoading)) {
+    return <div className="space-y-6">{header}<div className="flex items-center justify-center gap-2 py-24 text-muted-foreground"><Loader2 className="w-6 h-6 animate-spin text-primary" /> Chargement de la photo Qualys…</div></div>;
   }
 
   const banners = (
@@ -918,7 +920,6 @@ export default function QualysPanel() {
         {banners}
         <p className="text-xs text-muted-foreground -mt-3">
           Photo du {new Date(r.date).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}.
-          {details.isLoading && <span className="ml-2 inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> chargement du détail…</span>}
           {details.data && !details.data.available && <span className="ml-2">Détail par actif (inventaires, fiches, filtres) disponible après le prochain calcul de nuit.</span>}
           {details.error && <span className="ml-2 text-amber-600">Détail indisponible : {(details.error as Error).message}</span>}
           {r.details?.error && <span className="ml-2 text-amber-600">Détail partiel : {r.details.error}</span>}
