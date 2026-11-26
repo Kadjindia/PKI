@@ -612,7 +612,7 @@ export default function VaronisPanel() {
               <CardContent className="pt-2">
                 <ul>
                   {view.noise.slice(0, 5).map((p) => (
-                    <li key={p.name}><button type="button" onClick={() => toggle("policy", p.name)} title="Cliquer pour filtrer" className={`w-full text-left flex items-center justify-between gap-3 py-1.5 px-1 border-b border-border/50 last:border-0 text-sm ${clickable(filters.policy === p.name, Boolean(filters.policy) && filters.policy !== p.name)}`}>
+                    <li key={p.name} className="border-b border-border/50 last:border-0"><button type="button" onClick={() => toggle("policy", p.name)} title="Cliquer pour filtrer" className={`w-full text-left flex items-center justify-between gap-3 py-1.5 px-1 text-sm ${clickable(filters.policy === p.name, Boolean(filters.policy) && filters.policy !== p.name)}`}>
                       <span className="truncate text-foreground" title={p.name}>{p.name}</span>
                       <span className="flex items-center gap-2 shrink-0">
                         {p.noisy && <Badge variant="outline" className="bg-violet-500/15 text-violet-600 border-violet-500/30">Bruit</Badge>}
