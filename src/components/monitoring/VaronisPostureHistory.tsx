@@ -36,70 +36,51 @@ const TOOLTIP_STYLE = {
 };
 const AXIS_TICK = { fontSize: 11, fill: "hsl(var(--muted-foreground))" };
 
-export default function VaronisPostureHistory() {
-  const [metric, setMetric] = useState<HistoryMetric>("exposed");
-  const [period, setPeriod] = useState<(typeof PERIODS)[number]>(30);
-  const { data, error, isLoading } = useQuery({
-    queryKey: ["varonis-posture-history"],
-    queryFn: fetchHistory,
-    staleTime: 60 * 60 * 1000,
-    retry: false,
-  });
+type Comparison = NonNullable<ReturnType<typeof compareSeries>>;
+type MetricDef = (typeof HISTORY_METRICS)[number];
 
-  const def = HISTORY_METRICS.find((m) => m.key === metric)!;
-  const series = seriesFor(data?.points ?? [], metric);
-  const cmp = compareSeries(series, period);
+/** Couleur et flèche de l'écart : rouge si hausse d'un indicateur qui doit baisser, vert si baisse. */
+function trendStyle(cmp: Comparison | null, lowerIsBetter: boolean | undefined) {
+  if (!cmp || cmp.delta === 0) return { tone: "text-muted-foreground", Icon: Minus };
+  const up = cmp.delta > 0;
+  let tone = "text-muted-foreground";
+  if (lowerIsBetter) tone = up ? "text-red-500" : "text-emerald-600";
+  return { tone, Icon: up ? TrendingUp : TrendingDown };
+}
 
-  const tone = !cmp || cmp.delta === 0 || !def.lowerIsBetter
-    ? "text-muted-foreground"
-    : cmp.delta > 0 ? "text-red-500" : "text-emerald-600";
-  const Icon = !cmp || cmp.delta === 0 ? Minus : cmp.delta > 0 ? TrendingUp : TrendingDown;
+/** Point de comparaison : début de l'historique, ou date exacte. */
+const refText = (cmp: Comparison) => (cmp.sinceStart ? `au début de l'historique (${formatFullDay(cmp.ref.time)})` : `le ${formatFullDay(cmp.ref.time)}`);
 
-  return (
-    <Card>
-      <CardHeader className="pb-1">
-        <CardTitle className="text-sm font-bold flex items-center gap-2">
-          <LineIcon className="w-4 h-4 text-primary" /> Évolution dans le temps
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {/* Choix de l'indicateur */}
-        {(["Données", "Comptes"] as const).map((group) => (
-          <div key={group} className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-semibold text-muted-foreground w-16">{group}</span>
-            {HISTORY_METRICS.filter((m) => m.group === group).map((m) => (
-              <button
-                key={m.key}
-                type="button"
-                onClick={() => setMetric(m.key)}
-                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${metric === m.key ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-        ))}
-
-        {isLoading ? (
+function HistoryContent({ isLoading, error, series, cmp, def, period, setPeriod }: {
+  readonly isLoading: boolean; readonly error: unknown; readonly series: ReturnType<typeof seriesFor>; readonly cmp: Comparison | null;
+  readonly def: MetricDef; readonly period: (typeof PERIODS)[number]; readonly setPeriod: (p: (typeof PERIODS)[number]) => void;
+}) {
+  if (isLoading) {
+    return (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
             <Loader2 className="w-4 h-4 animate-spin" /> Chargement de l&apos;historique…
           </div>
-        ) : error ? (
-          <p className="text-sm text-destructive">{(error as Error).message}</p>
-        ) : series.length < 2 ? (
+    );
+  }
+  if (error) return <p className="text-sm text-destructive">{(error as Error).message}</p>;
+  if (series.length < 2 || !cmp) {
+    return (
           <p className="text-sm text-muted-foreground py-6 text-center">
             La courbe apparaîtra après deux nuits de calcul.
           </p>
-        ) : (
-          <>
+    );
+  }
+  const { tone, Icon } = trendStyle(cmp, def.lowerIsBetter);
+  return (
+    <>
             {/* Comparaison en clair */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm">
                 <span className="text-muted-foreground">{def.label} : </span>
-                <b className="text-foreground text-lg">{cmp!.last.value.toLocaleString("fr-FR")}</b>
+                <b className="text-foreground text-lg">{cmp.last.value.toLocaleString("fr-FR")}</b>
                 <span className={`ml-2 inline-flex items-center gap-1 font-semibold ${tone}`}>
                   <Icon className="w-4 h-4" />
-                  contre {cmp!.ref.value.toLocaleString("fr-FR")} {cmp!.sinceStart ? `au début de l'historique (${formatFullDay(cmp!.ref.time)})` : `le ${formatFullDay(cmp!.ref.time)}`}
+                  contre {cmp.ref.value.toLocaleString("fr-FR")} {refText(cmp)}
                 </span>
               </p>
               <div className="flex items-center gap-1">
@@ -126,8 +107,51 @@ export default function VaronisPostureHistory() {
                 </LineChart>
               </ResponsiveContainer>
             </div>
-          </>
-        )}
+    </>
+  );
+}
+
+export default function VaronisPostureHistory() {
+  const [metric, setMetric] = useState<HistoryMetric>("exposed");
+  const [period, setPeriod] = useState<(typeof PERIODS)[number]>(30);
+  const { data, error, isLoading } = useQuery({
+    queryKey: ["varonis-posture-history"],
+    queryFn: fetchHistory,
+    staleTime: 60 * 60 * 1000,
+    retry: false,
+  });
+
+  const def = HISTORY_METRICS.find((m) => m.key === metric)!;
+  const series = seriesFor(data?.points ?? [], metric);
+  const cmp = compareSeries(series, period);
+
+
+  return (
+    <Card>
+      <CardHeader className="pb-1">
+        <CardTitle className="text-sm font-bold flex items-center gap-2">
+          <LineIcon className="w-4 h-4 text-primary" /> Évolution dans le temps
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* Choix de l'indicateur */}
+        {(["Données", "Comptes"] as const).map((group) => (
+          <div key={group} className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-semibold text-muted-foreground w-16">{group}</span>
+            {HISTORY_METRICS.filter((m) => m.group === group).map((m) => (
+              <button
+                key={m.key}
+                type="button"
+                onClick={() => setMetric(m.key)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${metric === m.key ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        ))}
+
+        <HistoryContent isLoading={isLoading} error={error} series={series} cmp={cmp} def={def} period={period} setPeriod={setPeriod} />
       </CardContent>
     </Card>
   );

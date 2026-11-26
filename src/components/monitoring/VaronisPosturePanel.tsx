@@ -39,6 +39,9 @@ async function fetchPosture(): Promise<PostureState> {
 const formatDateTime = (iso: string) => new Date(iso).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 
 /** État d'une requête : chargement, erreur ou contenu (quiet : sans les mentions de date, pour les blocs compacts). */
+/** « En cours (42 %) », ou « En cours… » sans avancement connu. */
+const pendingText = (progress?: number | null) => (progress ? `En cours (${Math.round(progress)} %)` : "En cours…");
+
 function Status({ r, children, quiet = false }: {
   readonly r?: { status: string; error?: string; code?: string; field?: string; progress?: number | null; carriedFrom?: string; lastError?: string; fresh?: boolean; doneAt?: string };
   readonly children: React.ReactNode;
@@ -49,7 +52,7 @@ function Status({ r, children, quiet = false }: {
     return (
       <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="w-4 h-4 animate-spin" />
-        {r.status === "queued" ? "En attente…" : `En cours${r.progress ? ` (${Math.round(r.progress)} %)` : "…"}`}
+        {r.status === "queued" ? "En attente…" : pendingText(r.progress)}
       </span>
     );
   }
