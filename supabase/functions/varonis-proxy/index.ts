@@ -861,10 +861,10 @@ async function postureHistory(admin: Admin) {
   if (error) throw new Error(error.message);
   const rows = (data ?? []) as Row[];
   for (const row of rows.filter((x) => !x.summary)) {
-    const { data: full, error: e } = await admin.from("varonis_posture_snapshots").select("results").eq("id", row.id).single();
+    const { data: full, error: e } = await admin.from("varonis_posture_snapshots").select("results").eq("id", row.id).single(); // NOSONAR : photos reprises une à une (résultats volumineux)
     if (e) throw new Error(e.message);
     row.summary = snapshotSummary(full.results ?? {});
-    await admin.from("varonis_posture_snapshots").update({ summary: row.summary }).eq("id", row.id);
+    await admin.from("varonis_posture_snapshots").update({ summary: row.summary }).eq("id", row.id); // NOSONAR : une photo à la fois
   }
   // Par jour : la dernière valeur fiable de chaque indicateur (un calcul manuel rapide
   // ne refait pas le total des dossiers sensibles : on garde celui de la nuit)
@@ -887,7 +887,7 @@ async function carryOverFailures(admin: Admin, results: Record<string, Row>) {
   for (const key of failed) {
     const prev = (data ?? []).find((s: Row) => s.results?.[key]?.status === "done" && !s.results[key].carriedFrom);
     if (prev) {
-      const kept = await storeLists(admin, prev.id, key, prev.results[key]);
+      const kept = await storeLists(admin, prev.id, key, prev.results[key]); // NOSONAR : peu d'indicateurs, un à la fois
       results[key] = { ...kept, carriedFrom: prev.started_at, lastError: shortReason(results[key]) };
     }
   }
@@ -1088,7 +1088,7 @@ async function withLists(admin: Admin, results: Record<string, Row>, wanted: [st
   for (const [key, field] of wanted) {
     const entry = results[key];
     if (!entry || entry[field] !== undefined || !entry.lists?.includes(field)) continue;
-    const { data, error } = await admin.from("varonis_posture_lists").select("items")
+    const { data, error } = await admin.from("varonis_posture_lists").select("items") // NOSONAR : quelques listes, lues une à une
       .eq("snapshot_id", entry.listsFrom).eq("key", key).eq("field", field).maybeSingle();
     if (error) throw new Error(error.message);
     if (data) out[key] = { ...out[key], [field]: data.items };
@@ -1187,7 +1187,7 @@ async function pruneOldLists(admin: Admin, keepId: string) {
       for (const f of LIST_FIELDS) delete copy[f];
       return [k, copy];
     }));
-    await admin.from("varonis_posture_snapshots").update({ results }).eq("id", row.id);
+    await admin.from("varonis_posture_snapshots").update({ results }).eq("id", row.id); // NOSONAR : une photo à la fois (résultats volumineux)
   }
 }
 
@@ -1228,7 +1228,7 @@ async function handlePosture(action: string, body: Row, baseUrl: string, apiKey:
       running = await runningSnapshot(admin);
       // Pause « trop de requêtes » ou étape tenue ailleurs : le passage suivant reprendra
       if (outcome !== "advanced" || !running || Date.now() + STEP_INTERVAL_MS + STEP_MARGIN_MS > deadline) break;
-      await new Promise((r) => setTimeout(r, STEP_INTERVAL_MS + 500));
+      await new Promise((r) => setTimeout(r, STEP_INTERVAL_MS + 500)); // NOSONAR : pause voulue entre deux étapes
     }
     return jsonResponse({ running: Boolean(running) });
   }

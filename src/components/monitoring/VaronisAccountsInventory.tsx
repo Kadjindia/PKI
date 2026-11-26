@@ -457,6 +457,8 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
   }, [rows]);
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
 
+  const total = search ? data?.items.length ?? null : null;
+  const titleCount = data?.available ? ` : ${countLabel(rows.length, total)}` : "";
   const changeList = (l: InventoryList) => { onListChange(l); setPage(0); setOpen(null); setOpenApp(null); setSearch(""); };
 
   const exportCsv = () => {
@@ -494,7 +496,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle className="text-sm font-bold">{def.label}{data?.available ? ` : ${countLabel(rows.length, search ? data.items.length : null)}` : ""}</CardTitle>
+              <CardTitle className="text-sm font-bold">{def.label}{titleCount}</CardTitle>
               <p className="text-xs text-muted-foreground">{def.help}</p>
             </div>
             <div className="flex items-center gap-2">

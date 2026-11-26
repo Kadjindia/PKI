@@ -594,6 +594,16 @@ function Stat({ label, value, sub, help, tone }: { readonly label: string; reado
 const SOURCE_FR: Record<string, string> = { PASSIVE_SENSOR: "Capteur réseau passif", IP_SCANNER: "Scanner réseau", AGENT: "Agent", EASM: "Scan externe (EASM)", CLOUD_CONNECTOR: "Connecteur cloud" };
 const sourceLabel = (src: string | null) => (src ? SOURCE_FR[src.trim().toUpperCase().replace(/\s+/g, "_")] ?? src : "—");
 
+/** Message d'erreur d'une section dont la lecture a échoué sans rien ramener. */
+function Unavailable({ what, error }: { readonly what: string; readonly error: string }) {
+  return <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> {what} : {error}</p>;
+}
+
+const inventoryUnavailable = (i: NonNullable<QualysResults["inventory"]>) =>
+  i.error && !i.total ? <Unavailable what="Inventaire non disponible" error={i.error} /> : null;
+const webAppsUnavailable = (w: NonNullable<QualysResults["webApps"]>) =>
+  w.error && !w.apps.length ? <Unavailable what="Applications web non disponibles" error={w.error} /> : null;
+
 function InventoryBody({ inv, ex }: { readonly inv: NonNullable<QualysResults["inventory"]>; readonly ex: QualysResults["internetExposed"] }) {
   const [showRecent, setShowRecent] = useState(false);
   return (
@@ -652,9 +662,7 @@ function InventoryCard({ r }: { readonly r: QualysResults }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <SectionState data={inv} unavailable={(i) => i.error && !i.total && (
-          <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Inventaire non disponible : {i.error}</p>
-        )}>{inv && <InventoryBody inv={inv} ex={ex} />}</SectionState>
+        <SectionState data={inv} unavailable={inventoryUnavailable}>{inv && <InventoryBody inv={inv} ex={ex} />}</SectionState>
       </CardContent>
     </Card>
   );
@@ -729,9 +737,7 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
       ] : undefined}>
       <Card>
         <CardContent className="p-4 space-y-4">
-          <SectionState data={w} unavailable={(x) => x.error && !x.apps.length && (
-            <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Applications web non disponibles : {x.error}</p>
-          )}>{w && <WebAppsBody w={w} />}</SectionState>
+          <SectionState data={w} unavailable={webAppsUnavailable}>{w && <WebAppsBody w={w} />}</SectionState>
         </CardContent>
       </Card>
       {detail && <WebAppsExplorer />}
@@ -950,54 +956,86 @@ function PhotoNote({ r, details }: { readonly r: NonNullable<QualysState["latest
   );
 }
 
+/** Indicateur cliquable pour filtrer la page, seulement quand le détail par actif est chargé. */
+function KpiFilter({ enabled, active, onPress, title, children }: {
+  readonly enabled: boolean; readonly active: boolean; readonly onPress: () => void; readonly title: string; readonly children: React.ReactNode;
+}) {
+  if (!enabled) return <div className="h-full">{children}</div>;
+  return <div className={`h-full ${clickable(active)}`} {...pressable(onPress)} title={title}>{children}</div>;
+}
+
+const ARMED_HELP = "exploitées ou exploitables dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.";
+
+/** Exposition : actifs exploitables si le détail est chargé, sinon volume de vulnérabilités exploitables. */
+function ArmedKpi({ r, sum, points }: { readonly r: NonNullable<QualysState["latest"]>; readonly sum: DView["sum"] | undefined; readonly points: QualysHistoryPoint[] }) {
+  if (sum) {
+    return (
+      <Kpi title="Actifs exploitables" icon={Flame} color="border-l-orange-500" value={fmt(sum.armedAssets)}
+        help={<>Actifs portant au moins une vulnérabilité ouverte {ARMED_HELP}</>}
+        sub={<span>{pct(sum.armedAssets, sum.total) ?? 0} % des actifs · dont {fmt(sum.kevAssets)} avec une vulnérabilité CISA KEV</span>} />
+    );
+  }
+  const e = r.exposure;
+  return (
+    <Kpi title="Vulnérabilités exploitables" icon={Flame} color="border-l-orange-500" value={fmt(e ? e.armed.detections : r.kev.detections)}
+      help={<>Vulnérabilités ouvertes {ARMED_HELP}</>}
+      sub={e ? <><span>dont {fmt(e.armed.servers)} sur des serveurs</span> <Delta value={trendOver(points, "armed")} lowerIsBetter /></> : "CISA KEV seules (ancien calcul)"} />
+  );
+}
+
+/** Valeur suivie de son unité, ou « — » si elle n'est pas encore calculée. */
+const withUnit = (v: number | null, unit: string) => (v === null ? "—" : `${fmt(v)} ${unit}`);
+
+/** Chiffres clés des délais de correction (tout le parc, non filtré). */
+function fixedFigures(o: NonNullable<QualysState["latest"]>["operations"]) {
+  if (!o?.fixedCollected) return { slaRate: null, mttr5: null, fixedSub: "après le prochain calcul" };
+  return { slaRate: o.fixed.all.slaRate, mttr5: o.fixed.bySev["5"]?.mttr ?? null, fixedSub: `sur ${fmt(o.fixed.all.fixed)} vulnérabilités corrigées en ${o.windowDays} j` };
+}
+
+/** Score TruRisk moyen : de la sélection si le détail est chargé, sinon de la photo. */
+function truriskFigures(r: NonNullable<QualysState["latest"]>, sum: DView["sum"] | undefined) {
+  const avg = sum?.truriskAvg ?? r.exposure?.truriskAvg ?? null;
+  return { value: avg == null ? "—" : fmt(avg), count: sum ? sum.truriskN : r.exposure?.truriskAssets };
+}
+
 /** Les cinq indicateurs clés, cliquables pour filtrer la page quand le détail est chargé. */
 function KeyIndicators({ r, view, points, filters, setFilters }: {
   readonly r: NonNullable<QualysState["latest"]>; readonly view: DView | null; readonly points: QualysHistoryPoint[];
   readonly filters: QFilters; readonly setFilters: React.Dispatch<React.SetStateAction<QFilters>>;
 }) {
-  const e = r.exposure;
   const o = r.operations;
   const sum = view?.sum;
   const filtered = isFiltered(filters);
-  const coverage = sum ? pct(sum.recent, sum.total) : pct(r.coverage.scanned, r.coverage.total);
-  const mttr5 = o?.fixedCollected ? o.fixed.bySev["5"]?.mttr ?? null : null;
-  const slaRate = o?.fixedCollected ? o.fixed.all.slaRate : null;
-  const truriskAvg = sum?.truriskAvg ?? e?.truriskAvg ?? null;
-  const truriskValue = truriskAvg == null ? "—" : fmt(truriskAvg);
-  const truriskCount = sum ? sum.truriskN : e?.truriskAssets;
-  const truriskSub = truriskCount == null ? "après le prochain calcul" : (
-    <><span>sur 1 000 · {fmt(truriskCount)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</>
+  const cov = sum ? { done: sum.recent, total: sum.total } : { done: r.coverage.scanned, total: r.coverage.total };
+  const coverage = pct(cov.done, cov.total);
+  const { slaRate, mttr5, fixedSub } = fixedFigures(o);
+  const trurisk = truriskFigures(r, sum);
+  const truriskSub = trurisk.count == null ? "après le prochain calcul" : (
+    <><span>sur 1 000 · {fmt(trurisk.count)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</>
   );
   const tierFilter = (t: TruTier[]) => setFilters((f) => ({ ...f, tier: JSON.stringify(f.tier) === JSON.stringify(t) ? undefined : t }));
+  const enabled = Boolean(view);
   return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className={`h-full ${view ? clickable(Boolean(filters.tier?.length)) : ""}`} {...(view ? pressable(() => tierFilter(["critical", "high"])) : {})} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
-            <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={truriskValue}
+          <KpiFilter enabled={enabled} active={Boolean(filters.tier?.length)} onPress={() => tierFilter(["critical", "high"])} title="Cliquer pour filtrer sur les actifs à risque critique ou élevé">
+            <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={trurisk.value}
               help={<>Moyenne du score de risque Qualys (0 à 1 000) des actifs{filtered ? " de la sélection" : " du parc"} : la posture de risque globale. Doit baisser dans le temps.</>}
               sub={truriskSub} />
-          </div>
-          <div className={`h-full ${view ? clickable(filters.threat === "armed") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" }))) : {})} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
-            {sum ? (
-              <Kpi title="Actifs exploitables" icon={Flame} color="border-l-orange-500" value={fmt(sum.armedAssets)}
-                help={<>Actifs portant au moins une vulnérabilité ouverte exploitée ou exploitable dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
-                sub={<span>{pct(sum.armedAssets, sum.total) ?? 0} % des actifs · dont {fmt(sum.kevAssets)} avec une vulnérabilité CISA KEV</span>} />
-            ) : (
-              <Kpi title="Vulnérabilités exploitables" icon={Flame} color="border-l-orange-500" value={fmt(e ? e.armed.detections : r.kev.detections)}
-                help={<>Vulnérabilités ouvertes exploitées ou exploitables dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
-                sub={e ? <><span>dont {fmt(e.armed.servers)} sur des serveurs</span> <Delta value={trendOver(points, "armed")} lowerIsBetter /></> : "CISA KEV seules (ancien calcul)"} />
-            )}
-          </div>
-          <Kpi title="Respect des délais (SLA)" icon={CheckCircle2} color="border-l-emerald-500" value={slaRate === null ? "—" : `${fmt(slaRate)} %`}
+          </KpiFilter>
+          <KpiFilter enabled={enabled} active={filters.threat === "armed"} onPress={() => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" }))} title="Cliquer pour filtrer sur ces actifs">
+            <ArmedKpi r={r} sum={sum} points={points} />
+          </KpiFilter>
+          <Kpi title="Respect des délais (SLA)" icon={CheckCircle2} color="border-l-emerald-500" value={withUnit(slaRate, "%")}
             help={<>Part des vulnérabilités corrigées dans les délais de la politique de gestion des correctifs ({r.severities.map((x) => `${slaText(x)} pour les ${(SEVERITY_LABELS[x.severity] ?? "").toLowerCase()}`).join(", ")}), sur les {o?.windowDays ?? 90} derniers jours. Tout le parc (non filtré).</>}
-            sub={o?.fixedCollected ? `sur ${fmt(o.fixed.all.fixed)} vulnérabilités corrigées en ${o.windowDays} j` : "après le prochain calcul"} />
-          <Kpi title="MTTR – critiques" icon={Timer} color="border-l-sky-500" value={mttr5 === null ? "—" : `${fmt(mttr5)} j`}
+            sub={fixedSub} />
+          <Kpi title="MTTR – critiques" icon={Timer} color="border-l-sky-500" value={withUnit(mttr5, "j")}
             help={<>Délai moyen de correction (MTTR) des vulnérabilités critiques, de la détection à la correction. Délai fixé : 7 jours calendaires, une vulnérabilité critique étant traitée comme un incident de sécurité. Tout le parc (non filtré).</>}
             sub={mttr5 === null ? "après le prochain calcul" : <><span>délai moyen · cible 7 j</span> <Delta value={trendOver(points, "mttr5")} lowerIsBetter unit=" j" /></>} />
-          <div className={`h-full ${view ? clickable(filters.scan === "stale" || filters.scan === "never") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" }))) : {})} title={view ? "Cliquer pour voir les actifs non analysés récemment" : undefined}>
+          <KpiFilter enabled={enabled} active={filters.scan === "stale" || filters.scan === "never"} onPress={() => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" }))} title="Cliquer pour voir les actifs non analysés récemment">
             <Kpi title="Couverture des scans" icon={Radar} color="border-l-violet-500" value={coverage === null ? "—" : `${coverage} %`}
               help={<>Part des actifs analysés (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
-              sub={sum ? `${fmt(sum.recent)} actifs sur ${fmt(sum.total)} (${r.coverage.recentDays} derniers jours)` : `${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)} (${r.coverage.recentDays} derniers jours)`} />
-          </div>
+              sub={`${fmt(cov.done)} actifs sur ${fmt(cov.total)} (${r.coverage.recentDays} derniers jours)`} />
+          </KpiFilter>
         </div>
   );
 }

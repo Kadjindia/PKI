@@ -84,7 +84,9 @@ export function leaves(xml: string, skip: readonly string[] = []): Record<string
 /** Date ISO, ou null si illisible. */
 const isoOrNull = (v: unknown): string | null => {
   if (v === null || v === undefined || v === "") return null;
-  const t = typeof v === "number" ? v : Date.parse(typeof v === "string" ? v : "");
+  let t = Number.NaN;
+  if (typeof v === "number") t = v;
+  else if (typeof v === "string") t = Date.parse(v);
   return Number.isFinite(t) && t > 0 ? new Date(t).toISOString() : null;
 };
 
