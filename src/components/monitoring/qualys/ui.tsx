@@ -27,7 +27,8 @@ export function Badge({ children, tone }: { readonly children: React.ReactNode; 
 }
 
 export const TYPE_TONE: Record<AssetType, "sky" | "muted" | "violet"> = { server: "violet", workstation: "sky", other: "muted" };
-export const sevTone = (s: number | null | undefined): Tone => (s === 5 ? "red" : s === 4 ? "orange" : s === 3 ? "amber" : "muted");
+const SEV_TONE: Record<number, Tone> = { 5: "red", 4: "orange", 3: "amber" };
+export const sevTone = (s: number | null | undefined): Tone => (s == null ? undefined : SEV_TONE[s]) ?? "muted";
 
 export function FlagBadges({ flags, compact = false }: { readonly flags: number; readonly compact?: boolean }) {
   return (

@@ -312,7 +312,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
                     {openApp === x.name && (
                       <ul className="mt-2 ml-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-0.5 text-xs">
                         {x.admins.map((a, j) => (
-                          <li key={j} className="truncate">
+                          <li key={a.sam ?? a.name ?? j} className="truncate">
                             <span className="font-medium">{a.name ?? a.sam}</span> <span className="font-mono text-muted-foreground">{a.sam}</span>
                             {a.inactive && <> <Tag tone="orange">Inactif</Tag></>}
                           </li>
@@ -407,7 +407,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
                                     <div className="font-semibold">Dossiers sensibles détenus ({o.folderCount > o.folders.length ? `les ${o.folders.length} plus gros sur ${o.folderCount}` : o.folderCount}) :</div>
                                     <ul className="grid sm:grid-cols-2 gap-x-6 gap-y-0.5">
                                       {o.folders.map((f, j) => (
-                                        <li key={j} className="flex justify-between gap-3 font-mono">
+                                        <li key={f.path ?? j} className="flex justify-between gap-3 font-mono">
                                           <span className="truncate" title={f.path ?? ""}>{f.path}</span>
                                           <span className="text-muted-foreground shrink-0">{formatBytes(f.sizeBytes)}</span>
                                         </li>

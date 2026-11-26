@@ -301,8 +301,9 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
     setUploading(true);
 
     try {
+      // Périodes enregistrées l'une après l'autre, dans l'ordre
       for (const [p, group] of Object.entries(groupedResults)) {
-        await uploadFileForKpi({
+        await uploadFileForKpi({ // NOSONAR
           file, kpiId: kpi.id, period: p, selectedColumn, aggregation: aggMethod,
           selectedSheet: fileType === "excel" ? selectedSheet : undefined,
           computedValue: group.value,
@@ -315,7 +316,7 @@ export default function FileUploadDialog({ kpi, open, onClose, period }: Props) 
         });
 
         // Appel propre de la fonction d'automatisation
-        await processAutomatedKpis(group.data, p, file, columns, kpis);
+        await processAutomatedKpis(group.data, p, file, columns, kpis); // NOSONAR
       }
 
       const nbMois = Object.keys(groupedResults).length;

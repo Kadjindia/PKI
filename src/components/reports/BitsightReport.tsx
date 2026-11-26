@@ -53,11 +53,8 @@ const styles = StyleSheet.create({
   footerText: { fontSize: 8, color: '#94a3b8' }
 });
 
-const getGradeColor = (grade: string) => {
-  if (grade === 'A') return '#10b981'; if (grade === 'B') return '#3b82f6';
-  if (grade === 'C') return '#f59e0b'; if (grade === 'D') return '#f97316';
-  if (grade === 'F') return '#ef4444'; return '#94a3b8';
-};
+const GRADE_COLORS: Record<string, string> = { A: '#10b981', B: '#3b82f6', C: '#f59e0b', D: '#f97316', F: '#ef4444' };
+const getGradeColor = (grade: string) => GRADE_COLORS[grade] ?? '#94a3b8';
 
 export interface BitsightReportConfig {
   date: string;
@@ -72,7 +69,6 @@ export interface BitsightReportConfig {
 }
 
 export const BitsightReport = ({ date, data, reportFormat, options }: BitsightReportConfig) => {
-  const isOnePager = reportFormat === 'one-pager';
 
   const generateStrategicSummary = () => {
     let recs = [];
@@ -166,8 +162,8 @@ export const BitsightReport = ({ date, data, reportFormat, options }: BitsightRe
         {options.showDecisionSupport && (
           <View style={[styles.section, styles.strategicBox]} wrap={false}>
             <Text style={styles.strategicTitle}>2. Avis de la Direction Cybersécurité</Text>
-            {generateStrategicSummary().map((rec, index) => (
-              <Text key={index} style={styles.strategicText}>• {rec}</Text>
+            {generateStrategicSummary().map((rec) => (
+              <Text key={rec} style={styles.strategicText}>• {rec}</Text>
             ))}
           </View>
         )}

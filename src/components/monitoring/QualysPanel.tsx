@@ -23,10 +23,10 @@ import {
   type AssetsPayload, type DAsset, type CatalogIndex, type Summary, type QFilters, type TruTier,
 } from "@/lib/qualysDetails";
 import { pressable } from "@/lib/a11y";
-import { QualysContext, FoldTitle, Help, Badge, FlagBadges, clickable, useQualysCtx } from "./qualys/ui";
+import { QualysContext, FoldTitle, Help, Badge, FlagBadges, clickable, sevTone, useQualysCtx } from "./qualys/ui";
 import { AssetSheet, VulnSheet } from "./qualys/Sheets";
 import { callQualys } from "./qualys/api";
-import { AxisSection, FilterBar, AssetTable, PriorityFixes, EolList, CsamInventory, WebAppsExplorer } from "./qualys/Explorer";
+import { AxisSection, FilterBar, AssetTable, PriorityFixes, EolList, CsamInventory, WebAppsExplorer, type AxisMetric } from "./qualys/Explorer";
 
 // Vulnérabilités Qualys VMDR, organisées par axes de gouvernance :
 //   1. Visibilité (socle)  2. Exposition aux menaces  3. Efficacité opérationnelle.
@@ -64,6 +64,19 @@ function Pending({ children = "Disponible après le prochain calcul de nuit." }:
   return <p className="text-sm text-muted-foreground py-4 text-center">{children}</p>;
 }
 
+/**
+ * Contenu d'une section selon l'état de ses données : pas encore calculées, indisponibles (message
+ * renvoyé par `unavailable`), ou disponibles (rendu par `children`).
+ */
+function SectionState<T extends { collected: boolean }>({ data, unavailable, children }: {
+  readonly data: T | null | undefined; readonly unavailable?: (d: T) => React.ReactNode; readonly children: (d: T) => React.ReactNode;
+}) {
+  if (!data?.collected) return <Pending />;
+  const message = unavailable?.(data);
+  if (message) return <>{message}</>;
+  return <>{children(data)}</>;
+}
+
 const AGE_COLORS = ["bg-emerald-500", "bg-amber-400", "bg-orange-500", "bg-red-600"];
 const formatDay = (t: number) => new Date(t).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" });
 const formatMonth = (m: string) => new Date(`${m}-01T00:00:00Z`).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
@@ -78,10 +91,28 @@ const AXIS_TICK = { fontSize: 11, fill: "hsl(var(--muted-foreground))" };
 const CRITICALITY_FR: Record<string, string> = { URGENT: "Urgente", CRITICAL: "Critique", SERIOUS: "Sérieuse", HIGH: "Élevée", MEDIUM: "Moyenne", MINIMAL: "Faible", LOW: "Faible" };
 const criticalityLabel = (c: string) => CRITICALITY_FR[c.trim().toUpperCase()] ?? c;
 
+/** Couleur d'un taux de respect des délais : vert dès 90 %, orange dès 70 %, rouge en dessous. */
+function rateColor(rate: number): string {
+  if (rate >= 90) return "bg-emerald-500";
+  if (rate >= 70) return "bg-amber-400";
+  return "bg-red-600";
+}
+
+const STAT_TONE: Record<"red" | "amber", string> = { red: "text-red-600", amber: "text-amber-600" };
+
+/** Ton du badge d'importance d'une règle de configuration. */
+function criticalityTone(c: string): "red" | "orange" | "muted" {
+  if (/urgent|critical/i.test(c)) return "red";
+  if (/serious|high/i.test(c)) return "orange";
+  return "muted";
+}
+
+const frDate = (d: string | null | undefined) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+
 /** Barre « part dans les délais ». */
 function SlaBar({ rate }: { readonly rate: number | null }) {
   if (rate === null) return <span className="text-muted-foreground">—</span>;
-  const color = rate >= 90 ? "bg-emerald-500" : rate >= 70 ? "bg-amber-400" : "bg-red-600";
+  const color = rateColor(rate);
   return (
     <div className="flex items-center gap-2 min-w-[140px]">
       <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden"><div className={color} style={{ width: `${rate}%`, height: "100%" }} /></div>
@@ -130,7 +161,7 @@ function ExposureSearch() {
               <div className="rounded-lg border border-border px-3 py-2">
                 <div className="text-[11px] font-semibold text-muted-foreground">Avancement de la correction</div>
                 <div className="text-2xl font-black">{progress?.pct === null || !progress ? "—" : `${progress.pct} %`}</div>
-                <div className="text-[11px] text-muted-foreground">{progress && progress.peak ? `jusqu'à ${fmt(progress.peak)} actifs touchés` : "après plusieurs nuits de calcul"}</div>
+                <div className="text-[11px] text-muted-foreground">{progress?.peak ? `jusqu'à ${fmt(progress.peak)} actifs touchés` : "après plusieurs nuits de calcul"}</div>
               </div>
               <div className="rounded-lg border border-border px-3 py-2 h-[86px]">
                 {series.length < 2 ? <div className="text-[11px] text-muted-foreground pt-6 text-center">La courbe apparaîtra après deux nuits.</div> : (
@@ -164,7 +195,7 @@ function ExposureSearch() {
                         <div className="text-sm font-medium truncate" title={m.title ?? ""}>{m.title ?? `QID ${m.qid}`}</div>
                         <div className="text-[11px] text-muted-foreground font-mono truncate">QID {m.qid}{m.cves ? ` · ${m.cves}` : ""}</div>
                       </TableCell>
-                      <TableCell className="text-center py-2"><Badge tone={m.severity === 5 ? "red" : m.severity === 4 ? "orange" : "muted"}>{m.severity}</Badge></TableCell>
+                      <TableCell className="text-center py-2"><Badge tone={m.severity >= 4 ? sevTone(m.severity) : "muted"}>{m.severity}</Badge></TableCell>
                       <TableCell className="text-right font-semibold py-2">{fmt(m.hosts)}</TableCell>
                       <TableCell className="text-right py-2">{fmt(m.servers)}</TableCell>
                       <TableCell className={`text-right py-2 ${m.overdue ? "text-red-600 font-semibold" : "text-muted-foreground"}`}>{fmt(m.overdue)}</TableCell>
@@ -194,6 +225,18 @@ function ThreatTile({ label, value, sub, active, dimmed, onClick, tone }: {
   );
 }
 
+/** Chiffres clés de l'axe 2 : par actif si le détail est chargé, sinon en volume de vulnérabilités. */
+function exposureMetrics(s: DView["sum"] | undefined, e: QualysResults["exposure"]): AxisMetric[] | undefined {
+  if (s) {
+    return [
+      { value: fmt(s.kevAssets), label: "actifs exposés CISA KEV" },
+      { value: fmt(s.armedAssets), label: "actifs exploitables" },
+      { value: fmt(s.withSev5), label: "avec une critique" },
+    ];
+  }
+  return e ? [{ value: fmt(e.armed.detections), label: "vulnérabilités exploitables" }] : undefined;
+}
+
 function ExposureAxis({ r, d }: { readonly r: QualysResults; readonly d: DView | null }) {
   const e = r.exposure;
   const ctx = useQualysCtx();
@@ -202,11 +245,7 @@ function ExposureAxis({ r, d }: { readonly r: QualysResults; readonly d: DView |
   const one = <K extends keyof QFilters>(k: K, v: QFilters[K]) => ctx?.setFilters((x) => ({ ...x, [k]: x[k] === v ? undefined : v }));
   return (
     <AxisSection id="axe2" n={2} title="Exposition aux menaces" subtitle="Les vulnérabilités qui menacent réellement l'entreprise aujourd'hui, plutôt que leur volume total."
-      metrics={s ? [
-        { value: fmt(s.kevAssets), label: "actifs exposés CISA KEV" },
-        { value: fmt(s.armedAssets), label: "actifs exploitables" },
-        { value: fmt(s.withSev5), label: "avec une critique" },
-      ] : e ? [{ value: fmt(e.armed.detections), label: "vulnérabilités exploitables" }] : undefined}>
+      metrics={exposureMetrics(s, e)}>
       {d && s ? (
         <>
           <Card>
@@ -344,7 +383,7 @@ function OperationsAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
                   </span>
                 </div>
                 <div className="flex h-3 rounded-full overflow-hidden bg-muted">
-                  {s.ages.map((n, i) => <div key={i} className={AGE_COLORS[i]} style={{ width: `${(n / Math.max(1, s.total)) * 100}%` }} title={`${AGE_LABELS[i]} : ${fmt(n)}`} />)}
+                  {s.ages.map((n, i) => <div key={AGE_LABELS[i]} className={AGE_COLORS[i]} style={{ width: `${(n / Math.max(1, s.total)) * 100}%` }} title={`${AGE_LABELS[i]} : ${fmt(n)}`} />)}
                 </div>
               </div>
             ))}
@@ -524,7 +563,7 @@ function Stat({ label, value, sub, help, tone }: { readonly label: string; reado
   return (
     <div className="rounded-lg border border-border px-3 py-2">
       <div className="flex items-start justify-between gap-1 text-[11px] font-semibold text-muted-foreground"><span>{label}</span><Help>{help}</Help></div>
-      <div className={`text-2xl font-black ${tone === "red" ? "text-red-600" : tone === "amber" ? "text-amber-600" : ""}`}>{value}</div>
+      <div className={`text-2xl font-black ${tone ? STAT_TONE[tone] : ""}`}>{value}</div>
       {sub && <div className="text-[11px] text-muted-foreground">{sub}</div>}
     </div>
   );
@@ -547,9 +586,9 @@ function InventoryCard({ r }: { readonly r: QualysResults }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {!inv?.collected ? <Pending /> : inv.error && !inv.total ? (
-          <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Inventaire non disponible : {inv.error}</p>
-        ) : (
+        <SectionState data={inv} unavailable={(i) => i.error && !i.total && (
+          <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Inventaire non disponible : {i.error}</p>
+        )}>{(inv) => (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
               <Stat label="Actifs inventoriés" value={fmt(inv.total)} help={<>Tous les actifs connus de Qualys CSAM, quel que soit le moyen de découverte.</>} />
@@ -590,7 +629,7 @@ function InventoryCard({ r }: { readonly r: QualysResults }) {
               </div>
             )}
           </>
-        )}
+        )}</SectionState>
       </CardContent>
     </Card>
   );
@@ -622,7 +661,7 @@ function OsLifecycle({ r }: { readonly r: QualysResults }) {
                 <TableRow key={x.os}>
                   <TableCell className="py-1.5 text-sm font-medium">{x.os}</TableCell>
                   <TableCell className="py-1.5 text-right font-semibold">{fmt(x.assets)}</TableCell>
-                  <TableCell className="py-1.5 text-right text-xs whitespace-nowrap">{x.endOfSupport ? new Date(x.endOfSupport).toLocaleDateString("fr-FR") : x.endOfLife ? new Date(x.endOfLife).toLocaleDateString("fr-FR") : "—"}</TableCell>
+                  <TableCell className="py-1.5 text-right text-xs whitespace-nowrap">{frDate(x.endOfSupport ?? x.endOfLife)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -649,10 +688,9 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
       ] : undefined}>
       <Card>
         <CardContent className="p-4 space-y-4">
-          {!w?.collected ? <Pending /> : w.error && !w.apps.length ? (
-            <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Applications web non disponibles : {w.error}</p>
-          ) : (
-            <>
+          <SectionState data={w} unavailable={(x) => x.error && !x.apps.length && (
+            <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Applications web non disponibles : {x.error}</p>
+          )}>{(w) => (
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <Stat label="Vulnérabilités ouvertes" value={fmt(w.open)} sub={`sur ${fmt(w.apps.length)} applications`} help={<>Vulnérabilités de sévérité 3 à 5 encore présentes sur les applications web analysées par Qualys WAS (injections SQL, XSS…).</>} />
                 <Stat label="Critiques" value={fmt(tot("sev5"))} sub={`${fmt(tot("sev4"))} élevées · ${fmt(tot("sev3"))} modérées`} tone={tot("sev5") ? "red" : undefined} help={<>Vulnérabilités applicatives de sévérité 5.</>} />
@@ -660,8 +698,7 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
                 <Stat label="MTTR applicatif" value={w.fixed.mttr === null ? "—" : `${fmt(w.fixed.mttr)} j`} sub={w.fixed.fixed ? `${fmt(w.fixed.fixed)} corrigées en 90 j · ${fmt(w.fixed.slaRate)} % dans les délais` : "aucune correction sur 90 j"}
                   help={<>Délai moyen entre la détection d&apos;une vulnérabilité applicative et sa correction constatée par Qualys, sur les 90 derniers jours. La date de correction est approchée par le dernier test qui ne l&apos;a plus trouvée.</>} />
               </div>
-            </>
-          )}
+          )}</SectionState>
         </CardContent>
       </Card>
       {detail && <WebAppsExplorer />}
@@ -672,6 +709,22 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
 // ---------------------------------------------------------------------------
 // Axe 4 : conformité et durcissement (Policy Audit)
 // ---------------------------------------------------------------------------
+
+/** Conformité calculée mais inexploitable : erreur de lecture, ou aucune politique évaluée. */
+function complianceUnavailable(c: NonNullable<QualysResults["compliance"]>): React.ReactNode {
+  if (c.error && c.policies.length === 0) {
+    return (
+            <div className="space-y-1.5 py-1">
+              <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Conformité non disponible : {c.error}</p>
+              {/license is not authorized|code 2012/i.test(c.error) && (
+                <p className="text-xs text-muted-foreground">La licence Qualys n&apos;autorise pas l&apos;API qui donne l&apos;état de conformité par actif (la liste des politiques, elle, est accessible). C&apos;est une limite de l&apos;abonnement, pas des droits du compte : à voir avec l&apos;administrateur Qualys ou l&apos;interlocuteur commercial (option d&apos;accès API de Policy Audit).</p>
+              )}
+            </div>
+    );
+  }
+  if (c.policies.length === 0) return <p className="text-sm text-muted-foreground py-2">Aucune politique de conformité évaluée dans Policy Audit.</p>;
+  return null;
+}
 
 function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly points: QualysHistoryPoint[] }) {
   const c = r.compliance;
@@ -684,16 +737,7 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
       ] : undefined}>
       <Card>
         <CardContent className="p-4">
-          {!c?.collected ? <Pending /> : c.error && c.policies.length === 0 ? (
-            <div className="space-y-1.5 py-1">
-              <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Conformité non disponible : {c.error}</p>
-              {/license is not authorized|code 2012/i.test(c.error) && (
-                <p className="text-xs text-muted-foreground">La licence Qualys n&apos;autorise pas l&apos;API qui donne l&apos;état de conformité par actif (la liste des politiques, elle, est accessible). C&apos;est une limite de l&apos;abonnement, pas des droits du compte : à voir avec l&apos;administrateur Qualys ou l&apos;interlocuteur commercial (option d&apos;accès API de Policy Audit).</p>
-              )}
-            </div>
-          ) : c.policies.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-2">Aucune politique de conformité évaluée dans Policy Audit.</p>
-          ) : (
+          <SectionState data={c} unavailable={complianceUnavailable}>{(c) => (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="space-y-1">
                 <div className="flex items-start justify-between gap-2 text-xs font-semibold text-muted-foreground">
@@ -735,7 +779,7 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                 </Table>
               </div>
             </div>
-          )}
+          )}</SectionState>
         </CardContent>
       </Card>
       {c?.collected && c.topFailed.length > 0 && (
@@ -763,7 +807,7 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                       <div className="text-sm font-medium line-clamp-2" title={x.statement}>{x.statement}</div>
                       <div className="text-[11px] text-muted-foreground font-mono">CID {x.cid}{x.policies > 1 ? ` · ${x.policies} politiques` : ""}</div>
                     </TableCell>
-                    <TableCell className="py-1.5">{x.criticality ? <Badge tone={/urgent|critical/i.test(x.criticality) ? "red" : /serious|high/i.test(x.criticality) ? "orange" : "muted"}>{criticalityLabel(x.criticality)}</Badge> : "—"}</TableCell>
+                    <TableCell className="py-1.5">{x.criticality ? <Badge tone={criticalityTone(x.criticality)}>{criticalityLabel(x.criticality)}</Badge> : "—"}</TableCell>
                     <TableCell className="text-right font-semibold py-1.5">{fmt(x.failed)}</TableCell>
                     <TableCell className="text-right py-1.5">{x.rate === null ? "—" : `${fmt(x.rate)} %`}</TableCell>
                   </TableRow>
@@ -806,7 +850,7 @@ function History({ points }: { readonly points: QualysHistoryPoint[] }) {
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                 <XAxis dataKey="time" type="number" domain={["dataMin", "dataMax"]} scale="time" tickFormatter={formatDay} tick={AXIS_TICK} tickLine={false} axisLine={false} minTickGap={24} />
                 <YAxis tick={AXIS_TICK} tickLine={false} axisLine={false} domain={["auto", "auto"]} />
-                <RechartsTooltip {...TOOLTIP_STYLE} labelFormatter={(t) => new Date(Number(t)).toLocaleDateString("fr-FR")} formatter={(v) => [`${Number(v).toLocaleString("fr-FR")}${def.unit ? ` ${def.unit}` : ""}`, def.label]} />
+                <RechartsTooltip {...TOOLTIP_STYLE} labelFormatter={(t) => new Date(Number(t)).toLocaleDateString("fr-FR")} formatter={(v) => [[Number(v).toLocaleString("fr-FR"), def.unit].filter(Boolean).join(" "), def.label]} />
                 <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
@@ -911,6 +955,12 @@ export default function QualysPanel() {
   const coverage = sum ? pct(sum.recent, sum.total) : pct(r.coverage.scanned, r.coverage.total);
   const mttr5 = o?.fixedCollected ? o.fixed.bySev["5"]?.mttr ?? null : null;
   const slaRate = o?.fixedCollected ? o.fixed.all.slaRate : null;
+  const truriskAvg = sum?.truriskAvg ?? e?.truriskAvg ?? null;
+  const truriskValue = truriskAvg == null ? "—" : fmt(truriskAvg);
+  const truriskCount = sum ? sum.truriskN : e?.truriskAssets;
+  const truriskSub = truriskCount == null ? "après le prochain calcul" : (
+    <><span>sur 1 000 · {fmt(truriskCount)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</>
+  );
   const tierFilter = (t: TruTier[]) => setFilters((f) => ({ ...f, tier: JSON.stringify(f.tier) === JSON.stringify(t) ? undefined : t }));
 
   return (
@@ -931,9 +981,9 @@ export default function QualysPanel() {
         {/* INDICATEURS CLÉS */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className={`h-full ${view ? clickable(Boolean(filters.tier?.length)) : ""}`} {...(view ? pressable(() => tierFilter(["critical", "high"])) : {})} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
-            <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={sum?.truriskAvg != null ? fmt(sum.truriskAvg) : e?.truriskAvg != null ? fmt(e.truriskAvg) : "—"}
+            <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={truriskValue}
               help={<>Moyenne du score de risque Qualys (0 à 1 000) des actifs{filtered ? " de la sélection" : " du parc"} : la posture de risque globale. Doit baisser dans le temps.</>}
-              sub={sum ? <><span>sur 1 000 · {fmt(sum.truriskN)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</> : e ? <><span>sur 1 000 · {fmt(e.truriskAssets)} actifs</span> <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter /></> : "après le prochain calcul"} />
+              sub={truriskSub} />
           </div>
           <div className={`h-full ${view ? clickable(filters.threat === "armed") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" }))) : {})} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
             {sum ? (
@@ -941,7 +991,7 @@ export default function QualysPanel() {
                 help={<>Actifs portant au moins une vulnérabilité ouverte exploitée ou exploitable dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
                 sub={<span>{pct(sum.armedAssets, sum.total) ?? 0} % des actifs · dont {fmt(sum.kevAssets)} avec une vulnérabilité CISA KEV</span>} />
             ) : (
-              <Kpi title="Vulnérabilités exploitables" icon={Flame} color="border-l-orange-500" value={e ? fmt(e.armed.detections) : fmt(r.kev.detections)}
+              <Kpi title="Vulnérabilités exploitables" icon={Flame} color="border-l-orange-500" value={fmt(e ? e.armed.detections : r.kev.detections)}
                 help={<>Vulnérabilités ouvertes exploitées ou exploitables dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
                 sub={e ? <><span>dont {fmt(e.armed.servers)} sur des serveurs</span> <Delta value={trendOver(points, "armed")} lowerIsBetter /></> : "CISA KEV seules (ancien calcul)"} />
             )}

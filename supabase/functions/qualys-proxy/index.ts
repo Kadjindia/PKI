@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   hostsPage, detectionsPage, fixedPage, kbPage, policiesPage, posturePage, mergePosture, buildResults, summaryOf, vulnIndex, qualysError, nextPageUrl,
   csamPage, wasPage, wasAppsPage, kbDetails, splitHosts, fixedRowsOfPages, qualysDate, FIXED_WINDOW_DAYS,
@@ -80,9 +80,10 @@ const corsHeaders = {
 // deno-lint-ignore no-explicit-any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
+/** Client Supabase avec la clé de service (base non typée). */
 // deno-lint-ignore no-explicit-any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Admin = any;
+type Admin = SupabaseClient<any, "public", any>;
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -564,7 +565,8 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
       // Réévaluation hebdomadaire : seules les politiques évaluées il y a plus de 6 jours (ou jamais) sont relues
       const last = await lastPolicyDates(admin);
       const due = list.map((x) => x.id).filter((id) => !last[id] || Date.now() - Date.parse(last[id]) > COMPLIANCE_REFRESH_MS);
-      state.policyIds = due.sort((a, b) => (last[a] ?? "").localeCompare(last[b] ?? ""));
+      due.sort((a, b) => (last[a] ?? "").localeCompare(last[b] ?? ""));
+      state.policyIds = due;
       state.pcTotal = list.length;
       state.policyIdx = 0;
       state.pcDone = [];
@@ -686,8 +688,9 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
   if (state.phase === "csam" || state.phase === "was" || state.phase === "wasapps") return await directStep(admin, snapId, state, save, deadline);
 
   // 4. Demande suivante
+  if (state.phase === "kb") state.kbReq = state.kbChunk ?? KB_CHUNK;
   const url = state.phase === "kb"
-    ? firstUrl.kb(state.kbIds.slice(state.kbPos ?? 0, (state.kbPos ?? 0) + (state.kbReq = state.kbChunk ?? KB_CHUNK)))
+    ? firstUrl.kb(state.kbIds.slice(state.kbPos ?? 0, (state.kbPos ?? 0) + state.kbReq))
     : state.phase === "policies" ? firstUrl.policies()
     : state.phase === "posture" ? state.next ?? firstUrl.posture(state.policyIds[state.policyIdx])
     : state.phase === "fixed" ? state.next ?? firstUrl.fixed(qualysDate(state.fixedSince))
@@ -803,7 +806,7 @@ async function handleSearch(admin: Admin, raw: unknown) {
 function sameSecret(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < a.length; i++) diff |= (a.codePointAt(i) ?? 0) ^ (b.codePointAt(i) ?? 0);
   return diff === 0;
 }
 

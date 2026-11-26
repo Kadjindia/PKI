@@ -379,7 +379,7 @@ export default function VaronisPanel() {
         </Popover>
         {filterChips(filters).map((chip) => (
           <button
-            key={`${chip.key}-${String(chip.value ?? "")}`}
+            key={`${chip.key}-${JSON.stringify(chip.value ?? null)}`}
             type="button"
             onClick={() => setFilters((f) => removeChip(f, chip))}
             className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-primary/10 text-primary hover:bg-primary/20"

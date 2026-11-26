@@ -119,7 +119,7 @@ export const ASSET_TYPES: AssetType[] = ["server", "workstation", "other"];
 export function assetType(os: string | null | undefined): AssetType {
   const s = (os ?? "").toLowerCase();
   if (!s) return "other";
-  if (/server|linux|unix|ubuntu|debian|red ?hat|rhel|centos|rocky|alma|suse|oracle|aix|solaris|hp-?ux|esxi?|vmware|freebsd/.test(s)) return "server";
+  if (/server|linux|unix|ubuntu|debian|red ?hat|rhel|centos|rocky/.test(s) || /alma|suse|oracle|aix|solaris|hp-?ux|esxi?|vmware|freebsd/.test(s)) return "server";
   if (/windows (xp|vista|7|8|8\.1|10|11)\b|\bmac ?os\b|\bos x\b|darwin/.test(s)) return "workstation";
   return "other";
 }
@@ -386,8 +386,31 @@ export function kbPage(xml: string) {
 
 /** Texte lisible d'un champ HTML de la base de connaissances (solution, conséquence…). */
 export const plainText = (html: string | null, max: number) =>
-  (html ?? "").replace(/<br\s*\/?>|<\/p>|<\/li>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/\r/g, "").replace(/[ \t]+/g, " ").replace(/\n(?:[ \t]*\n)+/g, "\n").trim().slice(0, max) || null;
+  normalizeSpaces(decodeEntities(stripTags(html ?? ""))).slice(0, max) || null;
+
+/** Retire les balises HTML en un seul passage ; fin de ligne pour <br>, </p> et </li>. */
+function stripTags(html: string): string {
+  let out = "";
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) { out += html.slice(i); break; }
+    out += html.slice(i, lt);
+    const gt = html.indexOf(">", lt);
+    if (gt === -1) { out += html.slice(lt); break; }
+    const name = html.slice(lt + 1, gt).trim().toLowerCase().replace(/\/$/, "").trim();
+    if (name === "br" || name === "/p" || name === "/li") out += "\n";
+    i = gt + 1;
+  }
+  return out;
+}
+
+const ENTITIES: Record<string, string> = { "&nbsp;": " ", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&amp;": "&" };
+const decodeEntities = (s: string) => s.replace(/&(?:nbsp|lt|gt|quot|#39|amp);/g, (e) => ENTITIES[e]);
+
+/** Espaces et tabulations réduits à un ; lignes vides retirées. */
+const normalizeSpaces = (s: string) =>
+  s.split(/\r?\n|\r/).map((l) => l.replace(/[ \t]+/g, " ").trim()).filter((l) => l !== "").join("\n");
 
 /** Fiche d'une vulnérabilité de la base de connaissances (table qualys_kb). */
 export interface KbRow {
@@ -830,7 +853,9 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
   for (const r of fixedRows) {
     const m = r.day.slice(0, 7);
     if (m < monthStart) continue;
-    const cell = ((monthCells[m] ??= {})[r.severity] ??= [0, 0, 0]);
+    monthCells[m] ??= {};
+    monthCells[m][r.severity] ??= [0, 0, 0];
+    const cell = monthCells[m][r.severity];
     cell[0] += r.n; cell[1] += r.in_sla; cell[2] += Number(r.days_sum);
   }
   const firstDay = fixedRows.map((r) => r.day).sort((a, b) => a.localeCompare(b))[0] ?? null;

@@ -1,17 +1,20 @@
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+
 // Lecture du détail de la dernière photo (écran : inventaires, fiches, listes filtrables).
 // Tout passe par la clé service_role ; l'utilisateur est authentifié par index.ts.
 
 // deno-lint-ignore no-explicit-any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
+/** Client Supabase avec la clé de service (base non typée). */
 // deno-lint-ignore no-explicit-any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Admin = any;
+type Admin = SupabaseClient<any, "public", any>;
 
 const PAGE = 1000;
 
 /** Toutes les lignes d'une requête (PostgREST renvoie au plus 1000 lignes par appel). */
-async function selectAll(build: (from: number, to: number) => Promise<{ data: Row[] | null; error: { message: string } | null }>): Promise<Row[]> {
+async function selectAll(build: (from: number, to: number) => PromiseLike<{ data: Row[] | null; error: { message: string } | null }>): Promise<Row[]> {
   const out: Row[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await build(from, from + PAGE - 1);
