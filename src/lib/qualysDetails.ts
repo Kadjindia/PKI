@@ -183,11 +183,17 @@ function listChips(f: QFilters, typeLabels: Record<AssetType, string>): Chip[] {
   ];
 }
 
+/** Libellé d'un filtre oui / non (undefined s'il n'est pas posé). */
+function yesNoLabel(v: boolean | undefined, yes: string, no: string): string | undefined {
+  if (v === undefined) return undefined;
+  return v ? yes : no;
+}
+
 /** Libellé de chaque filtre simple posé (undefined si le filtre n'est pas posé). */
 const SIMPLE_CHIPS: [keyof QFilters, (f: QFilters, catalog?: CatalogIndex) => string | undefined][] = [
   ["scan", (f) => f.scan && SCAN_LABELS[f.scan]],
-  ["agent", (f) => { if (f.agent === undefined) return undefined; return f.agent ? "Avec agent Qualys" : "Sans agent Qualys"; }],
-  ["publicIp", (f) => { if (f.publicIp === undefined) return undefined; return f.publicIp ? "Exposés sur Internet" : "Non exposés sur Internet"; }],
+  ["agent", (f) => yesNoLabel(f.agent, "Avec agent Qualys", "Sans agent Qualys")],
+  ["publicIp", (f) => yesNoLabel(f.publicIp, "Exposés sur Internet", "Non exposés sur Internet")],
   ["threat", (f) => f.threat && THREAT_LABELS[f.threat]],
   ["eol", (f) => (f.eol ? "Produit en fin de support" : undefined)],
   ["overdue", (f) => (f.overdue ? "Vulnérabilités hors délai" : undefined)],
@@ -368,10 +374,17 @@ export const wasStatusLabel = (s: string | null) => (s ? WAS_STATUS[s.toUpperCas
 export const fmtDate = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleDateString("fr-FR") : "—");
 
 export function toCsv(rows: Record<string, unknown>[], columns: { key: string; label: string }[]): string {
+  // Élément d'une liste : comme Array#join (sous-liste « a,b », vide pour null)
+  const item = (x: unknown): string => {
+    if (x === null || x === undefined) return "";
+    if (Array.isArray(x)) return x.map(item).join(",");
+    return typeof x === "object" ? JSON.stringify(x) : String(x as string | number | boolean);
+  };
   const text = (v: unknown) => {
     if (v === null || v === undefined) return "";
-    if (Array.isArray(v)) return v.join(", ");
-    return typeof v === "object" ? JSON.stringify(v) : String(v);
+    if (Array.isArray(v)) return v.map(item).join(", ");
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v as string | number | boolean);
   };
   const cell = (v: unknown) => {
     const s = text(v);

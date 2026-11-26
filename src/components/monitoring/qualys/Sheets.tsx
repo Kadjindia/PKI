@@ -255,6 +255,7 @@ function VulnBody({ qid }: { readonly qid: number }) {
     return null;
   };
   const list = (x: unknown) => (Array.isArray(x) ? x : []) as unknown[];
+  const strList = (x: unknown) => list(x).map(str).filter((v): v is string => v !== null);
   const all = q.data?.hosts ?? [];
   const chip = (active: boolean) => `text-xs px-2 py-1 rounded-full border ${active ? "bg-primary text-primary-foreground border-primary" : "border-border hover:bg-muted"}`;
   return (
@@ -271,12 +272,12 @@ function VulnBody({ qid }: { readonly qid: number }) {
         <Field label="Produits">{list(k.products).map((p) => (Array.isArray(p) ? p.filter(Boolean).join(" ") : str(p) ?? "")).filter(Boolean).join(", ") || "—"}</Field>
         <Field label="Type">{str(k.vuln_type)}</Field>
       </div>
-      {list(k.cves).length > 0 && <div className="text-xs"><b>CVE :</b> <span className="font-mono">{list(k.cves).join(", ")}</span></div>}
-      {list(k.threats).length > 0 && <div className="text-xs"><b>Renseignement sur la menace :</b> {list(k.threats).map((t) => String(t).replace(/_/g, " ")).join(", ")}</div>}
+      {list(k.cves).length > 0 && <div className="text-xs"><b>CVE :</b> <span className="font-mono">{strList(k.cves).join(", ")}</span></div>}
+      {list(k.threats).length > 0 && <div className="text-xs"><b>Renseignement sur la menace :</b> {strList(k.threats).map((t) => t.replace(/_/g, " ")).join(", ")}</div>}
       {str(k.consequence) && <div className="text-xs whitespace-pre-line"><b>Conséquence :</b> {str(k.consequence)}</div>}
       {str(k.solution) && <div className="text-xs whitespace-pre-line rounded-lg bg-emerald-500/5 border border-emerald-500/20 p-2"><b>Solution :</b> {str(k.solution)}</div>}
       {str(k.diagnosis) && <details className="text-xs"><summary className="cursor-pointer font-semibold">Diagnostic Qualys</summary><p className="whitespace-pre-line pt-1">{str(k.diagnosis)}</p></details>}
-      {list(k.vendor_refs).length > 0 && <div className="text-xs"><b>Références éditeur :</b> {list(k.vendor_refs).join(", ")}</div>}
+      {list(k.vendor_refs).length > 0 && <div className="text-xs"><b>Références éditeur :</b> {strList(k.vendor_refs).join(", ")}</div>}
 
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 justify-between">

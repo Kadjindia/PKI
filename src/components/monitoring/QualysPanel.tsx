@@ -66,15 +66,15 @@ function Pending({ children = "Disponible après le prochain calcul de nuit." }:
 
 /**
  * Contenu d'une section selon l'état de ses données : pas encore calculées, indisponibles (message
- * renvoyé par `unavailable`), ou disponibles (rendu par `children`).
+ * renvoyé par `unavailable`), ou disponibles (`children`).
  */
 function SectionState<T extends { collected: boolean }>({ data, unavailable, children }: {
-  readonly data: T | null | undefined; readonly unavailable?: (d: T) => React.ReactNode; readonly children: (d: T) => React.ReactNode;
+  readonly data: T | null | undefined; readonly unavailable?: (d: T) => React.ReactNode; readonly children: React.ReactNode;
 }) {
   if (!data?.collected) return <Pending />;
   const message = unavailable?.(data);
   if (message) return <>{message}</>;
-  return <>{children(data)}</>;
+  return <>{children}</>;
 }
 
 const AGE_COLORS = ["bg-emerald-500", "bg-amber-400", "bg-orange-500", "bg-red-600"];
@@ -443,7 +443,8 @@ function OperationsAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
 /** Détail de la dernière photo, filtré selon la page. */
 interface DView { all: DAsset[]; assets: DAsset[]; idx: CatalogIndex; sum: Summary }
 
-const TIER_BAR: [TruTier, string, string][] = [["critical", "bg-red-600", "critique"], ["high", "bg-orange-500", "élevé"], ["medium", "bg-amber-400", "moyen"], ["low", "bg-emerald-500", "faible"]];
+type TierBand = Exclude<TruTier, "none">;
+const TIER_BAR: [TierBand, string, string][] = [["critical", "bg-red-600", "critique"], ["high", "bg-orange-500", "élevé"], ["medium", "bg-amber-400", "moyen"], ["low", "bg-emerald-500", "faible"]];
 
 /** Ligne « libellé : valeur » qui filtre la page au clic. */
 function FilterLine({ label, value, active, onClick }: { readonly label: string; readonly value: string; readonly active?: boolean; readonly onClick?: () => void }) {
@@ -460,18 +461,56 @@ function FilterLine({ label, value, active, onClick }: { readonly label: string;
   );
 }
 
+/** Chiffres de visibilité : ceux de la sélection si le détail par actif est chargé, sinon ceux de la photo. */
+function visibilityCounts(r: QualysResults, s: DView["sum"] | undefined) {
+  if (s) {
+    return { tiers: s.tiers, total: s.total, agent: s.agent, recent: s.recent, never: s.never, ofType: (t: "server" | "workstation") => [s.recentByType[t], s.byType[t]] };
+  }
+  const c = r.coverage;
+  return {
+    tiers: c.trurisk, total: c.total, agent: c.agent, recent: c.scanned, never: c.neverScanned,
+    ofType: (t: "server" | "workstation") => [c.byType?.[t].scanned ?? 0, c.byType?.[t].total ?? 0],
+  };
+}
+
+/** Répartition TruRisk : barre et effectifs par tranche, cliquables quand `onTier` est fourni. */
+function TruriskBar({ tiers, filters, onTier }: {
+  readonly tiers: Record<TierBand, number>; readonly filters: QFilters; readonly onTier?: (k: TierBand) => void;
+}) {
+  const trTotal = Math.max(1, tiers.critical + tiers.high + tiers.medium + tiers.low);
+  return (
+    <>
+            <div className="flex h-3 rounded-full overflow-hidden bg-muted">
+              {TIER_BAR.map(([k, c, l]) => onTier ? (
+                <button type="button" key={k} aria-label={`TruRisk ${l} : ${fmt(tiers[k])} actifs`} className={`${c} cursor-pointer ${filters.tier?.length && !filters.tier.includes(k) ? "opacity-30" : ""}`} style={{ width: `${(tiers[k] / trTotal) * 100}%` }}
+                  onClick={() => onTier(k)} />
+              ) : (
+                <div key={k} className={c} style={{ width: `${(tiers[k] / trTotal) * 100}%` }} />
+              ))}
+            </div>
+            <div className="grid grid-cols-4 text-center text-[11px] text-muted-foreground">
+              {TIER_BAR.map(([k, , l]) => onTier ? (
+                <button type="button" key={k} className={clickable(Boolean(filters.tier?.includes(k)), Boolean(filters.tier?.length && !filters.tier.includes(k)))}
+                  onClick={() => onTier(k)}>
+                  <b className="text-foreground">{fmt(tiers[k])}</b><br />{l}
+                </button>
+              ) : (
+                <span key={k}><b className="text-foreground">{fmt(tiers[k])}</b><br />{l}</span>
+              ))}
+            </div>
+    </>
+  );
+}
+
 function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView | null }) {
   const ctx = useQualysCtx();
   const f = ctx?.filters ?? {};
   const set = ctx?.setFilters;
-  const byType = r.coverage.byType;
   const s = d?.sum;
-  const tiers = s ? s.tiers : r.coverage.trurisk;
-  const trTotal = Math.max(1, tiers.critical + tiers.high + tiers.medium + tiers.low);
-  const total = s ? s.total : r.coverage.total;
-  const agent = s ? s.agent : r.coverage.agent;
-  const recent = s ? s.recent : r.coverage.scanned;
-  const never = s ? s.never : r.coverage.neverScanned;
+  const { tiers, total, agent, recent, never, ofType } = visibilityCounts(r, s);
+  // Filtres posables seulement quand le détail par actif est chargé
+  const toggle = set && d ? <K extends keyof QFilters>(k: K, v: QFilters[K]) => () => set((x) => ({ ...x, [k]: x[k] === v ? undefined : v })) : undefined;
+  const onlyType = (t: "server" | "workstation") => set && d ? () => set((x) => ({ ...x, type: x.type?.length === 1 && x.type[0] === t ? undefined : [t] })) : undefined;
   return (
     <AxisSection id="axe1" n={1} title="Visibilité du parc" subtitle="Le socle : un actif que Qualys n'analyse pas est un angle mort."
       metrics={[
@@ -485,20 +524,19 @@ function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
           <div className="space-y-1">
             <FilterLine label={d && isFiltered(f) ? "Actifs de la sélection" : "Actifs suivis par Qualys"} value={fmt(total)} />
             <FilterLine label="Équipés de l'agent Qualys" value={`${fmt(agent)} (${pct(agent, total) ?? 0} %)`} active={f.agent === true}
-              onClick={set && d ? () => set((x) => ({ ...x, agent: x.agent === true ? undefined : true })) : undefined} />
+              onClick={toggle?.("agent", true)} />
             <FilterLine label="Sans agent Qualys" value={`${fmt(total - agent)} (${pct(total - agent, total) ?? 0} %)`} active={f.agent === false}
-              onClick={set && d ? () => set((x) => ({ ...x, agent: x.agent === false ? undefined : false })) : undefined} />
+              onClick={toggle?.("agent", false)} />
             <FilterLine label={`Analysés depuis moins de ${r.coverage.recentDays} jours`} value={`${fmt(recent)} (${pct(recent, total) ?? 0} %)`} active={f.scan === "recent"}
-              onClick={set && d ? () => set((x) => ({ ...x, scan: x.scan === "recent" ? undefined : "recent" })) : undefined} />
+              onClick={toggle?.("scan", "recent")} />
             {s && <FilterLine label={`Pas analysés depuis plus de ${r.coverage.recentDays} jours`} value={fmt(s.stale)} active={f.scan === "stale"}
               onClick={set ? () => set((x) => ({ ...x, scan: x.scan === "stale" ? undefined : "stale" })) : undefined} />}
             <FilterLine label="Jamais analysés" value={fmt(never)} active={f.scan === "never"}
-              onClick={set && d ? () => set((x) => ({ ...x, scan: x.scan === "never" ? undefined : "never" })) : undefined} />
+              onClick={toggle?.("scan", "never")} />
             {(["server", "workstation"] as const).map((t) => {
-              const n = s ? s.byType[t] : byType?.[t].total ?? 0;
-              const ok = s ? s.recentByType[t] : byType?.[t].scanned ?? 0;
+              const [ok, n] = ofType(t);
               return <FilterLine key={t} label={`${ASSET_TYPE_LABELS[t]} analysés récemment`} value={`${fmt(ok)} sur ${fmt(n)} (${pct(ok, n) ?? 0} %)`} active={f.type?.length === 1 && f.type[0] === t}
-                onClick={set && d ? () => set((x) => ({ ...x, type: x.type?.length === 1 && x.type[0] === t ? undefined : [t] })) : undefined} />;
+                onClick={onlyType(t)} />;
             })}
             {s && <FilterLine label="Exposés sur Internet (IP publique)" value={fmt(s.publicIp)} active={f.publicIp === true}
               onClick={set ? () => set((x) => ({ ...x, publicIp: x.publicIp ? undefined : true })) : undefined} />}
@@ -508,24 +546,7 @@ function VisibilityAxis({ r, d }: { readonly r: QualysResults; readonly d: DView
               <span>Score de risque des actifs (TruRisk)</span>
               <Help>Score de risque Qualys de chaque actif (0 à 1 000), qui combine ses vulnérabilités et sa criticité. Critique : 850 et plus ; élevé : 700 à 849 ; moyen : 500 à 699. Cliquer sur une tranche pour filtrer la page.</Help>
             </div>
-            <div className="flex h-3 rounded-full overflow-hidden bg-muted">
-              {TIER_BAR.map(([k, c, l]) => set && d ? (
-                <button type="button" key={k} aria-label={`TruRisk ${l} : ${fmt(tiers[k])} actifs`} className={`${c} cursor-pointer ${f.tier?.length && !f.tier.includes(k) ? "opacity-30" : ""}`} style={{ width: `${(tiers[k] / trTotal) * 100}%` }}
-                  onClick={() => set((x) => ({ ...x, tier: x.tier?.length === 1 && x.tier[0] === k ? undefined : [k] }))} />
-              ) : (
-                <div key={k} className={c} style={{ width: `${(tiers[k] / trTotal) * 100}%` }} />
-              ))}
-            </div>
-            <div className="grid grid-cols-4 text-center text-[11px] text-muted-foreground">
-              {TIER_BAR.map(([k, , l]) => set && d ? (
-                <button type="button" key={k} className={clickable(Boolean(f.tier?.includes(k)), Boolean(f.tier?.length && !f.tier.includes(k)))}
-                  onClick={() => set((x) => ({ ...x, tier: x.tier?.length === 1 && x.tier[0] === k ? undefined : [k] }))}>
-                  <b className="text-foreground">{fmt(tiers[k])}</b><br />{l}
-                </button>
-              ) : (
-                <span key={k}><b className="text-foreground">{fmt(tiers[k])}</b><br />{l}</span>
-              ))}
-            </div>
+            <TruriskBar tiers={tiers} filters={f} onTier={set && d ? (k) => set((x) => ({ ...x, tier: x.tier?.length === 1 && x.tier[0] === k ? undefined : [k] })) : undefined} />
             {s?.truriskAvg != null && <p className="text-xs text-muted-foreground pt-1">Score moyen de la sélection : <b className="text-foreground">{fmt(s.truriskAvg)}</b> / 1 000</p>}
           </div>
         </CardContent>
@@ -573,22 +594,9 @@ function Stat({ label, value, sub, help, tone }: { readonly label: string; reado
 const SOURCE_FR: Record<string, string> = { PASSIVE_SENSOR: "Capteur réseau passif", IP_SCANNER: "Scanner réseau", AGENT: "Agent", EASM: "Scan externe (EASM)", CLOUD_CONNECTOR: "Connecteur cloud" };
 const sourceLabel = (src: string | null) => (src ? SOURCE_FR[src.trim().toUpperCase().replace(/\s+/g, "_")] ?? src : "—");
 
-function InventoryCard({ r }: { readonly r: QualysResults }) {
-  const inv = r.inventory;
-  const ex = r.internetExposed;
+function InventoryBody({ inv, ex }: { readonly inv: NonNullable<QualysResults["inventory"]>; readonly ex: QualysResults["internetExposed"] }) {
   const [showRecent, setShowRecent] = useState(false);
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-bold flex items-center gap-2">
-          <Radar className="w-4 h-4 text-primary" /> Inventaire, agents et Shadow IT
-          <Help>Inventaire des actifs de Qualys CSAM, qui réunit tout ce que Qualys voit (agents, scanners, capteur réseau passif). Permet de repérer les actifs non maîtrisés.</Help>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <SectionState data={inv} unavailable={(i) => i.error && !i.total && (
-          <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Inventaire non disponible : {i.error}</p>
-        )}>{(inv) => (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
               <Stat label="Actifs inventoriés" value={fmt(inv.total)} help={<>Tous les actifs connus de Qualys CSAM, quel que soit le moyen de découverte.</>} />
@@ -629,7 +637,24 @@ function InventoryCard({ r }: { readonly r: QualysResults }) {
               </div>
             )}
           </>
-        )}</SectionState>
+  );
+}
+
+function InventoryCard({ r }: { readonly r: QualysResults }) {
+  const inv = r.inventory;
+  const ex = r.internetExposed;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-bold flex items-center gap-2">
+          <Radar className="w-4 h-4 text-primary" /> Inventaire, agents et Shadow IT
+          <Help>Inventaire des actifs de Qualys CSAM, qui réunit tout ce que Qualys voit (agents, scanners, capteur réseau passif). Permet de repérer les actifs non maîtrisés.</Help>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <SectionState data={inv} unavailable={(i) => i.error && !i.total && (
+          <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Inventaire non disponible : {i.error}</p>
+        )}>{inv && <InventoryBody inv={inv} ex={ex} />}</SectionState>
       </CardContent>
     </Card>
   );
@@ -676,9 +701,25 @@ function OsLifecycle({ r }: { readonly r: QualysResults }) {
 // Axe 5 : sécurité applicative (WAS)
 // ---------------------------------------------------------------------------
 
+type AppCount = "sev5" | "sev4" | "sev3" | "overdue";
+const appTotal = (w: QualysResults["webApps"], k: AppCount) => (w?.apps ?? []).reduce((t, a) => t + a[k], 0);
+
+function WebAppsBody({ w }: { readonly w: NonNullable<QualysResults["webApps"]> }) {
+  const tot = (k: AppCount) => appTotal(w, k);
+  return (
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <Stat label="Vulnérabilités ouvertes" value={fmt(w.open)} sub={`sur ${fmt(w.apps.length)} applications`} help={<>Vulnérabilités de sévérité 3 à 5 encore présentes sur les applications web analysées par Qualys WAS (injections SQL, XSS…).</>} />
+                <Stat label="Critiques" value={fmt(tot("sev5"))} sub={`${fmt(tot("sev4"))} élevées · ${fmt(tot("sev3"))} modérées`} tone={tot("sev5") ? "red" : undefined} help={<>Vulnérabilités applicatives de sévérité 5.</>} />
+                <Stat label="Hors délai" value={fmt(tot("overdue"))} sub="selon la politique de gestion des correctifs" tone={tot("overdue") ? "amber" : undefined} help={<>Vulnérabilités ouvertes au-delà du délai de la politique (7 jours, 1 mois, 3 mois selon la sévérité).</>} />
+                <Stat label="MTTR applicatif" value={w.fixed.mttr === null ? "—" : `${fmt(w.fixed.mttr)} j`} sub={w.fixed.fixed ? `${fmt(w.fixed.fixed)} corrigées en 90 j · ${fmt(w.fixed.slaRate)} % dans les délais` : "aucune correction sur 90 j"}
+                  help={<>Délai moyen entre la détection d&apos;une vulnérabilité applicative et sa correction constatée par Qualys, sur les 90 derniers jours. La date de correction est approchée par le dernier test qui ne l&apos;a plus trouvée.</>} />
+              </div>
+  );
+}
+
 function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail: boolean }) {
   const w = r.webApps;
-  const tot = (k: "sev5" | "sev4" | "sev3" | "overdue") => (w?.apps ?? []).reduce((t, a) => t + a[k], 0);
+  const tot = (k: AppCount) => appTotal(w, k);
   return (
     <AxisSection id="axe5" n={5} title="Sécurité applicative" subtitle="Les vulnérabilités du code de nos applications web, et la rapidité des équipes de développement à les corriger (Qualys WAS)."
       metrics={w?.collected && !w.error ? [
@@ -690,15 +731,7 @@ function WebAppsAxis({ r, detail }: { readonly r: QualysResults; readonly detail
         <CardContent className="p-4 space-y-4">
           <SectionState data={w} unavailable={(x) => x.error && !x.apps.length && (
             <p className="text-sm text-amber-600 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Applications web non disponibles : {x.error}</p>
-          )}>{(w) => (
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <Stat label="Vulnérabilités ouvertes" value={fmt(w.open)} sub={`sur ${fmt(w.apps.length)} applications`} help={<>Vulnérabilités de sévérité 3 à 5 encore présentes sur les applications web analysées par Qualys WAS (injections SQL, XSS…).</>} />
-                <Stat label="Critiques" value={fmt(tot("sev5"))} sub={`${fmt(tot("sev4"))} élevées · ${fmt(tot("sev3"))} modérées`} tone={tot("sev5") ? "red" : undefined} help={<>Vulnérabilités applicatives de sévérité 5.</>} />
-                <Stat label="Hors délai" value={fmt(tot("overdue"))} sub="selon la politique de gestion des correctifs" tone={tot("overdue") ? "amber" : undefined} help={<>Vulnérabilités ouvertes au-delà du délai de la politique (7 jours, 1 mois, 3 mois selon la sévérité).</>} />
-                <Stat label="MTTR applicatif" value={w.fixed.mttr === null ? "—" : `${fmt(w.fixed.mttr)} j`} sub={w.fixed.fixed ? `${fmt(w.fixed.fixed)} corrigées en 90 j · ${fmt(w.fixed.slaRate)} % dans les délais` : "aucune correction sur 90 j"}
-                  help={<>Délai moyen entre la détection d&apos;une vulnérabilité applicative et sa correction constatée par Qualys, sur les 90 derniers jours. La date de correction est approchée par le dernier test qui ne l&apos;a plus trouvée.</>} />
-              </div>
-          )}</SectionState>
+          )}>{w && <WebAppsBody w={w} />}</SectionState>
         </CardContent>
       </Card>
       {detail && <WebAppsExplorer />}
@@ -726,18 +759,8 @@ function complianceUnavailable(c: NonNullable<QualysResults["compliance"]>): Rea
   return null;
 }
 
-function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly points: QualysHistoryPoint[] }) {
-  const c = r.compliance;
+function ComplianceBody({ c, points }: { readonly c: NonNullable<QualysResults["compliance"]>; readonly points: QualysHistoryPoint[] }) {
   return (
-    <AxisSection id="axe4" n={4} title="Conformité et durcissement" subtitle="Le respect des référentiels de configuration que l'on s'est fixés (CIS, ANSSI…), mesuré par Qualys Policy Audit."
-      metrics={c?.rate != null ? [
-        { value: `${fmt(c.rate)} %`, label: "taux de conformité" },
-        { value: fmt(c.policies.length), label: "politiques" },
-        { value: fmt(c.failed), label: "contrôles en échec" },
-      ] : undefined}>
-      <Card>
-        <CardContent className="p-4">
-          <SectionState data={c} unavailable={complianceUnavailable}>{(c) => (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="space-y-1">
                 <div className="flex items-start justify-between gap-2 text-xs font-semibold text-muted-foreground">
@@ -779,7 +802,21 @@ function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly poi
                 </Table>
               </div>
             </div>
-          )}</SectionState>
+  );
+}
+
+function ComplianceAxis({ r, points }: { readonly r: QualysResults; readonly points: QualysHistoryPoint[] }) {
+  const c = r.compliance;
+  return (
+    <AxisSection id="axe4" n={4} title="Conformité et durcissement" subtitle="Le respect des référentiels de configuration que l'on s'est fixés (CIS, ANSSI…), mesuré par Qualys Policy Audit."
+      metrics={c?.rate != null ? [
+        { value: `${fmt(c.rate)} %`, label: "taux de conformité" },
+        { value: fmt(c.policies.length), label: "politiques" },
+        { value: fmt(c.failed), label: "contrôles en échec" },
+      ] : undefined}>
+      <Card>
+        <CardContent className="p-4">
+          <SectionState data={c} unavailable={complianceUnavailable}>{c && <ComplianceBody c={c} points={points} />}</SectionState>
         </CardContent>
       </Card>
       {c?.collected && c.topFailed.length > 0 && (
@@ -863,6 +900,108 @@ function History({ points }: { readonly points: QualysHistoryPoint[] }) {
 
 // ---------------------------------------------------------------------------
 
+function PanelHeader() {
+  return (
+    <div>
+      <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
+        <ShieldAlert className="w-7 h-7 text-primary" /> Vulnérabilités — Qualys
+      </h2>
+      <p className="text-sm text-muted-foreground mt-1">Pilotage de la gestion des vulnérabilités : visibilité du parc, exposition aux menaces, efficacité de la remédiation et conformité. Sévérités 3 à 5.</p>
+    </div>
+  );
+}
+
+function Banners({ error, data }: { readonly error: unknown; readonly data: QualysState | undefined }) {
+  return (
+    <>
+      {error && (
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="p-4 flex items-center gap-2 text-sm text-destructive"><AlertTriangle className="w-4 h-4 shrink-0" /> {(error as Error).message}</CardContent>
+        </Card>
+      )}
+      {data?.lastError && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardContent className="p-4 flex items-center gap-2 text-sm text-amber-600">
+            <AlertTriangle className="w-4 h-4 shrink-0" /> Le dernier calcul n&apos;a pas abouti : {data.lastError}
+          </CardContent>
+        </Card>
+      )}
+      {data?.running && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="p-4 flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Loader2 className="w-4 h-4 animate-spin text-primary" /> Calcul en cours : {progressLabel(data.running)}
+          </CardContent>
+        </Card>
+      )}
+    </>
+  );
+}
+
+/** Date de la photo et état du détail par actif. */
+function PhotoNote({ r, details }: { readonly r: NonNullable<QualysState["latest"]>; readonly details: { data?: AssetsPayload; error: unknown } }) {
+  return (
+        <p className="text-xs text-muted-foreground -mt-3">
+          Photo du {new Date(r.date).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}.
+          {details.data && !details.data.available && <span className="ml-2">Détail par actif (inventaires, fiches, filtres) disponible après le prochain calcul de nuit.</span>}
+          {details.error && <span className="ml-2 text-amber-600">Détail indisponible : {(details.error as Error).message}</span>}
+          {r.details?.error && <span className="ml-2 text-amber-600">Détail partiel : {r.details.error}</span>}
+          {r.details?.kbSkipped ? <span className="ml-2 text-amber-600">{fmt(r.details.kbSkipped)} fiches de vulnérabilités non relues cette nuit (Qualys trop lent) : titres et menaces de la veille ou manquants.</span> : null}
+        </p>
+  );
+}
+
+/** Les cinq indicateurs clés, cliquables pour filtrer la page quand le détail est chargé. */
+function KeyIndicators({ r, view, points, filters, setFilters }: {
+  readonly r: NonNullable<QualysState["latest"]>; readonly view: DView | null; readonly points: QualysHistoryPoint[];
+  readonly filters: QFilters; readonly setFilters: React.Dispatch<React.SetStateAction<QFilters>>;
+}) {
+  const e = r.exposure;
+  const o = r.operations;
+  const sum = view?.sum;
+  const filtered = isFiltered(filters);
+  const coverage = sum ? pct(sum.recent, sum.total) : pct(r.coverage.scanned, r.coverage.total);
+  const mttr5 = o?.fixedCollected ? o.fixed.bySev["5"]?.mttr ?? null : null;
+  const slaRate = o?.fixedCollected ? o.fixed.all.slaRate : null;
+  const truriskAvg = sum?.truriskAvg ?? e?.truriskAvg ?? null;
+  const truriskValue = truriskAvg == null ? "—" : fmt(truriskAvg);
+  const truriskCount = sum ? sum.truriskN : e?.truriskAssets;
+  const truriskSub = truriskCount == null ? "après le prochain calcul" : (
+    <><span>sur 1 000 · {fmt(truriskCount)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</>
+  );
+  const tierFilter = (t: TruTier[]) => setFilters((f) => ({ ...f, tier: JSON.stringify(f.tier) === JSON.stringify(t) ? undefined : t }));
+  return (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className={`h-full ${view ? clickable(Boolean(filters.tier?.length)) : ""}`} {...(view ? pressable(() => tierFilter(["critical", "high"])) : {})} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
+            <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={truriskValue}
+              help={<>Moyenne du score de risque Qualys (0 à 1 000) des actifs{filtered ? " de la sélection" : " du parc"} : la posture de risque globale. Doit baisser dans le temps.</>}
+              sub={truriskSub} />
+          </div>
+          <div className={`h-full ${view ? clickable(filters.threat === "armed") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" }))) : {})} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
+            {sum ? (
+              <Kpi title="Actifs exploitables" icon={Flame} color="border-l-orange-500" value={fmt(sum.armedAssets)}
+                help={<>Actifs portant au moins une vulnérabilité ouverte exploitée ou exploitable dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
+                sub={<span>{pct(sum.armedAssets, sum.total) ?? 0} % des actifs · dont {fmt(sum.kevAssets)} avec une vulnérabilité CISA KEV</span>} />
+            ) : (
+              <Kpi title="Vulnérabilités exploitables" icon={Flame} color="border-l-orange-500" value={fmt(e ? e.armed.detections : r.kev.detections)}
+                help={<>Vulnérabilités ouvertes exploitées ou exploitables dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
+                sub={e ? <><span>dont {fmt(e.armed.servers)} sur des serveurs</span> <Delta value={trendOver(points, "armed")} lowerIsBetter /></> : "CISA KEV seules (ancien calcul)"} />
+            )}
+          </div>
+          <Kpi title="Respect des délais (SLA)" icon={CheckCircle2} color="border-l-emerald-500" value={slaRate === null ? "—" : `${fmt(slaRate)} %`}
+            help={<>Part des vulnérabilités corrigées dans les délais de la politique de gestion des correctifs ({r.severities.map((x) => `${slaText(x)} pour les ${(SEVERITY_LABELS[x.severity] ?? "").toLowerCase()}`).join(", ")}), sur les {o?.windowDays ?? 90} derniers jours. Tout le parc (non filtré).</>}
+            sub={o?.fixedCollected ? `sur ${fmt(o.fixed.all.fixed)} vulnérabilités corrigées en ${o.windowDays} j` : "après le prochain calcul"} />
+          <Kpi title="MTTR – critiques" icon={Timer} color="border-l-sky-500" value={mttr5 === null ? "—" : `${fmt(mttr5)} j`}
+            help={<>Délai moyen de correction (MTTR) des vulnérabilités critiques, de la détection à la correction. Délai fixé : 7 jours calendaires, une vulnérabilité critique étant traitée comme un incident de sécurité. Tout le parc (non filtré).</>}
+            sub={mttr5 === null ? "après le prochain calcul" : <><span>délai moyen · cible 7 j</span> <Delta value={trendOver(points, "mttr5")} lowerIsBetter unit=" j" /></>} />
+          <div className={`h-full ${view ? clickable(filters.scan === "stale" || filters.scan === "never") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" }))) : {})} title={view ? "Cliquer pour voir les actifs non analysés récemment" : undefined}>
+            <Kpi title="Couverture des scans" icon={Radar} color="border-l-violet-500" value={coverage === null ? "—" : `${coverage} %`}
+              help={<>Part des actifs analysés (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
+              sub={sum ? `${fmt(sum.recent)} actifs sur ${fmt(sum.total)} (${r.coverage.recentDays} derniers jours)` : `${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)} (${r.coverage.recentDays} derniers jours)`} />
+          </div>
+        </div>
+  );
+}
+
 export default function QualysPanel() {
   const { data, error, isLoading } = useQuery({
     queryKey: ["qualys"],
@@ -897,14 +1036,7 @@ export default function QualysPanel() {
   }, [idx]);
   const ctxValue = useMemo(() => ({ filters, setFilters, idx, openAsset, openVuln }), [filters, idx, openAsset, openVuln]);
 
-  const header = (
-    <div>
-      <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
-        <ShieldAlert className="w-7 h-7 text-primary" /> Vulnérabilités — Qualys
-      </h2>
-      <p className="text-sm text-muted-foreground mt-1">Pilotage de la gestion des vulnérabilités : visibilité du parc, exposition aux menaces, efficacité de la remédiation et conformité. Sévérités 3 à 5.</p>
-    </div>
-  );
+  const header = <PanelHeader />;
 
   // On attend aussi le détail par actif : sinon la page s'afficherait d'abord avec les chiffres agrégés,
   // puis changerait de valeurs quelques secondes plus tard
@@ -912,29 +1044,7 @@ export default function QualysPanel() {
     return <div className="space-y-6">{header}<div className="flex items-center justify-center gap-2 py-24 text-muted-foreground"><Loader2 className="w-6 h-6 animate-spin text-primary" /> Chargement de la photo Qualys…</div></div>;
   }
 
-  const banners = (
-    <>
-      {error && (
-        <Card className="border-destructive/40 bg-destructive/5">
-          <CardContent className="p-4 flex items-center gap-2 text-sm text-destructive"><AlertTriangle className="w-4 h-4 shrink-0" /> {(error as Error).message}</CardContent>
-        </Card>
-      )}
-      {data?.lastError && (
-        <Card className="border-amber-500/40 bg-amber-500/5">
-          <CardContent className="p-4 flex items-center gap-2 text-sm text-amber-600">
-            <AlertTriangle className="w-4 h-4 shrink-0" /> Le dernier calcul n&apos;a pas abouti : {data.lastError}
-          </CardContent>
-        </Card>
-      )}
-      {data?.running && (
-        <Card className="border-primary/30 bg-primary/5">
-          <CardContent className="p-4 flex items-center gap-2 text-sm font-semibold text-foreground">
-            <Loader2 className="w-4 h-4 animate-spin text-primary" /> Calcul en cours : {progressLabel(data.running)}
-          </CardContent>
-        </Card>
-      )}
-    </>
-  );
+  const banners = <Banners error={error} data={data} />;
 
   if (!r) {
     return (
@@ -948,66 +1058,16 @@ export default function QualysPanel() {
     );
   }
 
-  const e = r.exposure;
-  const o = r.operations;
-  const sum = view?.sum;
-  const filtered = isFiltered(filters);
-  const coverage = sum ? pct(sum.recent, sum.total) : pct(r.coverage.scanned, r.coverage.total);
-  const mttr5 = o?.fixedCollected ? o.fixed.bySev["5"]?.mttr ?? null : null;
-  const slaRate = o?.fixedCollected ? o.fixed.all.slaRate : null;
-  const truriskAvg = sum?.truriskAvg ?? e?.truriskAvg ?? null;
-  const truriskValue = truriskAvg == null ? "—" : fmt(truriskAvg);
-  const truriskCount = sum ? sum.truriskN : e?.truriskAssets;
-  const truriskSub = truriskCount == null ? "après le prochain calcul" : (
-    <><span>sur 1 000 · {fmt(truriskCount)} actifs</span> {!filtered && <Delta value={trendOver(points, "truriskAvg")} lowerIsBetter />}</>
-  );
-  const tierFilter = (t: TruTier[]) => setFilters((f) => ({ ...f, tier: JSON.stringify(f.tier) === JSON.stringify(t) ? undefined : t }));
-
   return (
     <QualysContext.Provider value={ctxValue}>
       <div className="space-y-6">
         {header}
         {banners}
-        <p className="text-xs text-muted-foreground -mt-3">
-          Photo du {new Date(r.date).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}.
-          {details.data && !details.data.available && <span className="ml-2">Détail par actif (inventaires, fiches, filtres) disponible après le prochain calcul de nuit.</span>}
-          {details.error && <span className="ml-2 text-amber-600">Détail indisponible : {(details.error as Error).message}</span>}
-          {r.details?.error && <span className="ml-2 text-amber-600">Détail partiel : {r.details.error}</span>}
-          {r.details?.kbSkipped ? <span className="ml-2 text-amber-600">{fmt(r.details.kbSkipped)} fiches de vulnérabilités non relues cette nuit (Qualys trop lent) : titres et menaces de la veille ou manquants.</span> : null}
-        </p>
+        <PhotoNote r={r} details={details} />
 
         {view && <FilterBar assets={view.all} shown={view.assets.length} />}
 
-        {/* INDICATEURS CLÉS */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className={`h-full ${view ? clickable(Boolean(filters.tier?.length)) : ""}`} {...(view ? pressable(() => tierFilter(["critical", "high"])) : {})} title={view ? "Cliquer pour filtrer sur les actifs à risque critique ou élevé" : undefined}>
-            <Kpi title="Score de risque moyen (TruRisk)" icon={Gauge} color="border-l-red-500" value={truriskValue}
-              help={<>Moyenne du score de risque Qualys (0 à 1 000) des actifs{filtered ? " de la sélection" : " du parc"} : la posture de risque globale. Doit baisser dans le temps.</>}
-              sub={truriskSub} />
-          </div>
-          <div className={`h-full ${view ? clickable(filters.threat === "armed") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, threat: f.threat === "armed" ? undefined : "armed" }))) : {})} title={view ? "Cliquer pour filtrer sur ces actifs" : undefined}>
-            {sum ? (
-              <Kpi title="Actifs exploitables" icon={Flame} color="border-l-orange-500" value={fmt(sum.armedAssets)}
-                help={<>Actifs portant au moins une vulnérabilité ouverte exploitée ou exploitable dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
-                sub={<span>{pct(sum.armedAssets, sum.total) ?? 0} % des actifs · dont {fmt(sum.kevAssets)} avec une vulnérabilité CISA KEV</span>} />
-            ) : (
-              <Kpi title="Vulnérabilités exploitables" icon={Flame} color="border-l-orange-500" value={fmt(e ? e.armed.detections : r.kev.detections)}
-                help={<>Vulnérabilités ouvertes exploitées ou exploitables dès maintenant : CISA KEV, ransomware, attaques actives, exploit public.</>}
-                sub={e ? <><span>dont {fmt(e.armed.servers)} sur des serveurs</span> <Delta value={trendOver(points, "armed")} lowerIsBetter /></> : "CISA KEV seules (ancien calcul)"} />
-            )}
-          </div>
-          <Kpi title="Respect des délais (SLA)" icon={CheckCircle2} color="border-l-emerald-500" value={slaRate === null ? "—" : `${fmt(slaRate)} %`}
-            help={<>Part des vulnérabilités corrigées dans les délais de la politique de gestion des correctifs ({r.severities.map((x) => `${slaText(x)} pour les ${(SEVERITY_LABELS[x.severity] ?? "").toLowerCase()}`).join(", ")}), sur les {o?.windowDays ?? 90} derniers jours. Tout le parc (non filtré).</>}
-            sub={o?.fixedCollected ? `sur ${fmt(o.fixed.all.fixed)} vulnérabilités corrigées en ${o.windowDays} j` : "après le prochain calcul"} />
-          <Kpi title="MTTR – critiques" icon={Timer} color="border-l-sky-500" value={mttr5 === null ? "—" : `${fmt(mttr5)} j`}
-            help={<>Délai moyen de correction (MTTR) des vulnérabilités critiques, de la détection à la correction. Délai fixé : 7 jours calendaires, une vulnérabilité critique étant traitée comme un incident de sécurité. Tout le parc (non filtré).</>}
-            sub={mttr5 === null ? "après le prochain calcul" : <><span>délai moyen · cible 7 j</span> <Delta value={trendOver(points, "mttr5")} lowerIsBetter unit=" j" /></>} />
-          <div className={`h-full ${view ? clickable(filters.scan === "stale" || filters.scan === "never") : ""}`} {...(view ? pressable(() => setFilters((f) => ({ ...f, scan: f.scan === "stale" ? undefined : "stale" }))) : {})} title={view ? "Cliquer pour voir les actifs non analysés récemment" : undefined}>
-            <Kpi title="Couverture des scans" icon={Radar} color="border-l-violet-500" value={coverage === null ? "—" : `${coverage} %`}
-              help={<>Part des actifs analysés (agent ou scanner) dans les {r.coverage.recentDays} derniers jours.</>}
-              sub={sum ? `${fmt(sum.recent)} actifs sur ${fmt(sum.total)} (${r.coverage.recentDays} derniers jours)` : `${fmt(r.coverage.scanned)} actifs sur ${fmt(r.coverage.total)} (${r.coverage.recentDays} derniers jours)`} />
-          </div>
-        </div>
+        <KeyIndicators r={r} view={view} points={points} filters={filters} setFilters={setFilters} />
 
         <VisibilityAxis r={r} d={view} />
         <ExposureAxis r={r} d={view} />

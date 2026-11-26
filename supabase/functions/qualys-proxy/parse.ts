@@ -48,7 +48,7 @@ const DAY = 24 * 3600 * 1000;
 
 /** Contenu d'une balise (premier niveau trouvé), CDATA retiré. */
 export function tag(s: string, name: string): string | null {
-  const m = s.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`));
+  const m = new RegExp(String.raw`<${name}(?:\s[^>]*)?>([\s\S]*?)</${name}>`).exec(s);
   if (!m) return null;
   return m[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/, "$1").trim();
 }
@@ -72,7 +72,7 @@ export function* blocks(s: string, name: string): Generator<string> {
  */
 export function leaves(xml: string, skip: readonly string[] = []): Record<string, string> {
   let s = xml;
-  for (const k of skip) s = s.replace(new RegExp(`<${k}(?:\\s[^>]*)?>[\\s\\S]*?</${k}>`, "g"), "");
+  for (const k of skip) s = s.replace(new RegExp(String.raw`<${k}(?:\s[^>]*)?>[\s\S]*?</${k}>`, "g"), "");
   const out: Record<string, string> = {};
   for (const m of s.matchAll(/<([A-Za-z_][\w.-]*)(?:\s[^>]*)?>(?:\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*|([^<]*))<\/\1>/g)) {
     const v = (m[2] ?? m[3] ?? "").trim();
@@ -84,7 +84,7 @@ export function leaves(xml: string, skip: readonly string[] = []): Record<string
 /** Date ISO, ou null si illisible. */
 const isoOrNull = (v: unknown): string | null => {
   if (v === null || v === undefined || v === "") return null;
-  const t = typeof v === "number" ? v : Date.parse(String(v));
+  const t = typeof v === "number" ? v : Date.parse(typeof v === "string" ? v : "");
   return Number.isFinite(t) && t > 0 ? new Date(t).toISOString() : null;
 };
 
@@ -330,6 +330,28 @@ function countQid(qids: Record<string, QidStat>, det: Det, type: AssetType) {
   if (type === "server") q[6]++;
 }
 
+/**
+ * Compte une détection d'un actif. Renvoie la détection si elle est ouverte (ni désactivée,
+ * ni hors des sévérités suivies, ni en dérogation), sinon null.
+ */
+function countDetection(acc: DetectionsAgg, row: AssetVulnRow, d: string, type: AssetType, now: number): Det | null {
+  const sev = Number(tag(d, "SEVERITY"));
+  if (!acc.bySev[sev] || tag(d, "IS_DISABLED") === "1") return null;
+  const det = readDetection(d, sev, now);
+  if (tag(d, "IS_IGNORED") === "1") {
+    row.detections.push(detectionRow(d, det, "I"));
+    countIgnored(acc, row, det);
+    return null;
+  }
+  if (/potential/i.test(tag(d, "TYPE") ?? "")) acc.potential++;
+  const st = detectionStatus(tag(d, "STATUS") ?? "");
+  row.detections.push(detectionRow(d, det, st));
+  countOpenOnHost(row, det, st);
+  countOpen(acc, det, st, type);
+  countQid(acc.qids, det, type);
+  return det;
+}
+
 /** Vulnérabilités ouvertes d'une page d'actifs. `eolQids` : produits en fin de vie connus. */
 export function detectionsPage(xml: string, now: number, eolQids: readonly string[] = []) {
   const acc = newDetectionsAgg();
@@ -341,21 +363,8 @@ export function detectionsPage(xml: string, now: number, eolQids: readonly strin
     let hasEol = false;
     const row: AssetVulnRow = { host_id: Number(tag(head, "ID")), d5: 0, d4: 0, d3: 0, overdue: 0, ignored: 0, reopened: 0, qds_max: 0, qids: [], detections: [] };
     for (const d of blocks(h, "DETECTION")) {
-      const sev = Number(tag(d, "SEVERITY"));
-      if (!acc.bySev[sev] || tag(d, "IS_DISABLED") === "1") continue;
-      const det = readDetection(d, sev, now);
-      if (tag(d, "IS_IGNORED") === "1") {
-        row.detections.push(detectionRow(d, det, "I"));
-        countIgnored(acc, row, det);
-        continue;
-      }
-      if (/potential/i.test(tag(d, "TYPE") ?? "")) acc.potential++;
-      const st = detectionStatus(tag(d, "STATUS") ?? "");
-      row.detections.push(detectionRow(d, det, st));
-      countOpenOnHost(row, det, st);
-      countOpen(acc, det, st, type);
-      countQid(acc.qids, det, type);
-      if (det.qid && eolSet.has(det.qid)) hasEol = true;
+      const det = countDetection(acc, row, d, type, now);
+      if (det?.qid && eolSet.has(det.qid)) hasEol = true;
     }
     if (hasEol) acc.eol[type]++;
     if (Number.isFinite(row.host_id) && row.detections.length) acc.rows.push(row);
@@ -985,7 +994,7 @@ const toFix = (r: FixedRow): FixStat => ({ n: r.n, inSla: r.in_sla, daysSum: Num
 
 /** Chiffres partiels : premier mois des données commencé en cours de mois, ou mois en cours. */
 function monthPartial(m: string, firstDay: string | null, now: number): "start" | "current" | null {
-  if (firstDay && m === firstDay.slice(0, 7) && !firstDay.endsWith("-01")) return "start";
+  if (m === firstDay?.slice(0, 7) && !firstDay.endsWith("-01")) return "start";
   if (m === new Date(now).toISOString().slice(0, 7)) return "current";
   return null;
 }
@@ -1132,7 +1141,7 @@ function policyStats(posture: Row[], policyTitles: Record<string, string>) {
 
 /** Politiques non réévaluées cette nuit : dernier résultat connu, avec sa date. */
 function carriedPolicies(previous: Row[], freshIds: Set<string>, pcMeta: Row | null, policyTitles: Record<string, string>) {
-  if (pcMeta && !((pcMeta.total ?? 0) > 0)) return [];
+  if (pcMeta && (pcMeta.total ?? 0) <= 0) return [];
   return previous.filter((p) => p && !freshIds.has(p.id)).map((p) => ({
     id: String(p.id), title: policyTitles[p.id] ?? String(p.title ?? `Politique ${p.id}`),
     hosts: Number(p.hosts) || 0, compliantHosts: Number(p.compliantHosts) || 0,
