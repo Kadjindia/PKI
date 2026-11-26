@@ -55,8 +55,5 @@ REVOKE ALL ON FUNCTION public.call_varonis_posture(boolean) FROM PUBLIC, anon, a
 SELECT cron.schedule('varonis-posture-nuit',   '0 4 * * *',   $$ SELECT public.call_varonis_posture(true) $$);
 SELECT cron.schedule('varonis-posture-avance', '*/2 * * * *', $$ SELECT public.call_varonis_posture(false) $$);
 
--- Vérifications utiles :
---   SELECT * FROM cron.job_run_details ORDER BY start_time DESC LIMIT 10;
---   SELECT id, status, code, content FROM net._http_response ORDER BY created DESC LIMIT 10;
---   SELECT status, trigger, started_at, finished_at, last_error FROM public.varonis_posture_snapshots ORDER BY started_at DESC LIMIT 5;
--- Lancer un calcul tout de suite : SELECT public.call_varonis_posture(true);
+-- Vérifications : voir controles_planification.sql.
+-- Lancer un calcul tout de suite : appeler la fonction public.call_varonis_posture avec le paramètre true.

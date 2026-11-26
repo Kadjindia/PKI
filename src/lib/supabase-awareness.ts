@@ -92,7 +92,8 @@ export const fetchPhishingProfiles = async (): Promise<PhishingProfile[]> => {
 
   // Boucle pour contourner la limite des 1000 résultats de Supabase
   while (hasMore) {
-    const { data, error } = await supabase
+    // Pages lues l'une après l'autre (la suivante dépend de la précédente)
+    const { data, error } = await supabase // NOSONAR
       .from('phishing_profiles')
       .select('*')
       .range(from, from + step - 1);
@@ -146,6 +147,13 @@ export async function upsertPhishingProfiles(profiles: PhishingProfile[]): Promi
 
   const { error } = await (supabase as any).from('phishing_profiles').upsert(payload, { onConflict: 'email' });
   if (error) throw error;
+}
+
+/** Enregistre les profils par paquets de 500, l'un après l'autre (taille des requêtes limitée). */
+export async function upsertPhishingProfilesInBatches(profiles: PhishingProfile[], size = 500): Promise<void> {
+  for (let i = 0; i < profiles.length; i += size) {
+    await upsertPhishingProfiles(profiles.slice(i, i + size)); // NOSONAR : paquets envoyés un par un, volontairement
+  }
 }
 
 // API E-LEARNING

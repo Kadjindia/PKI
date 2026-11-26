@@ -134,7 +134,7 @@ Mise en place :
 
 1. appliquer la migration `20261116090000_qualys_snapshots.sql` ;
 2. ajouter les secrets `QUALYS_USERNAME` et `QUALYS_PASSWORD`, puis déployer `qualys-proxy` ;
-3. exécuter une fois `supabase/sql/planification_qualys.sql` après y avoir renseigné l'URL de la fonction : calcul chaque nuit à 1 h UTC, avancement toutes les 2 minutes.
+3. exécuter une fois `supabase/sql/planification_qualys.sql` après y avoir renseigné l'URL de la fonction : calcul chaque soir à 20 h UTC (4 à 5 h de calcul), avancement toutes les 2 minutes. `supabase/sql/controles_planification.sql` regroupe les requêtes de contrôle.
 
 Délais de correction cibles : 15 jours (sévérité 5), 30 jours (sévérité 4), à modifier dans `supabase/functions/qualys-proxy/parse.ts` (`SLA_DAYS`).
 

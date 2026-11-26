@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchPhishingCampaigns, createPhishingCampaign, deletePhishingCampaign,
-  fetchPhishingProfiles, upsertPhishingProfiles, PhishingProfile,
+  fetchPhishingProfiles, upsertPhishingProfiles, upsertPhishingProfilesInBatches, PhishingProfile,
   fetchElearningModules, createElearningModule, updateElearningModule, deleteElearningModule,
   PhishingCampaign, ElearningModule
 } from "@/lib/supabase-awareness";
@@ -902,7 +902,7 @@ export default function AwarenessView() {
         clickedCount: 0, clicked_count: 0, compromisedCount: 0, compromised_count: 0, trainingCompletedCount: 0, training_completed_count: 0,
         reportedCount: 0, reported_count: 0, riskScore: 0, lastCampaignClicked: false, isConsecutive: false, is_consecutive: false
       }));
-      for (let i = 0; i < resetProfiles.length; i += 500) await upsertPhishingProfiles(resetProfiles.slice(i, i + 500) as any);
+      await upsertPhishingProfilesInBatches(resetProfiles as any);
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Tous les compteurs ont été purgés !"); setIsResetProfilesOpen(false); }
   });
@@ -910,7 +910,7 @@ export default function AwarenessView() {
   const addCampaignMutation = useMutation({
     mutationFn: async () => {
       await createPhishingCampaign({ ...newCampaign, detailed_results: newCampaign.detailedResults } as any);
-      for (let i = 0; i < updatedProfilesBatch.length; i += 500) await upsertPhishingProfiles(updatedProfilesBatch.slice(i, i + 500));
+      await upsertPhishingProfilesInBatches(updatedProfilesBatch);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['phishing'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] });
@@ -942,7 +942,7 @@ export default function AwarenessView() {
             profilesToUpdate.push(p);
           }
         });
-        for (let i = 0; i < profilesToUpdate.length; i += 500) await upsertPhishingProfiles(profilesToUpdate.slice(i, i + 500));
+        await upsertPhishingProfilesInBatches(profilesToUpdate);
       }
       await deletePhishingCampaign(campaign.id);
     },
@@ -958,7 +958,7 @@ export default function AwarenessView() {
       };
       if (parsedLmsData.selectedModuleId !== "new") await updateElearningModule(parsedLmsData.selectedModuleId, payload as any);
       else await createElearningModule(payload as any);
-      for (let i = 0; i < updatedProfilesBatch.length; i += 500) await upsertPhishingProfiles(updatedProfilesBatch.slice(i, i + 500));
+      await upsertPhishingProfilesInBatches(updatedProfilesBatch);
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success("Statistiques synchronisées !"); setIsLmsImportOpen(false); }
   });
@@ -978,7 +978,7 @@ export default function AwarenessView() {
             profilesToUpdate.push(p);
           }
         });
-        for (let i = 0; i < profilesToUpdate.length; i += 500) await upsertPhishingProfiles(profilesToUpdate.slice(i, i + 500));
+        await upsertPhishingProfilesInBatches(profilesToUpdate);
       }
       await deleteElearningModule(module.id);
     },
@@ -1025,7 +1025,7 @@ export default function AwarenessView() {
       const newCompletedBy = [...existingCompletedEmails, ...newlyCompletedEmails];
       await updateElearningModule(moduleId, { completedCount: newCompletedCount, completed_count: newCompletedCount, completedBy: newCompletedBy, completed_by: newCompletedBy } as any);
 
-      for (let i = 0; i < profilesToUpdate.length; i += 500) await upsertPhishingProfiles(profilesToUpdate.slice(i, i + 500));
+      await upsertPhishingProfilesInBatches(profilesToUpdate);
       return completedAdded;
     },
     onSuccess: (added) => { queryClient.invalidateQueries({ queryKey: ['elearning'] }); queryClient.invalidateQueries({ queryKey: ['profiles'] }); toast.success(`${added} présences validées !`); setIsAttendanceModalOpen(false); setAttendanceEmails(""); }
