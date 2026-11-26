@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // --- Secrets configurés côté Supabase (Project Settings > Edge Functions > Secrets) ---
 const VARONIS_BASE_URL = Deno.env.get("VARONIS_BASE_URL"); // ex: https://tenant.varonis.io
@@ -73,7 +73,7 @@ const TOKEN_REUSE_MS = 5 * 60 * 1000;
 /** Étape 1 : échange la clé API Varonis contre un bearer token de courte durée. */
 async function getVaronisAccessToken(baseUrl: string, apiKey: string): Promise<string> {
   const key = `${baseUrl}|${apiKey}`;
-  if (cachedToken && cachedToken.key === key && cachedToken.until > Date.now()) return cachedToken.value;
+  if (cachedToken?.key === key && cachedToken.until > Date.now()) return cachedToken.value;
   const res = await fetch(`${baseUrl}${AUTH_ENDPOINT}`, {
     method: "POST",
     headers: {
@@ -399,7 +399,7 @@ function inactiveBucketQuery(from: number, to: number | null): PostureQuery {
           newerThanRange: ages.filter((d) => d <= from).length,
           olderThanRange: to === null ? 0 : ages.filter((d) => d > to).length,
           youngestDays: ages.length ? Math.round(ages[0]) : null,
-          oldestDays: ages.length ? Math.round(ages[ages.length - 1]) : null,
+          oldestDays: ages.length ? Math.round(ages.at(-1)!) : null,
         },
       };
     },
@@ -485,7 +485,7 @@ const SIZE_MAX = Number.MAX_SAFE_INTEGER;
 
 /** Clé d'une partition : « zonesTotal:<source> » ou « zonesTotal:<source>:<lo>:<hi> ». */
 function parseZonesTotalKey(key: string): { source: number; lo: number; hi: number; sized: boolean } | null {
-  const m = key.slice(ZONES_TOTAL_PREFIX.length).match(/^(\d+)(?::(-?\d+):(\d+))?$/);
+  const m = /^(\d+)(?::(-?\d+):(\d+))?$/.exec(key.slice(ZONES_TOTAL_PREFIX.length));
   if (!m) return null;
   return { source: Number(m[1]), lo: m[2] ? Number(m[2]) : SIZE_MIN, hi: m[3] ? Number(m[3]) : SIZE_MAX, sized: Boolean(m[2]) };
 }
@@ -512,7 +512,7 @@ async function previousPartitions(admin: Admin): Promise<Map<number, string[]>> 
     for (const [source, parts] of bySource) {
       parts.sort((a, b) => a.lo - b.lo);
       // Contiguïté : chaque tranche ]lo ; hi[ enchaîne avec la suivante (hi - 1 = lo suivant)
-      const covers = parts[0].lo === SIZE_MIN && parts[parts.length - 1].hi === SIZE_MAX
+      const covers = parts[0].lo === SIZE_MIN && parts.at(-1)!.hi === SIZE_MAX
         && parts.every((p, i) => i === 0 || parts[i - 1].hi - 1 === p.lo);
       if (covers) result.set(source, parts.map((p) => p.key));
     }
@@ -687,7 +687,7 @@ function classifyVaronisError(message: string): { code: string; error: string; f
   if (message.includes("AUTH_NOT_AUTHORIZED") || /not authorized/i.test(message)) {
     return { code: "unauthorized", error: "La clé d'API Varonis n'a pas le droit de lire ces données." };
   }
-  const field = message.match(/"path":\["where","(\w+)"\]/)?.[1];
+  const field = /"path":\["where","(\w+)"\]/.exec(message)?.[1];
   if (field) {
     return { code: "filter", field, error: `Varonis a rejeté le filtre « ${field} » (erreur interne, souvent liée aux droits).` };
   }
@@ -752,8 +752,10 @@ const CRON_BUDGET_MS = 100_000;
 const STEP_MARGIN_MS = 30_000;
 const SNAPSHOT_COLUMNS = "id, status, trigger, results, last_error, started_at, finished_at";
 
+/** Client Supabase avec la clé de service (base non typée). */
 // deno-lint-ignore no-explicit-any
-type Admin = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Admin = SupabaseClient<any, "public", any>;
 interface Snapshot {
   id: string; status: "running" | "done"; trigger: string; results: Record<string, Row>;
   last_error: string | null; started_at: string; finished_at: string | null;
@@ -778,7 +780,7 @@ async function latestSnapshots(admin: Admin): Promise<{ latest: Snapshot | null;
 }
 
 /** Photo en cours (id et début seulement, sans les résultats volumineux). */
-async function runningSnapshot(admin: Admin): Promise<Snapshot | null> {
+async function runningSnapshot(admin: Admin): Promise<Pick<Snapshot, "id" | "status" | "started_at"> | null> {
   const { data, error } = await admin.from("varonis_posture_snapshots").select("id, status, started_at")
     .eq("status", "running").limit(1).maybeSingle();
   if (error) throw new Error(error.message);
@@ -818,7 +820,7 @@ const HISTORY_FROM = "2026-10-27T00:00:00Z";
 
 /** Valeur exploitable d'un indicateur : terminé, non plafonné, non reprise d'une photo antérieure. */
 function reliable(r: Row | undefined, field = "count"): number | null {
-  if (!r || r.status !== "done" || r.capped || r.carriedFrom) return null;
+  if (r?.status !== "done" || r.capped || r.carriedFrom) return null;
   const v = r[field];
   return typeof v === "number" ? v : null;
 }
@@ -915,7 +917,105 @@ function launchRank(key: string): number {
 /** Résultat d'une étape : avancée, ou rien fait (étape en cours ailleurs, pause « trop de requêtes »). */
 type StepOutcome = "advanced" | "skipped" | "backoff";
 
-async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, snap: Snapshot): Promise<StepOutcome> {
+/** Contexte d'une étape du calcul : client, accès Varonis, horloge et références de la photo. */
+interface StepCtx { admin: Admin; baseUrl: string; token: string; now: number; ref: number; snapId: string; startedAt: string }
+
+/** Nouvel état d'une recherche déjà lancée, d'après le job Varonis. */
+async function pendingResult(c: StepCtx, key: string, entry: Row): Promise<Row> {
+  const q = queryFor(key);
+  if (!q) return { status: "error", error: "Indicateur inconnu" };
+  const job = await checkPostureJob(c.baseUrl, c.token, q, entry.jobId);
+  if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
+    const rows = (job.results ?? []) as Row[];
+    const seconds = entry.startedAt ? Math.round((c.now - new Date(entry.startedAt).getTime()) / 1000) : null;
+    const done: Row = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, seconds, doneAt: new Date(c.now).toISOString(), ...q.summarize(rows, c.ref) };
+    return await storeLists(c.admin, c.snapId, key, done);
+  }
+  if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") return failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
+  // Heure de lancement inconnue (photo antérieure) : début de la photo
+  const launched = new Date(entry.startedAt ?? c.startedAt).getTime();
+  if (c.now - launched <= JOB_TIMEOUT_MS) return { ...entry, progress: job.jobProgress ?? null };
+  const attempts = (entry.attempts ?? 0) + 1;
+  const error = `Varonis n'a pas terminé la recherche en ${JOB_TIMEOUT_MS / 60000} min`;
+  return attempts < TIMEOUT_ATTEMPTS ? { status: "queued", attempts, lastError: error } : { status: "error", code: "timeout", attempts, error };
+}
+
+/** 1. Jobs déjà lancés. Une limite de requêtes Varonis interrompt l'étape. */
+async function checkPendingJobs(c: StepCtx, results: Record<string, Row>) {
+  for (const [key, entry] of Object.entries(results)) {
+    if (entry.status !== "pending") continue;
+    try {
+      results[key] = await pendingResult(c, key, entry); // NOSONAR : un job Varonis à la fois (limite de requêtes)
+    } catch (e) {
+      if (isRateLimited(e)) throw e;
+      results[key] = failOrRetry(entry, e);
+    }
+  }
+}
+
+/**
+ * 1 bis. Sources de données connues : une recherche « total » par source. Une source déjà
+ * découpée par taille lors de la photo précédente repart de ce découpage (une partie
+ * redevenue trop grosse sera redécoupée normalement).
+ */
+async function expandDataSources(admin: Admin, results: Record<string, Row>) {
+  const ds = results.dataSources;
+  if (ds?.status !== "done" || ds.expanded) return;
+  const known = await previousPartitions(admin);
+  for (const src of (ds.sources ?? []) as Row[]) {
+    if (!/^\d+$/.test(src.id)) continue;
+    const parts = known.get(Number(src.id));
+    for (const key of parts ?? [`${ZONES_TOTAL_PREFIX}${src.id}`]) results[key] = { status: "queued", attempts: 0 };
+  }
+  results.dataSources = { ...ds, expanded: true };
+}
+
+/** 1 ter. Partition plafonnée : redécoupée en deux tranches de taille de dossier. */
+function splitCappedPartitions(results: Record<string, Row>) {
+  for (const [key, entry] of Object.entries(results)) {
+    if (!key.startsWith(ZONES_TOTAL_PREFIX) || entry.status !== "done" || !entry.capped || entry.split) continue;
+    const k = parseZonesTotalKey(key);
+    const parts = k && splitSizeRange(k.lo, k.hi);
+    if (!k || !parts) continue; // ne se coupe plus : reste signalé comme plafonné
+    const [lo, mid, hi] = parts;
+    results[key] = { ...entry, split: true, top: undefined };
+    // ]lo ; mid] et ]mid ; hi[ : « lt » est strict, d'où mid + 1
+    results[`${ZONES_TOTAL_PREFIX}${k.source}:${lo}:${mid + 1}`] = { status: "queued", attempts: 0 };
+    results[`${ZONES_TOTAL_PREFIX}${k.source}:${mid}:${hi}`] = { status: "queued", attempts: 0 };
+  }
+}
+
+/**
+ * 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS. Les plus longs d'abord
+ * (recherches sur les dossiers, puis les comptes) : les courts se glissent dans les
+ * places libérées pendant que les longs tournent, la photo se termine plus tôt.
+ */
+async function launchQueuedJobs(c: StepCtx, results: Record<string, Row>) {
+  const launchOrder = Object.entries(results).sort(([a], [b]) => launchRank(a) - launchRank(b));
+  for (const [key, entry] of launchOrder) {
+    if (Object.values(results).filter((r) => r.status === "pending").length >= MAX_RUNNING_JOBS) break;
+    if (entry.status !== "queued") continue;
+    try {
+      const q = queryFor(key);
+      if (!q) { results[key] = { status: "error", error: "Indicateur inconnu" }; continue; }
+      const jobId = await startPostureJob(c.baseUrl, c.token, q, c.ref); // NOSONAR : lancements un par un (limite de requêtes)
+      results[key] = { status: "pending", jobId, attempts: entry.attempts ?? 0, progress: null, startedAt: new Date().toISOString() };
+    } catch (e) {
+      if (isRateLimited(e)) throw e;
+      results[key] = failOrRetry(entry, e);
+    }
+  }
+}
+
+/** 3. Calcul trop long : ce qui reste est abandonné. */
+function abandonIfTooLong(results: Record<string, Row>, startedAt: string, now: number) {
+  if (now - new Date(startedAt).getTime() <= RUN_TIMEOUT_MS) return;
+  for (const [key, entry] of Object.entries(results)) {
+    if (entry.status === "queued" || entry.status === "pending") results[key] = { status: "error", code: "timeout", attempts: entry.attempts };
+  }
+}
+
+async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, snap: Pick<Snapshot, "id">): Promise<StepOutcome> {
   const now = Date.now();
   const { data: claimed, error: claimError } = await admin.from("varonis_posture_snapshots")
     .update({ step_lock_until: new Date(now + STEP_LEASE_MS).toISOString() })
@@ -925,90 +1025,17 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
   if (!claimed) return "skipped"; // étape déjà en cours ailleurs, ou trop tôt
 
   const results: Record<string, Row> = { ...claimed.results };
-  const ref = new Date(claimed.started_at).getTime(); // référence commune des dates de la photo
   let lastError: string | null = null;
   let nextStepIn = STEP_INTERVAL_MS;
 
   try {
     const token = await getVaronisAccessToken(baseUrl, apiKey);
-
-    // 1. Jobs déjà lancés
-    for (const [key, entry] of Object.entries(results)) {
-      if (entry.status !== "pending") continue;
-      const q = queryFor(key);
-      if (!q) { results[key] = { status: "error", error: "Indicateur inconnu" }; continue; }
-      try {
-        const job = await checkPostureJob(baseUrl, token, q, entry.jobId);
-        if (job.jobStatus === "COMPLETED" || job.jobStatus === "PARTIAL_RESULTS") {
-          const rows = (job.results ?? []) as Row[];
-          const seconds = entry.startedAt ? Math.round((now - new Date(entry.startedAt).getTime()) / 1000) : null;
-          const done: Row = { status: "done", partial: job.jobStatus === "PARTIAL_RESULTS", capped: rows.length >= RESULT_CAP, seconds, doneAt: new Date(now).toISOString(), ...q.summarize(rows, ref) };
-          results[key] = await storeLists(admin, snap.id, key, done);
-        } else if (job.jobStatus === "FAILED" || job.jobStatus === "CANCELED") {
-          results[key] = failOrRetry(entry, new Error(`Job Varonis ${job.jobStatus}`));
-        } else {
-          // Heure de lancement inconnue (photo antérieure) : début de la photo
-          const launched = new Date(entry.startedAt ?? claimed.started_at).getTime();
-          if (now - launched > JOB_TIMEOUT_MS) {
-            const attempts = (entry.attempts ?? 0) + 1;
-            const error = `Varonis n'a pas terminé la recherche en ${JOB_TIMEOUT_MS / 60000} min`;
-            results[key] = attempts < TIMEOUT_ATTEMPTS
-              ? { status: "queued", attempts, lastError: error }
-              : { status: "error", code: "timeout", attempts, error };
-          } else {
-            results[key] = { ...entry, progress: job.jobProgress ?? null };
-          }
-        }
-      } catch (e) {
-        if (isRateLimited(e)) throw e;
-        results[key] = failOrRetry(entry, e);
-      }
-    }
-
-    // 1 bis. Sources de données connues : une recherche « total » par source
-    const ds = results.dataSources;
-    if (ds?.status === "done" && !ds.expanded) {
-      // Une source déjà découpée par taille lors de la photo précédente repart de ce
-      // découpage (une partie redevenue trop grosse sera redécoupée normalement)
-      const known = await previousPartitions(admin);
-      for (const src of (ds.sources ?? []) as Row[]) {
-        if (!/^\d+$/.test(src.id)) continue;
-        const parts = known.get(Number(src.id));
-        for (const key of parts ?? [`${ZONES_TOTAL_PREFIX}${src.id}`]) results[key] = { status: "queued", attempts: 0 };
-      }
-      results.dataSources = { ...ds, expanded: true };
-    }
-
-    // 1 ter. Partition plafonnée : redécoupée en deux tranches de taille de dossier
-    for (const [key, entry] of Object.entries(results)) {
-      if (!key.startsWith(ZONES_TOTAL_PREFIX) || entry.status !== "done" || !entry.capped || entry.split) continue;
-      const k = parseZonesTotalKey(key);
-      const parts = k && splitSizeRange(k.lo, k.hi);
-      if (!k || !parts) continue; // ne se coupe plus : reste signalé comme plafonné
-      const [lo, mid, hi] = parts;
-      results[key] = { ...entry, split: true, top: undefined };
-      // ]lo ; mid] et ]mid ; hi[ : « lt » est strict, d'où mid + 1
-      results[`${ZONES_TOTAL_PREFIX}${k.source}:${lo}:${mid + 1}`] = { status: "queued", attempts: 0 };
-      results[`${ZONES_TOTAL_PREFIX}${k.source}:${mid}:${hi}`] = { status: "queued", attempts: 0 };
-    }
-
-    // 2. Nouveaux jobs, dans la limite de MAX_RUNNING_JOBS. Les plus longs d'abord
-    // (recherches sur les dossiers, puis les comptes) : les courts se glissent dans les
-    // places libérées pendant que les longs tournent, la photo se termine plus tôt.
-    const launchOrder = Object.entries(results).sort(([a], [b]) => launchRank(a) - launchRank(b));
-    for (const [key, entry] of launchOrder) {
-      if (Object.values(results).filter((r) => r.status === "pending").length >= MAX_RUNNING_JOBS) break;
-      if (entry.status !== "queued") continue;
-      try {
-        const q = queryFor(key);
-        if (!q) { results[key] = { status: "error", error: "Indicateur inconnu" }; continue; }
-        const jobId = await startPostureJob(baseUrl, token, q, ref);
-        results[key] = { status: "pending", jobId, attempts: entry.attempts ?? 0, progress: null, startedAt: new Date().toISOString() };
-      } catch (e) {
-        if (isRateLimited(e)) throw e;
-        results[key] = failOrRetry(entry, e);
-      }
-    }
+    // Référence commune des dates de la photo : son début
+    const c: StepCtx = { admin, baseUrl, token, now, ref: new Date(claimed.started_at).getTime(), snapId: snap.id, startedAt: claimed.started_at };
+    await checkPendingJobs(c, results);
+    await expandDataSources(admin, results);
+    splitCappedPartitions(results);
+    await launchQueuedJobs(c, results);
   } catch (e) {
     if (isRateLimited(e)) {
       lastError = "Limite de requêtes Varonis atteinte : reprise automatique dans 2 minutes";
@@ -1017,13 +1044,7 @@ async function advanceSnapshot(admin: Admin, baseUrl: string, apiKey: string, sn
       lastError = classifyVaronisError((e as Error).message).error;
     }
   }
-
-  // 3. Calcul trop long : ce qui reste est abandonné
-  if (now - new Date(claimed.started_at).getTime() > RUN_TIMEOUT_MS) {
-    for (const [key, entry] of Object.entries(results)) {
-      if (entry.status === "queued" || entry.status === "pending") results[key] = { status: "error", code: "timeout", attempts: entry.attempts };
-    }
-  }
+  abandonIfTooLong(results, claimed.started_at, now);
 
   const finished = Object.values(results).every((r) => r.status === "done" || r.status === "error");
   if (finished) await carryOverFailures(admin, results);
@@ -1201,7 +1222,7 @@ async function handlePosture(action: string, body: Row, baseUrl: string, apiKey:
     // Tâche planifiée (toutes les 2 min) : enchaîne les étapes pendant CRON_BUDGET_MS,
     // à STEP_INTERVAL_MS d'intervalle, au lieu d'une seule étape par passage
     const deadline = Date.now() + CRON_BUDGET_MS;
-    let running = state.running;
+    let running: Pick<Snapshot, "id"> | null = state.running;
     while (running) {
       const outcome = await advanceSnapshot(admin, baseUrl, apiKey, running);
       running = await runningSnapshot(admin);

@@ -108,6 +108,13 @@ function formatBucket(t: number, g: Granularity): string {
   return d.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
 }
 
+/** Hausse (rouge), baisse (verte) ou stabilité, selon le signe de l'écart. */
+const TREND: Record<number, { Icon: typeof Minus; color: string }> = {
+  1: { Icon: TrendingUp, color: "text-red-500" },
+  [-1]: { Icon: TrendingDown, color: "text-emerald-500" },
+  0: { Icon: Minus, color: "text-muted-foreground" },
+};
+
 /**
  * Comparaison avec la période précédente de même durée, en clair :
  * « contre 173 sur la période précédente ». Rouge si hausse, vert si baisse.
@@ -116,9 +123,7 @@ function PreviousPeriod({ current, previous, comparable }: { readonly current: n
   if (!comparable) {
     return <span className="text-[11px] text-muted-foreground">Pas de données pour la période précédente</span>;
   }
-  const delta = current - previous;
-  const Icon = delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus;
-  const color = delta > 0 ? "text-red-500" : delta < 0 ? "text-emerald-500" : "text-muted-foreground";
+  const { Icon, color } = TREND[Math.sign(current - previous)];
   return (
     <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${color}`}>
       <Icon className="w-3 h-3 shrink-0" /> contre {previous.toLocaleString("fr-FR")} sur la période précédente
@@ -133,40 +138,12 @@ const clickable = (active: boolean, dimmed: boolean) =>
 /** Alertes de sévérité élevée levées (ouvertes ou fermées). */
 const countHigh = (list: VaronisAlert[]) => list.filter((a) => normalizeSeverity(a.policy?.severity) === "high").length;
 
-export default function VaronisPanel() {
-  const queryClient = useQueryClient();
-  const [timePrefix, setTimePrefix] = useState<TimePrefix>("last");
-  const [timeValue, setTimeValue] = useState<number>(30);
-  const [timeUnit, setTimeUnit] = useState<TimeUnit>("days");
-  const [showDetails, setShowDetails] = useState(false);
-  const [showAllLatest, setShowAllLatest] = useState(false);
-  // Filtres croisés : tout clic sur un visuel filtre l'ensemble de l'onglet
-  const [filters, setFilters] = useState<AlertFilters>({});
-  const toggle = <K extends keyof AlertFilters>(key: K, value: Parameters<typeof toggleFilter<K>>[2]) =>
-    setFilters((f) => toggleFilter(f, key, value));
-  const patch = (p: AlertFilters) => setFilters((f) => applyFilterPatch(f, p));
-  const has = (p: AlertFilters) => Object.entries(p).every(([k, v]) => JSON.stringify(filters[k as keyof AlertFilters]) === JSON.stringify(v));
-
-  const { data, error: queryError } = useQuery({
-    queryKey: ALERTS_KEY,
-    queryFn: () => fetchVaronisAlerts(queryClient.getQueryData<AlertsData>(ALERTS_KEY)),
-    staleTime: 60 * 1000,
-    refetchInterval: (q) => (q.state.data?.refreshing || !q.state.data?.alerts ? REFRESHING_POLL_MS : IDLE_POLL_MS),
-    retry: false,
-  });
-  const refreshing = Boolean(data?.refreshing);
-  const progress = data?.progress ?? null;
-  // Sans alertes en cache : chargement tant que Varonis les prépare, erreur sinon
-  const isLoading = !data?.alerts && !queryError && !(data && !data.refreshing && data.lastError);
-  const error = data?.alerts ? null : queryError ?? (data && !data.refreshing && data.lastError ? new Error(data.lastError) : null);
-
-  const view = useMemo(() => {
-    const all = data?.alerts ?? [];
+/** Tout ce qu'affiche l'onglet, pour la période et les filtres choisis. */
+function buildView(all: VaronisAlert[], filters: AlertFilters, range: ReturnType<typeof computeRange>) {
     // Filtres (hors barre du graphique d'évolution) appliqués à toutes les alertes reçues,
     // y compris pour les blocs « toutes périodes » (arriéré, escalades, prise en charge)
     const { bucket, ...rest } = filters;
     const scoped = applyFilters(all, rest);
-    const range = computeRange(timePrefix, timeValue, timeUnit);
     // Filtres issus des blocs « toutes périodes » (arriéré, escalades, prise en charge) :
     // la période choisie ne s'applique pas, sinon l'arriéré ancien serait toujours vide
     const allPeriods = Boolean(rest.age || rest.escalation || rest.handling);
@@ -211,12 +188,45 @@ export default function VaronisPanel() {
       escalations: openEscalations(scoped),
       treatedPct: summary.total ? Math.round(((summary.total - summary.open) / summary.total) * 100) : 0,
     };
-  }, [data, timePrefix, timeValue, timeUnit, filters]);
+}
+type View = ReturnType<typeof buildView>;
 
-  const { summary, coverage } = view;
-  const periodStartsBeforeData = coverage !== null && view.range.from < coverage.oldest.getTime();
+type SetFilters = React.Dispatch<React.SetStateAction<AlertFilters>>;
+interface SectionProps { readonly view: View; readonly filters: AlertFilters; readonly setFilters: SetFilters }
 
-  const header = (
+/** Actions de filtre d'un visuel : basculer une valeur, appliquer un ensemble, savoir s'il est actif. */
+function filterActions(filters: AlertFilters, setFilters: SetFilters) {
+  return {
+    toggle: <K extends keyof AlertFilters>(key: K, value: Parameters<typeof toggleFilter<K>>[2]) => setFilters((f) => toggleFilter(f, key, value)),
+    patch: (p: AlertFilters) => setFilters((f) => applyFilterPatch(f, p)),
+    has: (p: AlertFilters) => Object.entries(p).every(([k, v]) => JSON.stringify(filters[k as keyof AlertFilters]) === JSON.stringify(v)),
+  };
+}
+
+/** Avancement renvoyé par Varonis : une fraction (0-1) ou déjà un pourcentage. */
+const progressPct = (p: number) => Math.round(p <= 1 ? p * 100 : p);
+
+/** Sans alertes en cache : chargement tant que Varonis les prépare, erreur sinon. */
+function loadState(data: AlertsData | undefined, queryError: unknown) {
+  if (data?.alerts) return { isLoading: false, error: null };
+  const failed = data && !data.refreshing && data.lastError ? new Error(data.lastError) : null;
+  return { isLoading: !queryError && !failed, error: queryError ?? failed };
+}
+
+/** Alertes ouvertes par sévérité (graphique en anneau). */
+const severityChart = (summary: View["summary"]) => SEVERITY_ORDER
+  .map((s) => ({ key: s, name: SEVERITY_LABELS[s], value: summary.bySeverity[s] }))
+  .filter((d) => d.value > 0);
+
+function PanelHeader({ data, timePrefix, setTimePrefix, timeValue, setTimeValue, timeUnit, setTimeUnit }: {
+  readonly data: AlertsData | undefined;
+  readonly timePrefix: TimePrefix; readonly setTimePrefix: (v: TimePrefix) => void;
+  readonly timeValue: number; readonly setTimeValue: (v: number) => void;
+  readonly timeUnit: TimeUnit; readonly setTimeUnit: (v: TimeUnit) => void;
+}) {
+  const refreshing = Boolean(data?.refreshing);
+  const progress = data?.progress ?? null;
+  return (
     <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
       <div>
         <h2 className="text-2xl font-black text-foreground flex items-center gap-3">
@@ -230,7 +240,7 @@ export default function VaronisPanel() {
           {data?.partial && " · résultats partiels"}
           {refreshing && data?.alerts && (
             <span className="ml-1 text-primary whitespace-nowrap">
-              · <Loader2 className="inline w-3 h-3 animate-spin align-[-2px]" /> mise à jour en cours{progress !== null ? ` (${Math.round(progress <= 1 ? progress * 100 : progress)} %)` : ""}
+              · <Loader2 className="inline w-3 h-3 animate-spin align-[-2px]" /> mise à jour en cours{progress === null ? "" : ` (${progressPct(progress)} %)`}
             </span>
           )}
         </p>
@@ -278,50 +288,14 @@ export default function VaronisPanel() {
       </div>
     </div>
   );
+}
 
-  if (isLoading) {
-    return (
-      <div className="space-y-6">
-        {header}
-        <div className="flex flex-col items-center justify-center py-24 space-y-3 text-muted-foreground">
-          <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <p className="text-sm">
-            Varonis prépare les alertes{progress !== null ? ` : ${Math.round(progress <= 1 ? progress * 100 : progress)} %` : "…"}
-          </p>
-          <p className="text-xs">Première synchronisation : une à plusieurs minutes. Les prochaines ouvertures seront immédiates.</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="space-y-6">
-        {header}
-        <Card className="border-destructive/40 bg-destructive/5">
-          <CardContent className="p-6 space-y-3">
-            <div className="flex items-center gap-2 font-bold text-destructive">
-              <AlertTriangle className="w-5 h-5" /> Impossible de récupérer les alertes Varonis
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Réessayez dans quelques minutes. Si le problème persiste, contactez l&apos;administrateur du tableau de bord.
-            </p>
-            <p className="font-mono text-[11px] text-muted-foreground break-all">{(error as Error).message}</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  const statusOptions = [...new Set((data?.alerts ?? []).map((a) => formatStatus(a.status)))].sort((a, b) => a.localeCompare(b));
-  const severityData = SEVERITY_ORDER
-    .map((s) => ({ key: s, name: SEVERITY_LABELS[s], value: summary.bySeverity[s] }))
-    .filter((d) => d.value > 0);
-
+/** Avertissements sur la période : filtre d'arriéré, ou période antérieure aux données reçues. */
+function PeriodNotices({ view }: { readonly view: View }) {
+  const { coverage } = view;
+  const periodStartsBeforeData = coverage !== null && view.range.from < coverage.oldest.getTime();
   return (
-    <div className="space-y-6">
-      {header}
-
+    <>
       {view.allPeriods && (
         <div className="flex items-start gap-2 p-3 rounded-xl border border-sky-500/30 bg-sky-500/10 text-sky-600 text-sm">
           <Info className="w-4 h-4 mt-0.5 shrink-0" />
@@ -341,8 +315,14 @@ export default function VaronisPanel() {
           </span>
         </div>
       )}
+    </>
+  );
+}
 
-      {/* FILTRES */}
+/** Filtres de statut et de sévérité, et pastilles des filtres actifs. */
+function FilterToolbar({ filters, setFilters, statusOptions }: { readonly filters: AlertFilters; readonly setFilters: SetFilters; readonly statusOptions: string[] }) {
+  const { toggle } = filterActions(filters, setFilters);
+  return (
       <div className="flex flex-wrap items-center gap-2">
         <Popover>
           <PopoverTrigger className="inline-flex items-center gap-1.5 text-sm font-semibold px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted">
@@ -394,16 +374,15 @@ export default function VaronisPanel() {
           </button>
         )}
       </div>
+  );
+}
 
-      {summary.total === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-16 space-y-2 text-muted-foreground">
-            <Inbox className="w-8 h-8" />
-            <p className="text-sm">{isFiltered(filters) ? "Aucune alerte ne correspond aux filtres sur cette période." : "Aucune alerte Varonis sur cette période."}</p>
-          </CardContent>
-        </Card>
-      ) : (
-        <>
+/** Indicateurs clés de la période. */
+function KeyCards({ view, filters, setFilters }: SectionProps) {
+  const { patch, has } = filterActions(filters, setFilters);
+  const { summary } = view;
+  return (
+    <>
           {/* LIGNE 1 : INDICATEURS CLÉS */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <Card className={`border-l-4 border-l-primary ${clickable(!filters.state && !filters.severity?.length && !filters.sensitive, false)}`} onClick={() => setFilters((f) => ({ ...f, state: undefined, severity: undefined, sensitive: undefined }))} title="Toutes les alertes (retire les filtres de statut, sévérité et données sensibles)">
@@ -458,7 +437,15 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
           </div>
+    </>
+  );
+}
 
+/** Menaces critiques : bandeau compact. */
+function ThreatsStrip({ view, filters, setFilters }: SectionProps) {
+  const { toggle } = filterActions(filters, setFilters);
+  return (
+    <>
           {/* MENACES CRITIQUES : bandeau compact */}
           <Card>
             <CardContent className="p-3 flex flex-wrap items-center gap-x-6 gap-y-2">
@@ -476,7 +463,15 @@ export default function VaronisPanel() {
               })}
             </CardContent>
           </Card>
+    </>
+  );
+}
 
+/** Points d'attention et arriéré. */
+function InsightsBacklog({ view, filters, setFilters }: SectionProps) {
+  const { toggle, patch, has } = filterActions(filters, setFilters);
+  return (
+    <>
           {/* À RETENIR + ARRIÉRÉ */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card className="lg:col-span-2 flex flex-col">
@@ -560,7 +555,15 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
           </div>
+    </>
+  );
+}
 
+/** Évolution et politiques les plus actives. */
+function TimelinePolicies({ view, filters, setFilters }: SectionProps) {
+  const { toggle } = filterActions(filters, setFilters);
+  return (
+    <>
           {/* ÉVOLUTION + POLITIQUES LES PLUS ACTIVES */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card className="lg:col-span-2 flex flex-col">
@@ -624,7 +627,17 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
           </div>
+    </>
+  );
+}
 
+/** Dernières alertes. */
+function LatestAlerts({ view, filters, setFilters }: SectionProps) {
+  const { toggle, patch } = filterActions(filters, setFilters);
+  const { summary } = view;
+  const [showAllLatest, setShowAllLatest] = useState(false);
+  return (
+    <>
           {/* DERNIÈRES ALERTES */}
           <Card>
             <CardHeader className="pb-2 border-b border-border/50">
@@ -687,19 +700,16 @@ export default function VaronisPanel() {
               )}
             </CardContent>
           </Card>
+    </>
+  );
+}
 
-          {/* ANALYSE DÉTAILLÉE : repliée par défaut */}
-          <button
-            type="button"
-            onClick={() => setShowDetails(!showDetails)}
-            className="w-full flex items-center justify-center gap-2 text-sm font-semibold py-2.5 rounded-xl border border-border text-primary hover:bg-primary/5"
-          >
-            {showDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            {showDetails ? "Masquer l'analyse détaillée" : "Analyse détaillée : sévérités, prise en charge, verdicts, sources, horaires, politiques"}
-          </button>
-
-          {showDetails && (
-            <div className="space-y-4">
+/** Analyse détaillée : sévérités et prise en charge. */
+function SeverityHandling({ view, filters, setFilters }: SectionProps) {
+  const { toggle } = filterActions(filters, setFilters);
+  const { summary } = view;
+  const severityData = severityChart(view.summary);
+  return (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card className="flex flex-col">
               <CardHeader className="pb-0">
@@ -763,6 +773,13 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
               </div>
+  );
+}
+
+/** Analyse détaillée : verdicts, sources et clôtures. */
+function VerdictsSources({ view, filters, setFilters }: SectionProps) {
+  const { toggle } = filterActions(filters, setFilters);
+  return (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
@@ -866,6 +883,14 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
               </div>
+  );
+}
+
+/** Analyse détaillée : menaces et heures. */
+function ThreatsHours({ view, filters, setFilters }: SectionProps) {
+  const { toggle } = filterActions(filters, setFilters);
+  const { summary } = view;
+  return (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
@@ -935,6 +960,13 @@ export default function VaronisPanel() {
               </CardContent>
             </Card>
               </div>
+  );
+}
+
+/** Analyse détaillée : bruit des politiques. */
+function PolicyNoise({ view, filters, setFilters }: SectionProps) {
+  const { toggle } = filterActions(filters, setFilters);
+  return (
             <Card>
               <CardHeader className="pb-2 border-b border-border/50">
                 <CardTitle className="text-xs font-bold text-muted-foreground uppercase flex items-center gap-2">
@@ -979,6 +1011,115 @@ export default function VaronisPanel() {
                 </div>
               </CardContent>
             </Card>
+  );
+}
+
+export default function VaronisPanel() {
+  const queryClient = useQueryClient();
+  const [timePrefix, setTimePrefix] = useState<TimePrefix>("last");
+  const [timeValue, setTimeValue] = useState<number>(30);
+  const [timeUnit, setTimeUnit] = useState<TimeUnit>("days");
+  const [showDetails, setShowDetails] = useState(false);
+  // Filtres croisés : tout clic sur un visuel filtre l'ensemble de l'onglet
+  const [filters, setFilters] = useState<AlertFilters>({});
+
+  const { data, error: queryError } = useQuery({
+    queryKey: ALERTS_KEY,
+    queryFn: () => fetchVaronisAlerts(queryClient.getQueryData<AlertsData>(ALERTS_KEY)),
+    staleTime: 60 * 1000,
+    refetchInterval: (q) => (q.state.data?.refreshing || !q.state.data?.alerts ? REFRESHING_POLL_MS : IDLE_POLL_MS),
+    retry: false,
+  });
+  const progress = data?.progress ?? null;
+  const { isLoading, error } = loadState(data, queryError);
+
+  const view = useMemo(() => buildView(data?.alerts ?? [], filters, computeRange(timePrefix, timeValue, timeUnit)), [data, timePrefix, timeValue, timeUnit, filters]);
+
+  const { summary } = view;
+
+  const header = (
+    <PanelHeader data={data} timePrefix={timePrefix} setTimePrefix={setTimePrefix} timeValue={timeValue} setTimeValue={setTimeValue} timeUnit={timeUnit} setTimeUnit={setTimeUnit} />
+  );
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        {header}
+        <div className="flex flex-col items-center justify-center py-24 space-y-3 text-muted-foreground">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-sm">
+            Varonis prépare les alertes{progress === null ? "…" : ` : ${progressPct(progress)} %`}
+          </p>
+          <p className="text-xs">Première synchronisation : une à plusieurs minutes. Les prochaines ouvertures seront immédiates.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        {header}
+        <Card className="border-destructive/40 bg-destructive/5">
+          <CardContent className="p-6 space-y-3">
+            <div className="flex items-center gap-2 font-bold text-destructive">
+              <AlertTriangle className="w-5 h-5" /> Impossible de récupérer les alertes Varonis
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Réessayez dans quelques minutes. Si le problème persiste, contactez l&apos;administrateur du tableau de bord.
+            </p>
+            <p className="font-mono text-[11px] text-muted-foreground break-all">{(error as Error).message}</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const statusOptions = [...new Set((data?.alerts ?? []).map((a) => formatStatus(a.status)))].sort((a, b) => a.localeCompare(b));
+
+  return (
+    <div className="space-y-6">
+      {header}
+
+      <PeriodNotices view={view} />
+
+      <FilterToolbar filters={filters} setFilters={setFilters} statusOptions={statusOptions} />
+
+      {summary.total === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-16 space-y-2 text-muted-foreground">
+            <Inbox className="w-8 h-8" />
+            <p className="text-sm">{isFiltered(filters) ? "Aucune alerte ne correspond aux filtres sur cette période." : "Aucune alerte Varonis sur cette période."}</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          <KeyCards view={view} filters={filters} setFilters={setFilters} />
+
+          <ThreatsStrip view={view} filters={filters} setFilters={setFilters} />
+
+          <InsightsBacklog view={view} filters={filters} setFilters={setFilters} />
+
+          <TimelinePolicies view={view} filters={filters} setFilters={setFilters} />
+
+          <LatestAlerts view={view} filters={filters} setFilters={setFilters} />
+
+          {/* ANALYSE DÉTAILLÉE : repliée par défaut */}
+          <button
+            type="button"
+            onClick={() => setShowDetails(!showDetails)}
+            className="w-full flex items-center justify-center gap-2 text-sm font-semibold py-2.5 rounded-xl border border-border text-primary hover:bg-primary/5"
+          >
+            {showDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            {showDetails ? "Masquer l'analyse détaillée" : "Analyse détaillée : sévérités, prise en charge, verdicts, sources, horaires, politiques"}
+          </button>
+
+          {showDetails && (
+            <div className="space-y-4">
+              <SeverityHandling view={view} filters={filters} setFilters={setFilters} />
+              <VerdictsSources view={view} filters={filters} setFilters={setFilters} />
+              <ThreatsHours view={view} filters={filters} setFilters={setFilters} />
+              <PolicyNoise view={view} filters={filters} setFilters={setFilters} />
             </div>
           )}
         </>

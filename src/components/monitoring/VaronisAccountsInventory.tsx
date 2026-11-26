@@ -82,9 +82,10 @@ function SortHead({ label, k, sort, setSort, className = "" }: {
   );
 }
 
+const TAG_TONE = { muted: "bg-muted text-muted-foreground", red: "bg-red-500/10 text-red-600", orange: "bg-orange-500/10 text-orange-600" } as const;
+
 function Tag({ children, tone = "muted" }: { readonly children: React.ReactNode; readonly tone?: "muted" | "red" | "orange" }) {
-  const cls = tone === "red" ? "bg-red-500/10 text-red-600" : tone === "orange" ? "bg-orange-500/10 text-orange-600" : "bg-muted text-muted-foreground";
-  return <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{children}</span>;
+  return <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${TAG_TONE[tone]}`}>{children}</span>;
 }
 
 /**
@@ -166,6 +167,261 @@ function GroupsPanel({ groups }: { readonly groups: Group[] }) {
   );
 }
 
+/** Comparaison de deux valeurs de tri (ordre croissant). */
+function compareValues(a: string | number, b: string | number): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/** « 12 », ou « 12 sur 340 » quand une recherche réduit la liste. */
+const countLabel = (shown: number, total: number | null) =>
+  total === null ? shown.toLocaleString("fr-FR") : `${shown.toLocaleString("fr-FR")} sur ${total.toLocaleString("fr-FR")}`;
+
+const statusLabel = (s?: string) => (s ? STATUS_LABELS[s] ?? s : "");
+
+function expirationText(a: AccountItem): string {
+  if (a.expiration) return fmtDate(a.expiration);
+  return a.expirationStatus === "NEVER_EXPIRES" ? "Jamais" : "—";
+}
+
+function yesNo(v: boolean | undefined): string {
+  if (v === undefined || v === null) return "";
+  return v ? "Oui" : "Non";
+}
+
+/** Nombre de dossiers listés : tous, ou « les 50 plus gros sur 120 ». */
+const foldersShown = (o: OwnerItem) => (o.folderCount > o.folders.length ? `les ${o.folders.length} plus gros sur ${o.folderCount}` : o.folderCount);
+
+type AppAdmins = { name: string; admins: AccountItem[] };
+
+/** Contenu de l'export CSV : applications, propriétaires ou comptes (tous les détails). */
+function inventoryCsv(appView: boolean, owners: boolean | undefined, rows: Item[], apps: AppAdmins[]): string {
+  if (appView) {
+    return toCsv(apps.map((x) => ({ app: x.name, count: x.admins.length, admins: x.admins.map((a) => a.sam ?? a.name).join(", ") })),
+      [{ key: "app", label: "Application" }, { key: "count", label: "Administrateurs" }, { key: "admins", label: "Comptes" }]);
+  }
+  if (owners) {
+    return toCsv((rows as OwnerItem[]).map((o) => ({ ...o, size: formatBytes(o.sizeBytes), folders: o.folders.map((f) => f.path).join(" | ") })), OWNER_CSV);
+  }
+  return toCsv((rows as AccountItem[]).map((a) => ({
+    ...a, ou: ouFromDn(a.dn), bucket: bucketLabel(a.bucket),
+    lastLogon: fmtDate(a.lastLogon), lastActivity: fmtDate(a.lastActivity), pwdLastSet: fmtDate(a.pwdLastSet),
+    expiration: fmtDate(a.expiration), created: fmtDate(a.created),
+    pwdStatus: statusLabel(a.pwdStatus), expirationStatus: statusLabel(a.expirationStatus),
+    lockedOut: a.lockedOut ? "Oui" : "", stale: a.stale ? "Oui" : "",
+  })), ACCOUNT_CSV);
+}
+
+/** Vue « par application » : administrateurs ayant accès à chaque application connectée. */
+function AppsList({ apps, openApp, setOpenApp }: { readonly apps: AppAdmins[]; readonly openApp: string | null; readonly setOpenApp: (v: string | null) => void }) {
+  if (apps.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground py-6 text-center">
+        Aucune application connectée renvoyée par Varonis pour ces administrateurs. Varonis ne relie aux groupes que les
+        applications Microsoft 365 (Teams, boîtes partagées…) ; pour les applications métier, cherchez leur nom dans les groupes.
+      </p>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border">
+                {apps.map((x) => (
+                  <li key={x.name} className="py-2">
+                    <button type="button" onClick={() => setOpenApp(openApp === x.name ? null : x.name)} className="w-full flex items-center justify-between gap-3 text-left">
+                      <span className="flex items-center gap-2 font-medium">
+                        {openApp === x.name ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+                        {x.name}
+                      </span>
+                      <span className="text-sm"><b>{x.admins.length}</b> administrateur{x.admins.length > 1 ? "s" : ""}</span>
+                    </button>
+                    {openApp === x.name && (
+                      <ul className="mt-2 ml-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-0.5 text-xs">
+                        {x.admins.map((a, j) => (
+                          <li key={a.sam ?? a.name ?? j} className="truncate">
+                            <span className="font-medium">{a.name ?? a.sam}</span> <span className="font-mono text-muted-foreground">{a.sam}</span>
+                            {a.inactive && <> <Tag tone="orange">Inactif</Tag></>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+    </ul>
+  );
+}
+
+function OwnerCells({ o }: { readonly o: OwnerItem }) {
+  return (
+    <>
+                                <TableCell className="text-right font-bold">{o.folderCount.toLocaleString("fr-FR")}</TableCell>
+                                <TableCell className="text-right text-sm whitespace-nowrap">{formatBytes(o.sizeBytes)}</TableCell>
+    </>
+  );
+}
+
+function AccountCells({ a }: { readonly a: AccountItem }) {
+  const age = daysSince(a.lastLogon);
+  return (
+    <>
+                                <TableCell className="text-sm whitespace-nowrap">
+                                  {a.lastLogon ? <>{fmtDate(a.lastLogon)} <span className="text-[11px] text-muted-foreground">({age} j)</span></> : <span className="text-muted-foreground">Jamais / inconnue</span>}
+                                  {a.bucket && <div className="text-[11px] text-muted-foreground">{bucketLabel(a.bucket)}</div>}
+                                </TableCell>
+                                <TableCell className="text-sm whitespace-nowrap">{fmtDate(a.pwdLastSet) || "—"}</TableCell>
+                                <TableCell className="text-sm whitespace-nowrap">
+                                  {expirationText(a)}
+                                </TableCell>
+                                <TableCell className="text-xs max-w-[220px] truncate" title={ouFromDn(a.dn)}>{ouFromDn(a.dn) || "—"}</TableCell>
+                                <TableCell className="space-x-1 whitespace-nowrap">
+                                  {(a.privileged ?? []).map((p) => <Tag key={p} tone={p === "ADMIN" ? "red" : "muted"}>{PRIV_LABELS[p] ?? p}</Tag>)}
+                                  {(a.apps?.length ?? 0) > 0 && <Tag>{`${a.apps!.length} appli${a.apps!.length > 1 ? "s" : ""}`}</Tag>}
+                                  {(a.entraRoles?.length ?? 0) > 0 && <Tag tone="red">{`${a.entraRoles!.length} rôle${a.entraRoles!.length > 1 ? "s" : ""} Entra ID`}</Tag>}
+                                  {a.inactive && <Tag tone="orange">Inactif</Tag>}
+                                  {a.lockedOut && <Tag tone="orange">Verrouillé</Tag>}
+                                  {a.expirationStatus === "EXPIRED" && <Tag tone="red">Expiré</Tag>}
+                                  {a.pwdStatus === "EXPIRED" && <Tag tone="orange">Mot de passe expiré</Tag>}
+                                </TableCell>
+    </>
+  );
+}
+
+function OwnerDetail({ o }: { readonly o: OwnerItem }) {
+  return (
+                                  <div className="space-y-1">
+                                    <div className="text-muted-foreground">{[o.email, o.upn, o.company].filter(Boolean).join(" · ")}</div>
+                                    <div className="font-semibold">Dossiers sensibles détenus ({foldersShown(o)}) :</div>
+                                    <ul className="grid sm:grid-cols-2 gap-x-6 gap-y-0.5">
+                                      {o.folders.map((f, j) => (
+                                        <li key={f.path ?? j} className="flex justify-between gap-3 font-mono">
+                                          <span className="truncate" title={f.path ?? ""}>{f.path}</span>
+                                          <span className="text-muted-foreground shrink-0">{formatBytes(f.sizeBytes)}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+  );
+}
+
+function AccountDetail({ a }: { readonly a: AccountItem }) {
+  return (
+                                  <div className="space-y-2">
+                                  {a.groups !== undefined && (
+                                    <div className="flex flex-wrap items-center gap-1">
+                                      <span className="font-semibold">Applications connectées ({a.apps?.length ?? 0}) :</span>
+                                      {(a.apps?.length ?? 0) > 0
+                                        ? a.apps!.map((app) => <Tag key={app}>{app}</Tag>)
+                                        : <span className="text-muted-foreground">aucune (Varonis ne relie aux groupes que les applications Microsoft 365 : Teams, boîtes partagées…)</span>}
+                                    </div>
+                                  )}
+                                  {(a.groups?.length ?? 0) > 0 && <GroupsPanel groups={a.groups!} />}
+                                  <dl className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1">
+                                    {[
+                                      ["E-mail", a.email], ["UPN", a.upn], ["Société", a.company],
+                                      ["Dernière activité", fmtDate(a.lastActivity)], ["Créé le", fmtDate(a.created)],
+                                      ["Statut du mot de passe", statusLabel(a.pwdStatus)],
+                                      ["Statut d'expiration", statusLabel(a.expirationStatus)],
+                                      ["Rôles Entra ID", (a.entraRoles ?? []).join(", ")],
+                                      ["Groupes de rôles Exchange", (a.exchangeRoles ?? []).join(", ")],
+                                      ["Méthodes MFA", (a.mfa ?? []).join(", ")], ["Type", a.type],
+                                      ["Inactif selon Varonis", yesNo(a.stale)],
+                                      ["Description", a.description], ["DN", a.dn],
+                                    ].filter(([, v]) => v).map(([k, v]) => (
+                                      <div key={k} className="min-w-0">
+                                        <dt className="text-muted-foreground inline">{k} : </dt>
+                                        <dd className="inline break-all">{v}</dd>
+                                      </div>
+                                    ))}
+                                  </dl>
+                                  </div>
+  );
+}
+
+/** Une ligne de l'inventaire, et sa fiche dépliée. */
+function InventoryRow({ item, owners, isOpen, onToggle }: { readonly item: Item; readonly owners: boolean; readonly isOpen: boolean; readonly onToggle: () => void }) {
+  return (
+    <Fragment>
+      <TableRow className="cursor-pointer" onClick={onToggle}>
+                            <TableCell>{isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}</TableCell>
+                            <TableCell className="max-w-[240px]">
+                              <div className="font-medium truncate" title={item.name}>{item.name ?? item.sam ?? "—"}</div>
+                              <div className="text-[11px] text-muted-foreground font-mono truncate" title={item.upn ?? item.sam}>{item.sam ?? item.upn ?? ""}</div>
+                            </TableCell>
+                            <TableCell className="text-sm max-w-[200px]">
+                              <div className="truncate" title={item.department}>{item.department ?? "—"}</div>
+                              <div className="text-[11px] text-muted-foreground truncate" title={item.jobTitle}>{item.jobTitle ?? ""}</div>
+                            </TableCell>
+        {owners ? <OwnerCells o={item as OwnerItem} /> : <AccountCells a={item as AccountItem} />}
+      </TableRow>
+      {isOpen && (
+        <TableRow className="bg-muted/30 hover:bg-muted/30">
+          <TableCell />
+          <TableCell colSpan={owners ? 4 : 7} className="text-xs">
+            {owners ? <OwnerDetail o={item as OwnerItem} /> : <AccountDetail a={item as AccountItem} />}
+          </TableCell>
+        </TableRow>
+      )}
+    </Fragment>
+  );
+}
+
+type Sort = { key: string; dir: 1 | -1 };
+
+/** Contenu de la liste : chargement, erreur, liste pas encore calculée, vue par application ou tableau. */
+function InventoryContent({ state, appView, apps, openApp, setOpenApp, rows, pageRows, search, owners, sort, setSort, page, setPage, pages, open, setOpen }: {
+  readonly state: { isLoading: boolean; error: unknown; available: boolean };
+  readonly appView: boolean; readonly apps: AppAdmins[]; readonly openApp: string | null; readonly setOpenApp: (v: string | null) => void;
+  readonly rows: Item[]; readonly pageRows: Item[]; readonly search: string; readonly owners: boolean;
+  readonly sort: Sort; readonly setSort: (s: Sort) => void; readonly page: number; readonly setPage: (p: number) => void; readonly pages: number;
+  readonly open: number | null; readonly setOpen: (i: number | null) => void;
+}) {
+  if (state.isLoading) return <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Chargement…</div>;
+  if (state.error) return <p className="text-sm text-destructive">{(state.error as Error).message}</p>;
+  if (!state.available) return <p className="text-sm text-muted-foreground py-6 text-center">Liste disponible après le prochain calcul de la posture (chaque nuit).</p>;
+  if (appView) return <AppsList apps={apps} openApp={openApp} setOpenApp={setOpenApp} />;
+  if (rows.length === 0) return <p className="text-sm text-emerald-600 py-6 text-center">{search ? "Aucun résultat pour cette recherche." : "Aucun compte dans cette liste."}</p>;
+  return (
+    <>
+      <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-6" />
+                      <SortHead label={owners ? "Propriétaire" : "Compte"} k="name" sort={sort} setSort={setSort} />
+                      <SortHead label="Service / fonction" k="department" sort={sort} setSort={setSort} />
+                      {owners ? (
+                        <>
+                          <SortHead label="Dossiers sensibles" k="folderCount" sort={sort} setSort={setSort} className="text-right" />
+                          <SortHead label="Volume" k="sizeBytes" sort={sort} setSort={setSort} className="text-right" />
+                        </>
+                      ) : (
+                        <>
+                          <SortHead label="Dernière connexion" k="lastLogon" sort={sort} setSort={setSort} />
+                          <SortHead label="Mot de passe changé" k="pwdLastSet" sort={sort} setSort={setSort} />
+                          <SortHead label="Expiration" k="expiration" sort={sort} setSort={setSort} />
+                          <SortHead label="Unité d'organisation" k="ou" sort={sort} setSort={setSort} />
+                          <TableHead>Indicateurs</TableHead>
+                        </>
+                      )}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pageRows.map((item, i) => {
+                      const idx = page * PAGE_SIZE + i;
+                      return <InventoryRow key={idx} item={item} owners={owners} isOpen={open === idx} onToggle={() => setOpen(open === idx ? null : idx)} />;
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+      {pages > 1 && (
+                <div className="flex items-center justify-end gap-2 pt-3 text-sm">
+                  <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)} className="px-2 py-1 rounded border border-border disabled:opacity-40">Précédent</button>
+                  <span className="text-muted-foreground">Page {page + 1} / {pages}</span>
+                  <button type="button" disabled={page >= pages - 1} onClick={() => setPage(page + 1)} className="px-2 py-1 rounded border border-border disabled:opacity-40">Suivant</button>
+                </div>
+              )}
+    </>
+  );
+}
+
 export default function VaronisAccountsInventory({ list, onListChange }: { readonly list: InventoryList; readonly onListChange: (l: InventoryList) => void }) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "name", dir: 1 });
@@ -190,7 +446,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
   const rows = useMemo(() => {
     const filtered = (data?.items ?? []).filter((i) => matchesSearch(i, search));
     const by = SORTS[sort.key] ?? SORTS.name;
-    return filtered.sort((a, b) => (by(a) < by(b) ? -sort.dir : by(a) > by(b) ? sort.dir : 0));
+    return filtered.sort((a, b) => compareValues(by(a), by(b)) * sort.dir);
   }, [data, search, sort]);
   const pageRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   // Application → administrateurs qui y ont accès (comptes affichés, recherche comprise)
@@ -204,19 +460,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
   const changeList = (l: InventoryList) => { onListChange(l); setPage(0); setOpen(null); setOpenApp(null); setSearch(""); };
 
   const exportCsv = () => {
-    const csv = appView
-      ? toCsv(apps.map((x) => ({ app: x.name, count: x.admins.length, admins: x.admins.map((a) => a.sam ?? a.name).join(", ") })),
-          [{ key: "app", label: "Application" }, { key: "count", label: "Administrateurs" }, { key: "admins", label: "Comptes" }])
-      : def.owners
-      ? toCsv((rows as OwnerItem[]).map((o) => ({ ...o, size: formatBytes(o.sizeBytes), folders: o.folders.map((f) => f.path).join(" | ") })), OWNER_CSV)
-      : toCsv((rows as AccountItem[]).map((a) => ({
-          ...a, ou: ouFromDn(a.dn), bucket: bucketLabel(a.bucket),
-          lastLogon: fmtDate(a.lastLogon), lastActivity: fmtDate(a.lastActivity), pwdLastSet: fmtDate(a.pwdLastSet),
-          expiration: fmtDate(a.expiration), created: fmtDate(a.created),
-          pwdStatus: a.pwdStatus ? STATUS_LABELS[a.pwdStatus] ?? a.pwdStatus : "",
-          expirationStatus: a.expirationStatus ? STATUS_LABELS[a.expirationStatus] ?? a.expirationStatus : "",
-          lockedOut: a.lockedOut ? "Oui" : "", stale: a.stale ? "Oui" : "",
-        })), ACCOUNT_CSV);
+    const csv = inventoryCsv(appView, def.owners, rows, apps);
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
@@ -250,7 +494,7 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle className="text-sm font-bold">{def.label}{data?.available ? ` : ${rows.length.toLocaleString("fr-FR")}${search ? ` sur ${(data.items.length).toLocaleString("fr-FR")}` : ""}` : ""}</CardTitle>
+              <CardTitle className="text-sm font-bold">{def.label}{data?.available ? ` : ${countLabel(rows.length, search ? data.items.length : null)}` : ""}</CardTitle>
               <p className="text-xs text-muted-foreground">{def.help}</p>
             </div>
             <div className="flex items-center gap-2">
@@ -286,183 +530,8 @@ export default function VaronisAccountsInventory({ list, onListChange }: { reado
           </div>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
-            <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Chargement…</div>
-          ) : error ? (
-            <p className="text-sm text-destructive">{(error as Error).message}</p>
-          ) : !data?.available ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">Liste disponible après le prochain calcul de la posture (chaque nuit).</p>
-          ) : appView ? (
-            apps.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">
-                Aucune application connectée renvoyée par Varonis pour ces administrateurs. Varonis ne relie aux groupes que les
-                applications Microsoft 365 (Teams, boîtes partagées…) ; pour les applications métier, cherchez leur nom dans les groupes.
-              </p>
-            ) : (
-              <ul className="divide-y divide-border">
-                {apps.map((x) => (
-                  <li key={x.name} className="py-2">
-                    <button type="button" onClick={() => setOpenApp(openApp === x.name ? null : x.name)} className="w-full flex items-center justify-between gap-3 text-left">
-                      <span className="flex items-center gap-2 font-medium">
-                        {openApp === x.name ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
-                        {x.name}
-                      </span>
-                      <span className="text-sm"><b>{x.admins.length}</b> administrateur{x.admins.length > 1 ? "s" : ""}</span>
-                    </button>
-                    {openApp === x.name && (
-                      <ul className="mt-2 ml-6 grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-0.5 text-xs">
-                        {x.admins.map((a, j) => (
-                          <li key={a.sam ?? a.name ?? j} className="truncate">
-                            <span className="font-medium">{a.name ?? a.sam}</span> <span className="font-mono text-muted-foreground">{a.sam}</span>
-                            {a.inactive && <> <Tag tone="orange">Inactif</Tag></>}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )
-          ) : rows.length === 0 ? (
-            <p className="text-sm text-emerald-600 py-6 text-center">{search ? "Aucun résultat pour cette recherche." : "Aucun compte dans cette liste."}</p>
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-6" />
-                      <SortHead label={def.owners ? "Propriétaire" : "Compte"} k="name" sort={sort} setSort={setSort} />
-                      <SortHead label="Service / fonction" k="department" sort={sort} setSort={setSort} />
-                      {def.owners ? (
-                        <>
-                          <SortHead label="Dossiers sensibles" k="folderCount" sort={sort} setSort={setSort} className="text-right" />
-                          <SortHead label="Volume" k="sizeBytes" sort={sort} setSort={setSort} className="text-right" />
-                        </>
-                      ) : (
-                        <>
-                          <SortHead label="Dernière connexion" k="lastLogon" sort={sort} setSort={setSort} />
-                          <SortHead label="Mot de passe changé" k="pwdLastSet" sort={sort} setSort={setSort} />
-                          <SortHead label="Expiration" k="expiration" sort={sort} setSort={setSort} />
-                          <SortHead label="Unité d'organisation" k="ou" sort={sort} setSort={setSort} />
-                          <TableHead>Indicateurs</TableHead>
-                        </>
-                      )}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pageRows.map((item, i) => {
-                      const idx = page * PAGE_SIZE + i;
-                      const isOpen = open === idx;
-                      const a = item as AccountItem;
-                      const o = item as OwnerItem;
-                      const age = daysSince(a.lastLogon);
-                      return (
-                        <Fragment key={idx}>
-                          <TableRow className="cursor-pointer" onClick={() => setOpen(isOpen ? null : idx)}>
-                            <TableCell>{isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}</TableCell>
-                            <TableCell className="max-w-[240px]">
-                              <div className="font-medium truncate" title={item.name}>{item.name ?? item.sam ?? "—"}</div>
-                              <div className="text-[11px] text-muted-foreground font-mono truncate" title={item.upn ?? item.sam}>{item.sam ?? item.upn ?? ""}</div>
-                            </TableCell>
-                            <TableCell className="text-sm max-w-[200px]">
-                              <div className="truncate" title={item.department}>{item.department ?? "—"}</div>
-                              <div className="text-[11px] text-muted-foreground truncate" title={item.jobTitle}>{item.jobTitle ?? ""}</div>
-                            </TableCell>
-                            {def.owners ? (
-                              <>
-                                <TableCell className="text-right font-bold">{o.folderCount.toLocaleString("fr-FR")}</TableCell>
-                                <TableCell className="text-right text-sm whitespace-nowrap">{formatBytes(o.sizeBytes)}</TableCell>
-                              </>
-                            ) : (
-                              <>
-                                <TableCell className="text-sm whitespace-nowrap">
-                                  {a.lastLogon ? <>{fmtDate(a.lastLogon)} <span className="text-[11px] text-muted-foreground">({age} j)</span></> : <span className="text-muted-foreground">Jamais / inconnue</span>}
-                                  {a.bucket && <div className="text-[11px] text-muted-foreground">{bucketLabel(a.bucket)}</div>}
-                                </TableCell>
-                                <TableCell className="text-sm whitespace-nowrap">{fmtDate(a.pwdLastSet) || "—"}</TableCell>
-                                <TableCell className="text-sm whitespace-nowrap">
-                                  {a.expiration ? fmtDate(a.expiration) : a.expirationStatus === "NEVER_EXPIRES" ? "Jamais" : "—"}
-                                </TableCell>
-                                <TableCell className="text-xs max-w-[220px] truncate" title={ouFromDn(a.dn)}>{ouFromDn(a.dn) || "—"}</TableCell>
-                                <TableCell className="space-x-1 whitespace-nowrap">
-                                  {(a.privileged ?? []).map((p) => <Tag key={p} tone={p === "ADMIN" ? "red" : "muted"}>{PRIV_LABELS[p] ?? p}</Tag>)}
-                                  {(a.apps?.length ?? 0) > 0 && <Tag>{`${a.apps!.length} appli${a.apps!.length > 1 ? "s" : ""}`}</Tag>}
-                                  {(a.entraRoles?.length ?? 0) > 0 && <Tag tone="red">{`${a.entraRoles!.length} rôle${a.entraRoles!.length > 1 ? "s" : ""} Entra ID`}</Tag>}
-                                  {a.inactive && <Tag tone="orange">Inactif</Tag>}
-                                  {a.lockedOut && <Tag tone="orange">Verrouillé</Tag>}
-                                  {a.expirationStatus === "EXPIRED" && <Tag tone="red">Expiré</Tag>}
-                                  {a.pwdStatus === "EXPIRED" && <Tag tone="orange">Mot de passe expiré</Tag>}
-                                </TableCell>
-                              </>
-                            )}
-                          </TableRow>
-                          {isOpen && (
-                            <TableRow className="bg-muted/30 hover:bg-muted/30">
-                              <TableCell />
-                              <TableCell colSpan={def.owners ? 4 : 7} className="text-xs">
-                                {def.owners ? (
-                                  <div className="space-y-1">
-                                    <div className="text-muted-foreground">{[o.email, o.upn, o.company].filter(Boolean).join(" · ")}</div>
-                                    <div className="font-semibold">Dossiers sensibles détenus ({o.folderCount > o.folders.length ? `les ${o.folders.length} plus gros sur ${o.folderCount}` : o.folderCount}) :</div>
-                                    <ul className="grid sm:grid-cols-2 gap-x-6 gap-y-0.5">
-                                      {o.folders.map((f, j) => (
-                                        <li key={f.path ?? j} className="flex justify-between gap-3 font-mono">
-                                          <span className="truncate" title={f.path ?? ""}>{f.path}</span>
-                                          <span className="text-muted-foreground shrink-0">{formatBytes(f.sizeBytes)}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                ) : (
-                                  <div className="space-y-2">
-                                  {a.groups !== undefined && (
-                                    <div className="flex flex-wrap items-center gap-1">
-                                      <span className="font-semibold">Applications connectées ({a.apps?.length ?? 0}) :</span>
-                                      {(a.apps?.length ?? 0) > 0
-                                        ? a.apps!.map((app) => <Tag key={app}>{app}</Tag>)
-                                        : <span className="text-muted-foreground">aucune (Varonis ne relie aux groupes que les applications Microsoft 365 : Teams, boîtes partagées…)</span>}
-                                    </div>
-                                  )}
-                                  {(a.groups?.length ?? 0) > 0 && <GroupsPanel groups={a.groups!} />}
-                                  <dl className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1">
-                                    {[
-                                      ["E-mail", a.email], ["UPN", a.upn], ["Société", a.company],
-                                      ["Dernière activité", fmtDate(a.lastActivity)], ["Créé le", fmtDate(a.created)],
-                                      ["Statut du mot de passe", a.pwdStatus ? STATUS_LABELS[a.pwdStatus] ?? a.pwdStatus : ""],
-                                      ["Statut d'expiration", a.expirationStatus ? STATUS_LABELS[a.expirationStatus] ?? a.expirationStatus : ""],
-                                      ["Rôles Entra ID", (a.entraRoles ?? []).join(", ")],
-                                      ["Groupes de rôles Exchange", (a.exchangeRoles ?? []).join(", ")],
-                                      ["Méthodes MFA", (a.mfa ?? []).join(", ")], ["Type", a.type],
-                                      ["Inactif selon Varonis", a.stale ? "Oui" : a.stale === false ? "Non" : ""],
-                                      ["Description", a.description], ["DN", a.dn],
-                                    ].filter(([, v]) => v).map(([k, v]) => (
-                                      <div key={k} className="min-w-0">
-                                        <dt className="text-muted-foreground inline">{k} : </dt>
-                                        <dd className="inline break-all">{v}</dd>
-                                      </div>
-                                    ))}
-                                  </dl>
-                                  </div>
-                                )}
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-              {pages > 1 && (
-                <div className="flex items-center justify-end gap-2 pt-3 text-sm">
-                  <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)} className="px-2 py-1 rounded border border-border disabled:opacity-40">Précédent</button>
-                  <span className="text-muted-foreground">Page {page + 1} / {pages}</span>
-                  <button type="button" disabled={page >= pages - 1} onClick={() => setPage(page + 1)} className="px-2 py-1 rounded border border-border disabled:opacity-40">Suivant</button>
-                </div>
-              )}
-            </>
-          )}
+          <InventoryContent state={{ isLoading, error, available: Boolean(data?.available) }} appView={appView} apps={apps} openApp={openApp} setOpenApp={setOpenApp}
+            rows={rows} pageRows={pageRows} search={search} owners={Boolean(def.owners)} sort={sort} setSort={setSort} page={page} setPage={setPage} pages={pages} open={open} setOpen={setOpen} />
         </CardContent>
       </Card>
     </div>

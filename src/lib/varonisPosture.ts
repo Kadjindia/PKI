@@ -327,13 +327,26 @@ export function ouFromDn(dn?: string): string {
 export function matchesSearch(item: object, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return Object.values(item).some((v) => (typeof v === "string" ? v : Array.isArray(v) ? v.join(" ") : "").toLowerCase().includes(q));
+  return Object.values(item).some((v) => searchText(v).toLowerCase().includes(q));
+}
+
+/** Texte cherchable d'un champ : le texte lui-même, ou les valeurs d'une liste. */
+function searchText(v: unknown): string {
+  if (typeof v === "string") return v;
+  return Array.isArray(v) ? v.join(" ") : "";
+}
+
+/** Texte d'une cellule CSV : vide pour null, valeurs d'une liste séparées par des virgules. */
+function cellText(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.join(", ");
+  return typeof v === "object" ? JSON.stringify(v) : String(v as string | number | boolean);
 }
 
 /** Export CSV (séparateur « ; », compatible Excel français, BOM UTF-8). */
 export function toCsv(rows: Record<string, unknown>[], columns: { key: string; label: string }[]): string {
   const cell = (v: unknown) => {
-    const s = v === null || v === undefined ? "" : Array.isArray(v) ? v.join(", ") : String(v);
+    const s = cellText(v);
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return "﻿" + [columns.map((c) => cell(c.label)).join(";"), ...rows.map((r) => columns.map((c) => cell(r[c.key])).join(";"))].join("\r\n");
@@ -345,19 +358,22 @@ export function toCsv(rows: Record<string, unknown>[], columns: { key: string; l
  * dossiers sensibles (plusieurs recherches) n'est remplacé qu'une fois complet, pour
  * ne jamais additionner des morceaux de deux calculs.
  */
+const isTotalKey = (k: string) => k === "dataSources" || k.startsWith(ZONES_TOTAL_PREFIX);
+
+/** Remplace d'un bloc le total des dossiers sensibles par celui du calcul en cours. */
+function replaceTotals(out: Record<string, unknown>, running: PostureResults) {
+  for (const k of Object.keys(out)) if (isTotalKey(k)) delete out[k];
+  for (const [k, v] of Object.entries(running)) if (isTotalKey(k)) out[k] = { ...v, fresh: true };
+}
+
 export function mergeRunning(latest: PostureResults | undefined, running: PostureResults | undefined): PostureResults {
   if (!running) return latest ?? {};
-  const out: PostureResults = { ...(latest ?? {}) };
-  const isTotalKey = (k: string) => k === "dataSources" || k.startsWith(ZONES_TOTAL_PREFIX);
+  const out: Record<string, unknown> = { ...latest };
   for (const [k, v] of Object.entries(running)) {
-    if (isTotalKey(k) || !v || v.status !== "done" || v.carriedFrom) continue;
-    (out as Record<string, unknown>)[k] = { ...v, fresh: true };
+    if (isTotalKey(k) || v?.status !== "done" || v.carriedFrom) continue;
+    out[k] = { ...v, fresh: true };
   }
-  const total = zoneTotal(running);
   const reused = Boolean((running.dataSources as Base | undefined)?.carriedFrom);
-  if (total.status === "done" && !reused) {
-    for (const k of Object.keys(out)) if (isTotalKey(k)) delete (out as Record<string, unknown>)[k];
-    for (const [k, v] of Object.entries(running)) if (isTotalKey(k)) (out as Record<string, unknown>)[k] = { ...v, fresh: true };
-  }
-  return out;
+  if (zoneTotal(running).status === "done" && !reused) replaceTotals(out, running);
+  return out as PostureResults;
 }
