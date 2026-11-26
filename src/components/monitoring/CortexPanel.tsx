@@ -115,7 +115,7 @@ const attemptStartQuery = async (payload: any, checkCancelled: () => boolean) =>
       continue;
     }
     if (!startRes.ok) return null;
-    return (await startRes.json())?.reply;
+    return (await startRes.json())?.reply; // NOSONAR : fin de la boucle d'essais
   }
   return null;
 };
