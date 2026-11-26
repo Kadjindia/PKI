@@ -151,11 +151,45 @@ export interface AssetRow {
   last_scan: string | null; last_activity: string | null; public_ip: boolean; tags: string[]; attrs: Record<string, string>;
 }
 
+type TruriskBand = "critical" | "high" | "medium" | "low";
+/** Tranche du score TruRisk (0-1000). */
+function truriskBand(score: number): TruriskBand {
+  if (score >= 850) return "critical";
+  if (score >= 700) return "high";
+  if (score >= 500) return "medium";
+  return "low";
+}
+
+/** Score TruRisk d'un actif, s'il est renseigné. */
+function truriskOf(h: string): number | null {
+  const raw = tag(h, "TRURISK_SCORE");
+  if (raw === null) return null;
+  const score = Number(raw);
+  return Number.isFinite(score) ? score : null;
+}
+
+const positiveOrNull = (n: number) => (Number.isFinite(n) && n > 0 ? n : null);
+const HOST_ATTR_SKIP = ["TAGS", "DNS_DATA", "CLOUD_PROVIDER_TAGS", "METADATA", "ASSET_GROUP_IDS"];
+
+/** Fiche d'un actif de la liste VMDR. */
+function hostRow(h: string, hid: number, os: string | null, type: AssetType, last: string | null, trurisk: number | null): AssetRow {
+  return {
+    host_id: hid, asset_id: positiveOrNull(Number(tag(h, "ASSET_ID"))),
+    name: tag(h, "DNS") || tag(h, "NETBIOS") || null, netbios: tag(h, "NETBIOS"), ip: tag(h, "IP"), os, asset_type: type,
+    tracking: tag(h, "TRACKING_METHOD"), trurisk,
+    criticality: positiveOrNull(Number(tag(h, "ASSET_CRITICALITY_SCORE"))),
+    last_scan: isoOrNull(last), last_activity: isoOrNull(tag(h, "LAST_ACTIVITY") ?? tag(h, "LAST_BOOT")),
+    public_ip: isPublicIp(tag(h, "IP")),
+    tags: [...blocks(tag(h, "TAGS") ?? "", "TAG")].map((t) => tag(t, "NAME")).filter((x): x is string => Boolean(x)),
+    attrs: leaves(h, HOST_ATTR_SKIP),
+  };
+}
+
 /** Liste des actifs : couverture des scans, score TruRisk, fiches des actifs. */
 export function hostsPage(xml: string, now: number) {
   const rows: AssetRow[] = [];
   const agg = { total: 0, agent: 0, scanned: 0, neverScanned: 0 };
-  const tr = { critical: 0, high: 0, medium: 0, low: 0 };
+  const tr: Record<TruriskBand, number> = { critical: 0, high: 0, medium: 0, low: 0 };
   let truriskSum = 0, truriskCount = 0;
   const byType = emptyByType(() => ({ total: 0, scanned: 0, publicIp: 0 }));
   /** Identifiants des actifs : pour partager la lecture des vulnérabilités entre deux appels simultanés. */
@@ -163,37 +197,25 @@ export function hostsPage(xml: string, now: number) {
   for (const h of blocks(xml, "HOST")) {
     agg.total++;
     const hid = Number(tag(h, "ID"));
-    if (Number.isFinite(hid)) ids.push(hid);
     const os = tag(h, "OS");
     const type = assetType(os);
-    byType[type].total++;
-    if (isPublicIp(tag(h, "IP"))) byType[type].publicIp++;
+    const t = byType[type];
+    t.total++;
+    if (isPublicIp(tag(h, "IP"))) t.publicIp++;
     if (/agent/i.test(tag(h, "TRACKING_METHOD") ?? "")) agg.agent++;
     const last = tag(h, "LAST_VULN_SCAN_DATETIME") ?? tag(h, "LAST_VM_SCANNED_DATE");
     const age = daysSince(last, now);
     if (age === null) agg.neverScanned++;
-    else if (age <= RECENT_SCAN_DAYS) { agg.scanned++; byType[type].scanned++; }
-    const raw = tag(h, "TRURISK_SCORE");
-    const score = Number(raw);
-    if (raw !== null && Number.isFinite(score)) {
+    else if (age <= RECENT_SCAN_DAYS) { agg.scanned++; t.scanned++; }
+    const score = truriskOf(h);
+    if (score !== null) {
       truriskSum += score;
       truriskCount++;
-      // Répartition TruRisk (0-1000) : on ne garde que les tranches
-      if (score >= 850) tr.critical++; else if (score >= 700) tr.high++; else if (score >= 500) tr.medium++; else tr.low++;
+      tr[truriskBand(score)]++;
     }
-    const acs = Number(tag(h, "ASSET_CRITICALITY_SCORE"));
     if (Number.isFinite(hid)) {
-      const assetId = Number(tag(h, "ASSET_ID"));
-      rows.push({
-        host_id: hid, asset_id: Number.isFinite(assetId) && assetId > 0 ? assetId : null,
-        name: tag(h, "DNS") || tag(h, "NETBIOS") || null, netbios: tag(h, "NETBIOS"), ip: tag(h, "IP"), os, asset_type: type,
-        tracking: tag(h, "TRACKING_METHOD"), trurisk: raw !== null && Number.isFinite(score) ? score : null,
-        criticality: Number.isFinite(acs) && acs > 0 ? acs : null,
-        last_scan: isoOrNull(last), last_activity: isoOrNull(tag(h, "LAST_ACTIVITY") ?? tag(h, "LAST_BOOT")),
-        public_ip: isPublicIp(tag(h, "IP")),
-        tags: [...blocks(tag(h, "TAGS") ?? "", "TAG")].map((t) => tag(t, "NAME")).filter((x): x is string => Boolean(x)),
-        attrs: leaves(h, ["TAGS", "DNS_DATA", "CLOUD_PROVIDER_TAGS", "METADATA", "ASSET_GROUP_IDS"]),
-      });
+      ids.push(hid);
+      rows.push(hostRow(h, hid, os, type, last, score));
     }
   }
   return { ...agg, trurisk: tr, truriskSum, truriskCount, byType, ids, rows };
@@ -202,7 +224,6 @@ export function hostsPage(xml: string, now: number) {
 /** QID -> [détections, sévérité, hors délai, plus ancienne détection (ms, 0 si inconnue), QDS max, détections QDS >= 90, détections sur serveurs]. */
 type QidStat = [number, number, number, number, number, number, number];
 
-/** Vulnérabilités ouvertes d'une page d'actifs. `watch` : actifs suivis de près (les plus risqués). */
 /**
  * Vulnérabilités d'un actif (table qualys_asset_vulns). `detections` : une ligne par détection,
  * [QID, sévérité, 1re détection (AAAA-MM-JJ), dernière détection, statut (N nouvelle, A active, R réouverte),
@@ -213,85 +234,134 @@ export interface AssetVulnRow {
   qids: number[]; detections: (string | number | null)[][];
 }
 
-export function detectionsPage(xml: string, now: number, eolQids: readonly string[] = []) {
-  const rows: AssetVulnRow[] = [];
-  const bySev: Record<string, { total: number; overdue: number; ages: number[]; reopened: number; ageSum: number }> = {};
-  for (const s of SEVERITIES) bySev[s] = { total: 0, overdue: 0, ages: [0, 0, 0, 0], reopened: 0, ageSum: 0 };
-  const byType = emptyByType(() => ({ total: 0, overdue: 0, sev5: 0 }));
-  const ignored = { total: 0, sev5: 0, ages: [0, 0, 0, 0] };
-  const qids: Record<string, QidStat> = {};
-  const eolSet = new Set(eolQids);
-  /** Actifs portant au moins un système ou logiciel en fin de vie (EOL/Obsolete). */
-  const eol = emptyByType(() => 0);
-  let hostCount = 0, hostsWithVulns = 0, qdsCritical = 0, potential = 0;
-  const ageBucket = (age: number) => { const i = AGE_LIMITS.findIndex((l) => age < l); return i === -1 ? AGE_LIMITS.length : i; };
+type DetStatus = "R" | "N" | "A" | "I";
+/** Une détection lue : ce qui sert aux compteurs. */
+interface Det { qid: string | null; qidNum: number; sev: number; first: string | null; age: number; qds: number; late: boolean }
+interface SevStat { total: number; overdue: number; ages: number[]; reopened: number; ageSum: number }
 
+function newDetectionsAgg() {
+  const bySev: Record<string, SevStat> = {};
+  for (const s of SEVERITIES) bySev[s] = { total: 0, overdue: 0, ages: [0, 0, 0, 0], reopened: 0, ageSum: 0 };
+  return {
+    hosts: 0, hostsWithVulns: 0, bySev,
+    byType: emptyByType(() => ({ total: 0, overdue: 0, sev5: 0 })),
+    ignored: { total: 0, sev5: 0, ages: [0, 0, 0, 0] },
+    /** Actifs portant au moins un système ou logiciel en fin de vie (EOL/Obsolete). */
+    eol: emptyByType(() => 0),
+    qdsCritical: 0, potential: 0,
+    qids: {} as Record<string, QidStat>,
+    rows: [] as AssetVulnRow[],
+  };
+}
+type DetectionsAgg = ReturnType<typeof newDetectionsAgg>;
+
+/** Tranche d'ancienneté : < 30 j, 30-90 j, 90-180 j, > 180 j. */
+function ageBucket(age: number): number {
+  const i = AGE_LIMITS.findIndex((l) => age < l);
+  return i === -1 ? AGE_LIMITS.length : i;
+}
+
+function detectionStatus(status: string): DetStatus {
+  if (/re-?opened/i.test(status)) return "R";
+  if (/new/i.test(status)) return "N";
+  return "A";
+}
+
+const dayOf = (v: string | null) => (v ? v.slice(0, 10) : null);
+
+function readDetection(d: string, sev: number, now: number): Det {
+  const first = tag(d, "FIRST_FOUND_DATETIME");
+  const qid = tag(d, "QID");
+  return {
+    qid, qidNum: Number(qid), sev, first, age: daysSince(first, now) ?? 0, qds: Number(tag(d, "QDS") ?? 0) || 0,
+    late: first ? now > deadline(Date.parse(first), sev) : false,
+  };
+}
+
+function detectionRow(d: string, det: Det, st: DetStatus): (string | number | null)[] {
+  const port = tag(d, "PORT");
+  const ignored = st === "I";
+  return [det.qidNum, det.sev, dayOf(det.first), dayOf(tag(d, "LAST_FOUND_DATETIME")), st, det.qds, ignored ? 1 : 0, !ignored && det.late ? 1 : 0, port ? Number(port) : null];
+}
+
+/** Dérogation : vulnérabilité ignorée dans la console (risque accepté), comptée à part. */
+function countIgnored(acc: DetectionsAgg, row: AssetVulnRow, det: Det) {
+  row.ignored++;
+  acc.ignored.total++;
+  if (det.sev === 5) acc.ignored.sev5++;
+  acc.ignored.ages[ageBucket(det.age)]++;
+}
+
+function countOpenOnHost(row: AssetVulnRow, det: Det, st: DetStatus) {
+  if (Number.isFinite(det.qidNum)) row.qids.push(det.qidNum);
+  if (det.sev === 5) row.d5++;
+  else if (det.sev === 4) row.d4++;
+  else row.d3++;
+  if (det.late) row.overdue++;
+  if (st === "R") row.reopened++;
+  row.qds_max = Math.max(row.qds_max, det.qds);
+}
+
+function countOpen(acc: DetectionsAgg, det: Det, st: DetStatus, type: AssetType) {
+  const stat = acc.bySev[det.sev];
+  stat.total++;
+  stat.ageSum += det.age;
+  if (det.late) stat.overdue++;
+  if (st === "R") stat.reopened++;
+  stat.ages[ageBucket(det.age)]++;
+  const t = acc.byType[type];
+  t.total++;
+  if (det.late) t.overdue++;
+  if (det.sev === 5) t.sev5++;
+  if (det.qds >= 90) acc.qdsCritical++;
+}
+
+function countQid(qids: Record<string, QidStat>, det: Det, type: AssetType) {
+  if (!det.qid) return;
+  const q = (qids[det.qid] ??= [0, det.sev, 0, 0, 0, 0, 0]);
+  q[0]++;
+  if (det.late) q[2]++;
+  if (det.first) {
+    const t = Date.parse(det.first);
+    q[3] = q[3] ? Math.min(q[3], t) : t;
+  }
+  q[4] = Math.max(q[4], det.qds);
+  if (det.qds >= 90) q[5]++;
+  if (type === "server") q[6]++;
+}
+
+/** Vulnérabilités ouvertes d'une page d'actifs. `eolQids` : produits en fin de vie connus. */
+export function detectionsPage(xml: string, now: number, eolQids: readonly string[] = []) {
+  const acc = newDetectionsAgg();
+  const eolSet = new Set(eolQids);
   for (const h of blocks(xml, "HOST")) {
-    hostCount++;
+    acc.hosts++;
     const head = h.slice(0, Math.max(0, h.indexOf("<DETECTION_LIST>")) || h.length);
-    const id = tag(head, "ID");
-    const os = tag(head, "OS");
-    const type = assetType(os);
+    const type = assetType(tag(head, "OS"));
     let hasEol = false;
-    const row: AssetVulnRow = { host_id: Number(id), d5: 0, d4: 0, d3: 0, overdue: 0, ignored: 0, reopened: 0, qds_max: 0, qids: [], detections: [] };
+    const row: AssetVulnRow = { host_id: Number(tag(head, "ID")), d5: 0, d4: 0, d3: 0, overdue: 0, ignored: 0, reopened: 0, qds_max: 0, qids: [], detections: [] };
     for (const d of blocks(h, "DETECTION")) {
       const sev = Number(tag(d, "SEVERITY"));
-      const stat = bySev[sev];
-      if (!stat) continue;
-      if (tag(d, "IS_DISABLED") === "1") continue;
-      const first = tag(d, "FIRST_FOUND_DATETIME");
-      const age = daysSince(first, now) ?? 0;
-      const qidNum = Number(tag(d, "QID"));
-      const day = (v: string | null) => (v ? v.slice(0, 10) : null);
-      const portRaw = tag(d, "PORT");
-      const detRow = (st: string, qds: number, ign: number, late: number) =>
-        row.detections.push([qidNum, sev, day(first), day(tag(d, "LAST_FOUND_DATETIME")), st, qds, ign, late, portRaw ? Number(portRaw) : null]);
-      // Dérogations : vulnérabilités ignorées dans la console (risque accepté), comptées à part
+      if (!acc.bySev[sev] || tag(d, "IS_DISABLED") === "1") continue;
+      const det = readDetection(d, sev, now);
       if (tag(d, "IS_IGNORED") === "1") {
-        row.ignored++;
-        detRow("I", Number(tag(d, "QDS") ?? 0) || 0, 1, 0);
-        ignored.total++;
-        if (sev === 5) ignored.sev5++;
-        ignored.ages[ageBucket(age)]++;
+        row.detections.push(detectionRow(d, det, "I"));
+        countIgnored(acc, row, det);
         continue;
       }
-      if (/potential/i.test(tag(d, "TYPE") ?? "")) potential++;
-      const status = tag(d, "STATUS") ?? "";
-      const late = first ? now > deadline(Date.parse(first), sev) : false;
-      const qds = Number(tag(d, "QDS") ?? 0) || 0;
-      const st = /re-?opened/i.test(status) ? "R" : /new/i.test(status) ? "N" : "A";
-      detRow(st, qds, 0, late ? 1 : 0);
-      if (Number.isFinite(qidNum)) row.qids.push(qidNum);
-      if (sev === 5) row.d5++; else if (sev === 4) row.d4++; else row.d3++;
-      if (late) row.overdue++;
-      if (st === "R") row.reopened++;
-      row.qds_max = Math.max(row.qds_max, qds);
-      stat.total++;
-      stat.ageSum += age;
-      if (late) stat.overdue++;
-      if (/re-?opened/i.test(status)) stat.reopened++;
-      stat.ages[ageBucket(age)]++;
-      byType[type].total++;
-      if (late) byType[type].overdue++;
-      if (sev === 5) byType[type].sev5++;
-      if (qds >= 90) qdsCritical++;
-      const qid = tag(d, "QID");
-      if (qid && eolSet.has(qid)) hasEol = true;
-      if (qid) {
-        const q = qids[qid] ?? (qids[qid] = [0, sev, 0, 0, 0, 0, 0]);
-        q[0]++;
-        if (late) q[2]++;
-        if (first) q[3] = q[3] ? Math.min(q[3], Date.parse(first)) : Date.parse(first);
-        q[4] = Math.max(q[4], qds);
-        if (qds >= 90) q[5]++;
-        if (type === "server") q[6]++;
-      }
+      if (/potential/i.test(tag(d, "TYPE") ?? "")) acc.potential++;
+      const st = detectionStatus(tag(d, "STATUS") ?? "");
+      row.detections.push(detectionRow(d, det, st));
+      countOpenOnHost(row, det, st);
+      countOpen(acc, det, st, type);
+      countQid(acc.qids, det, type);
+      if (det.qid && eolSet.has(det.qid)) hasEol = true;
     }
-    if (hasEol) eol[type]++;
-    if (Number.isFinite(row.host_id) && row.detections.length) rows.push(row);
-    if (row.d5 + row.d4 + row.d3 > 0) hostsWithVulns++;
+    if (hasEol) acc.eol[type]++;
+    if (Number.isFinite(row.host_id) && row.detections.length) acc.rows.push(row);
+    if (row.d5 + row.d4 + row.d3 > 0) acc.hostsWithVulns++;
   }
-  return { hosts: hostCount, hostsWithVulns, bySev, byType, ignored, eol, qdsCritical, potential, qids, rows };
+  return acc;
 }
 
 /** Répartition des délais de correction : jour -> nombre (plafonné à 365). */
@@ -537,7 +607,6 @@ const dateMs = (v: unknown): number | null => {
 
 export interface CsamAsset { id: string; name: string | null; ip: string | null; os: string | null; source: string | null; created: string | null }
 
-/** Une page d'actifs CSAM. */
 /** Fiche d'un actif CSAM (table qualys_csam_assets). */
 export interface CsamRow {
   asset_id: number; host_id: number | null; name: string | null; ip: string | null; os: string | null; asset_type: AssetType;
@@ -561,10 +630,58 @@ export function trimJson(v: unknown, depth = 0): unknown {
   return typeof v === "string" ? v.slice(0, 300) : v;
 }
 
-export function csamPage(json: Row, now: number) {
-  const rows: CsamRow[] = [];
-  const list: Row[] = json?.assetListData?.asset ?? json?.assetList ?? json?.data ?? [];
-  const agg = {
+/** Nom du système d'exploitation d'un actif CSAM (objet ou simple texte selon la version de l'API). */
+function csamOsName(a: Row): string | null {
+  const osObj = a.operatingSystem ?? {};
+  return osObj.osName ?? osObj.fullName ?? osObj.name ?? (typeof a.operatingSystem === "string" ? a.operatingSystem : null);
+}
+
+/** Cycle de vie du système d'exploitation : fin de support, fin de vie. */
+function csamLifecycle(osObj: Row, now: number) {
+  const lc = osObj.lifecycle ?? osObj.lifeCycle ?? {};
+  const eos = dateMs(lc.eosDate ?? lc.endOfSupport);
+  const eol = dateMs(lc.eolDate ?? lc.endOfLife);
+  const stage = String(lc.stage ?? "");
+  return {
+    eos, eol, stage,
+    outOfSupport: (eos !== null && eos < now) || /EOS|end of support/i.test(stage),
+    endOfLife: (eol !== null && eol < now) || /EOL|end of life/i.test(stage),
+  };
+}
+type CsamLifecycle = ReturnType<typeof csamLifecycle>;
+
+const isoOfMs = (t: number | null) => (t === null ? null : new Date(t).toISOString());
+const csamCreated = (a: Row) => a.inventory?.created ?? a.createdDate ?? a.firstSeen;
+
+function csamHardware(hw: Row): string | null {
+  const parts = [hw.category?.category ?? hw.category1 ?? hw.category, hw.manufacturer, hw.model];
+  return parts.filter((x) => typeof x === "string" && x).join(" · ") || null;
+}
+
+/** Ce qui est déjà lu d'un actif CSAM, partagé entre les compteurs et la fiche. */
+interface CsamSeen { assetId: number; ip: string | null; os: string | null; type: AssetType; hasAgent: boolean; hasScanner: boolean; life: CsamLifecycle }
+
+function csamRow(a: Row, x: CsamSeen): CsamRow {
+  const sensor = a.sensor ?? {};
+  const hostId = Number(a.hostId);
+  const crit = Number(a.criticality?.score ?? a.criticalityScore);
+  return {
+    asset_id: x.assetId, host_id: positiveOrNull(hostId),
+    name: a.assetName ?? a.name ?? null, ip: x.ip, os: x.os, asset_type: x.type, has_agent: x.hasAgent, has_scanner: x.hasScanner,
+    agent_last_checkin: isoOrNull(a.agent?.lastCheckedIn?.dateTime ?? a.agent?.lastCheckedIn ?? a.agent?.lastActivity ?? sensor.lastAgentCheckIn),
+    lifecycle_stage: x.life.stage || null, eos: isoOfMs(x.life.eos), eol: isoOfMs(x.life.eol),
+    created: isoOrNull(csamCreated(a)),
+    last_seen: isoOrNull(a.inventory?.lastUpdated ?? a.lastModifiedDate ?? a.lastSeen ?? sensor.lastFullScan),
+    sources: String(a.inventory?.source ?? a.sources ?? "") || null,
+    hardware: csamHardware(a.hardware ?? {}),
+    criticality: positiveOrNull(crit),
+    tags: ((a.tagList?.tag ?? a.tags ?? []) as Row[]).map((t) => String(t?.tagName ?? t?.name ?? "")).filter(Boolean).slice(0, 50),
+    attrs: trimJson(a) as Row,
+  };
+}
+
+function newCsamAgg() {
+  return {
     total: 0, withAgent: 0, agentStale: 0, unmanaged: 0, unmanagedNew: 0, publicIp: 0,
     byType: emptyByType(() => ({ total: 0, withAgent: 0, unmanaged: 0 })),
     /** Système -> [actifs, fin de support (ms) ou 0, fin de vie (ms) ou 0, en fin de support ? 1 : 0]. */
@@ -572,69 +689,62 @@ export function csamPage(json: Row, now: number) {
     osEol: 0, osEos: 0,
     recentUnmanaged: [] as CsamAsset[],
   };
+}
+type CsamAgg = ReturnType<typeof newCsamAgg>;
+
+function countCsamAgent(agg: CsamAgg, a: Row, x: CsamSeen, now: number) {
+  agg.withAgent++;
+  agg.byType[x.type].withAgent++;
+  const sensor = a.sensor ?? {};
+  const last = dateMs(a.agent?.lastCheckedIn ?? a.agent?.lastActivity ?? a.agent?.lastCheckIn ?? sensor.lastAgentCheckIn);
+  if (last !== null && now - last > AGENT_STALE_DAYS * DAY) agg.agentStale++;
+}
+
+/** Shadow IT : actif découvert (capteur passif, découverte réseau…) sans agent ni scan authentifié. */
+function countUnmanaged(agg: CsamAgg, a: Row, x: CsamSeen, now: number) {
+  agg.unmanaged++;
+  agg.byType[x.type].unmanaged++;
+  const created = dateMs(csamCreated(a));
+  if (created === null || now - created > NEW_ASSET_DAYS * DAY) return;
+  agg.unmanagedNew++;
+  agg.recentUnmanaged.push({
+    id: String(a.assetId ?? a.id ?? ""), name: a.assetName ?? a.name ?? null, ip: x.ip, os: x.os,
+    source: a.inventory?.source ?? null, created: new Date(created).toISOString(),
+  });
+}
+
+function countLifecycle(agg: CsamAgg, os: string | null, life: CsamLifecycle) {
+  if (life.outOfSupport) agg.osEos++;
+  if (life.endOfLife) agg.osEol++;
+  if (os && (life.outOfSupport || life.endOfLife)) {
+    const c = (agg.os[os] ??= [0, life.eos ?? 0, life.eol ?? 0, life.outOfSupport ? 1 : 0]);
+    c[0]++;
+  }
+}
+
+export function csamPage(json: Row, now: number) {
+  const rows: CsamRow[] = [];
+  const list: Row[] = json?.assetListData?.asset ?? json?.assetList ?? json?.data ?? [];
+  const agg = newCsamAgg();
   for (const a of list) {
     agg.total++;
-    const osObj = a.operatingSystem ?? {};
-    const os: string | null = osObj.osName ?? osObj.fullName ?? osObj.name ?? (typeof a.operatingSystem === "string" ? a.operatingSystem : null);
+    const os = csamOsName(a);
     const type = assetType(os);
     agg.byType[type].total++;
     const sensor = a.sensor ?? {};
-    const hasAgent = Boolean(sensor.hasAgent ?? a.agent?.agentId ?? a.agentId);
-    const hasScanner = Boolean(sensor.hasNetworkScanner ?? sensor.hasScanner);
-    const ip: string | null = a.address ?? a.ipAddress ?? null;
-    if (isPublicIp(ip)) agg.publicIp++;
-    if (hasAgent) {
-      agg.withAgent++;
-      agg.byType[type].withAgent++;
-      const last = dateMs(a.agent?.lastCheckedIn ?? a.agent?.lastActivity ?? a.agent?.lastCheckIn ?? sensor.lastAgentCheckIn);
-      if (last !== null && now - last > AGENT_STALE_DAYS * DAY) agg.agentStale++;
-    }
-    // Shadow IT : actif découvert (capteur passif, découverte réseau…) sans agent ni scan authentifié
-    if (!hasAgent && !hasScanner) {
-      agg.unmanaged++;
-      agg.byType[type].unmanaged++;
-      const created = dateMs(a.inventory?.created ?? a.createdDate ?? a.firstSeen);
-      if (created !== null && now - created <= NEW_ASSET_DAYS * DAY) {
-        agg.unmanagedNew++;
-        agg.recentUnmanaged.push({
-          id: String(a.assetId ?? a.id ?? ""), name: a.assetName ?? a.name ?? null, ip, os,
-          source: a.inventory?.source ?? null, created: new Date(created).toISOString(),
-        });
-      }
-    }
-    // Cycle de vie du système d'exploitation
-    const lc = osObj.lifecycle ?? osObj.lifeCycle ?? {};
-    const eos = dateMs(lc.eosDate ?? lc.endOfSupport);
-    const eol = dateMs(lc.eolDate ?? lc.endOfLife);
-    const stage = String(lc.stage ?? "");
-    const outOfSupport = (eos !== null && eos < now) || /EOS|end of support/i.test(stage);
-    const endOfLife = (eol !== null && eol < now) || /EOL|end of life/i.test(stage);
-    if (outOfSupport) agg.osEos++;
-    if (endOfLife) agg.osEol++;
-    if (os && (outOfSupport || endOfLife)) {
-      const c = (agg.os[os] ??= [0, eos ?? 0, eol ?? 0, outOfSupport ? 1 : 0]);
-      c[0]++;
-    }
-    const assetId = Number(a.assetId ?? a.id);
-    if (Number.isFinite(assetId)) {
-      const hw = a.hardware ?? {};
-      const crit = Number(a.criticality?.score ?? a.criticalityScore);
-      rows.push({
-        asset_id: assetId, host_id: Number.isFinite(Number(a.hostId)) && Number(a.hostId) > 0 ? Number(a.hostId) : null,
-        name: a.assetName ?? a.name ?? null, ip, os, asset_type: type, has_agent: hasAgent, has_scanner: hasScanner,
-        agent_last_checkin: isoOrNull(a.agent?.lastCheckedIn?.dateTime ?? a.agent?.lastCheckedIn ?? a.agent?.lastActivity ?? sensor.lastAgentCheckIn),
-        lifecycle_stage: stage || null, eos: eos !== null ? new Date(eos).toISOString() : null, eol: eol !== null ? new Date(eol).toISOString() : null,
-        created: isoOrNull(a.inventory?.created ?? a.createdDate ?? a.firstSeen),
-        last_seen: isoOrNull(a.inventory?.lastUpdated ?? a.lastModifiedDate ?? a.lastSeen ?? sensor.lastFullScan),
-        sources: String(a.inventory?.source ?? a.sources ?? "") || null,
-        hardware: [hw.category?.category ?? hw.category1 ?? hw.category, hw.manufacturer, hw.model].filter((x) => typeof x === "string" && x).join(" · ") || null,
-        criticality: Number.isFinite(crit) && crit > 0 ? crit : null,
-        tags: ((a.tagList?.tag ?? a.tags ?? []) as Row[]).map((t) => String(t?.tagName ?? t?.name ?? "")).filter(Boolean).slice(0, 50),
-        attrs: trimJson(a) as Row,
-      });
-    }
+    const x: CsamSeen = {
+      assetId: Number(a.assetId ?? a.id), ip: a.address ?? a.ipAddress ?? null, os, type,
+      hasAgent: Boolean(sensor.hasAgent ?? a.agent?.agentId ?? a.agentId),
+      hasScanner: Boolean(sensor.hasNetworkScanner ?? sensor.hasScanner),
+      life: csamLifecycle(a.operatingSystem ?? {}, now),
+    };
+    if (isPublicIp(x.ip)) agg.publicIp++;
+    if (x.hasAgent) countCsamAgent(agg, a, x, now);
+    if (!x.hasAgent && !x.hasScanner) countUnmanaged(agg, a, x, now);
+    countLifecycle(agg, os, x.life);
+    if (Number.isFinite(x.assetId)) rows.push(csamRow(a, x));
   }
-  agg.recentUnmanaged.sort((x, y) => String(y.created).localeCompare(String(x.created)));
+  agg.recentUnmanaged.sort((p, q) => String(q.created).localeCompare(String(p.created)));
   agg.recentUnmanaged = agg.recentUnmanaged.slice(0, TOP);
   const hasMore = json?.hasMore === 1 || json?.hasMore === true || json?.hasMore === "1";
   return { agg, rows, next: hasMore ? String(json?.lastSeenAssetId ?? "") || null : null };
@@ -644,7 +754,6 @@ export function csamPage(json: Row, now: number) {
 // WAS (applications web) : vulnérabilités par application, catégories OWASP, MTTR applicatif
 // ---------------------------------------------------------------------------
 
-/** Une page de résultats WAS (QPS « search/was/finding », XML). `since` : début de la période des corrigées. */
 /** Vulnérabilité applicative (table qualys_was_findings). */
 export interface WasFindingRow {
   finding_id: number; app_id: number | null; app_name: string | null; qid: number | null; title: string | null; severity: number | null;
@@ -653,47 +762,69 @@ export interface WasFindingRow {
   attrs: Record<string, string>;
 }
 
+/** Application -> [nom, ouvertes sév. 5, ouvertes sév. 4, ouvertes sév. 3, hors délai]. */
+type WasApp = [string, number, number, number, number];
+/** Ce qui est déjà lu d'une vulnérabilité applicative. */
+interface WasSeen { sev: number; status: string; app: string; appId: string; appName: string; first: number; late: boolean }
+
+const numOrNull = (x: string | null) => (x !== null && Number.isFinite(Number(x)) ? Number(x) : null);
+const WAS_ATTR_SKIP = ["resultList", "webApp", "history", "request", "response", "payloads"];
+
+function wasRow(f: string, fid: number, x: WasSeen): WasFindingRow {
+  return {
+    finding_id: fid, app_id: numOrNull(tag(x.app, "id")), app_name: x.appName, qid: numOrNull(tag(f, "qid")), title: tag(f, "name"), severity: numOrNull(tag(f, "severity")),
+    status: x.status || null, owasp: tag(tag(f, "owasp") ?? "", "name"), url: tag(f, "url"),
+    first_detected: isoOrNull(tag(f, "firstDetectedDate")), last_detected: isoOrNull(tag(f, "lastDetectedDate")),
+    last_tested: isoOrNull(tag(f, "lastTestedDate")), fixed_date: isoOrNull(tag(f, "fixedDate")), times_detected: numOrNull(tag(f, "timesDetected")),
+    potential: /true/i.test(tag(f, "potential") ?? ""), ignored: /true/i.test(tag(f, "isIgnored") ?? ""),
+    overdue: x.status !== "FIXED" && x.sev >= 3 && x.late,
+    attrs: leaves(f, WAS_ATTR_SKIP),
+  };
+}
+
+/** Vulnérabilité corrigée dans la période : délai de correction. */
+function countWasFixed(fix: FixStat, f: string, x: WasSeen, since: number) {
+  const fixedAt = Date.parse(tag(f, "fixedDate") ?? tag(f, "lastTestedDate") ?? "");
+  if (!Number.isFinite(fixedAt) || !Number.isFinite(x.first) || fixedAt < since || !SLA[x.sev]) return;
+  const days = Math.max(0, Math.floor((fixedAt - x.first) / DAY));
+  fix.n++;
+  fix.daysSum += days;
+  if (fixedAt <= deadline(x.first, x.sev)) fix.inSla++;
+  const k = String(Math.min(days, 365));
+  fix.hist[k] = (fix.hist[k] ?? 0) + 1;
+}
+
+function countWasOpen(apps: Record<string, WasApp>, x: WasSeen) {
+  const a = (apps[x.appId] ??= [x.appName, 0, 0, 0, 0]);
+  if (x.sev >= 5) a[1]++;
+  else if (x.sev === 4) a[2]++;
+  else a[3]++;
+  if (x.late) a[4]++;
+}
+
+/** Une page de résultats WAS (QPS « search/was/finding », XML). `since` : début de la période des corrigées. */
 export function wasPage(xml: string, now: number, since: number) {
   const rows: WasFindingRow[] = [];
-  /** Application -> [nom, ouvertes sév. 5, ouvertes sév. 4, ouvertes sév. 3, hors délai]. */
-  const apps: Record<string, [string, number, number, number, number]> = {};
+  const apps: Record<string, WasApp> = {};
   const fix = emptyFix();
   let open = 0, lastId: string | null = null;
   for (const f of blocks(tag(xml, "data") ?? "", "Finding")) {
     lastId = tag(f, "id") ?? lastId;
-    const sev = Number(tag(f, "severity"));
-    const status = (tag(f, "status") ?? "").toUpperCase();
     const app = tag(f, "webApp") ?? "";
     const appId = tag(app, "id") ?? "?";
-    const appName = tag(app, "name") ?? `Application ${appId}`;
+    const sev = Number(tag(f, "severity"));
     const first = Date.parse(tag(f, "firstDetectedDate") ?? "");
+    const x: WasSeen = {
+      sev, status: (tag(f, "status") ?? "").toUpperCase(), app, appId, appName: tag(app, "name") ?? `Application ${appId}`, first,
+      late: Number.isFinite(first) && now > deadline(first, Math.min(5, sev)),
+    };
     const fid = Number(tag(f, "id"));
-    if (Number.isFinite(fid)) {
-      const n = (x: string | null) => (x !== null && Number.isFinite(Number(x)) ? Number(x) : null);
-      rows.push({
-        finding_id: fid, app_id: n(tag(app, "id")), app_name: appName, qid: n(tag(f, "qid")), title: tag(f, "name"), severity: n(tag(f, "severity")),
-        status: status || null, owasp: tag(tag(f, "owasp") ?? "", "name"), url: tag(f, "url"),
-        first_detected: isoOrNull(tag(f, "firstDetectedDate")), last_detected: isoOrNull(tag(f, "lastDetectedDate")),
-        last_tested: isoOrNull(tag(f, "lastTestedDate")), fixed_date: isoOrNull(tag(f, "fixedDate")), times_detected: n(tag(f, "timesDetected")),
-        potential: /true/i.test(tag(f, "potential") ?? ""), ignored: /true/i.test(tag(f, "isIgnored") ?? ""),
-        overdue: status !== "FIXED" && sev >= 3 && Number.isFinite(first) && now > deadline(first, Math.min(5, sev)),
-        attrs: leaves(f, ["resultList", "webApp", "history", "request", "response", "payloads"]),
-      });
+    if (Number.isFinite(fid)) rows.push(wasRow(f, fid, x));
+    if (x.status === "FIXED") countWasFixed(fix, f, x, since);
+    else if (sev >= 3) {
+      open++;
+      countWasOpen(apps, x);
     }
-    if (status === "FIXED") {
-      const fixedAt = Date.parse(tag(f, "fixedDate") ?? tag(f, "lastTestedDate") ?? "");
-      if (!Number.isFinite(fixedAt) || !Number.isFinite(first) || fixedAt < since || !SLA[sev]) continue;
-      const days = Math.max(0, Math.floor((fixedAt - first) / DAY));
-      fix.n++; fix.daysSum += days;
-      if (fixedAt <= deadline(first, sev)) fix.inSla++;
-      const k = String(Math.min(days, 365)); fix.hist[k] = (fix.hist[k] ?? 0) + 1;
-      continue;
-    }
-    if (sev < 3) continue;
-    open++;
-    const a = (apps[appId] ??= [appName, 0, 0, 0, 0]);
-    if (sev >= 5) a[1]++; else if (sev === 4) a[2]++; else a[3]++;
-    if (Number.isFinite(first) && now > deadline(first, Math.min(5, sev))) a[4]++;
   }
   const more = /<hasMoreRecords>\s*true\s*<\/hasMoreRecords>/i.test(xml);
   return { agg: { open, apps, fix }, rows, next: more ? (tag(xml, "lastId") ?? lastId) : null };
@@ -791,63 +922,76 @@ function mergeQids(detPages: Row[]) {
   return qids;
 }
 
-export function buildResults(pages: { kind: string; agg: Row }[], now: number, opts: { previousPolicies?: Row[]; fixedDaily?: FixedRow[] } = {}) {
-  const hostsPages = pages.filter((p) => p.kind === "hosts").map((p) => p.agg);
-  const detPages = pages.filter((p) => p.kind === "detections").map((p) => p.agg);
-  const fixPages = pages.filter((p) => p.kind === "fixed").map((p) => p.agg);
-  const kb: Record<string, [string, number, string]> = Object.assign({}, ...pages.filter((p) => p.kind === "kb").map((p) => p.agg));
-  const flagsOf = (qid: string) => kb[qid]?.[1] ?? 0;
+type Page = { kind: string; agg: Row };
+type KbMap = Record<string, [string, number, string]>;
+type OsStat = [number, number, number, number];
 
-  const sum = (list: Row[], f: (x: Row) => number) => list.reduce((t, x) => t + (f(x) || 0), 0);
-  const coverage = {
-    total: sum(hostsPages, (p) => p.total),
-    agent: sum(hostsPages, (p) => p.agent),
-    scanned: sum(hostsPages, (p) => p.scanned),
-    neverScanned: sum(hostsPages, (p) => p.neverScanned),
-    trurisk: { critical: sum(hostsPages, (p) => p.trurisk?.critical), high: sum(hostsPages, (p) => p.trurisk?.high), medium: sum(hostsPages, (p) => p.trurisk?.medium), low: sum(hostsPages, (p) => p.trurisk?.low) },
-    byType: Object.fromEntries(ASSET_TYPES.map((t) => [t, { total: sum(hostsPages, (p) => p.byType?.[t]?.total), scanned: sum(hostsPages, (p) => p.byType?.[t]?.scanned) }])),
+const sumOf = (list: Row[], f: (x: Row) => number) => list.reduce((t, x) => t + (f(x) || 0), 0);
+const aggsOf = (pages: Page[], kind: string) => pages.filter((p) => p.kind === kind).map((p) => p.agg);
+const errorOf = (pages: Page[], kind: string): string | null => pages.find((p) => p.kind === kind)?.agg?.message ?? null;
+const byAssetType = <T>(f: (t: AssetType) => T) => Object.fromEntries(ASSET_TYPES.map((t) => [t, f(t)])) as Record<AssetType, T>;
+const kbOf = (pages: Page[]): KbMap => Object.assign({}, ...aggsOf(pages, "kb"));
+
+/** Couverture des scans (axe 1). */
+function coverageOf(hostsPages: Row[]) {
+  return {
+    total: sumOf(hostsPages, (p) => p.total),
+    agent: sumOf(hostsPages, (p) => p.agent),
+    scanned: sumOf(hostsPages, (p) => p.scanned),
+    neverScanned: sumOf(hostsPages, (p) => p.neverScanned),
+    trurisk: {
+      critical: sumOf(hostsPages, (p) => p.trurisk?.critical), high: sumOf(hostsPages, (p) => p.trurisk?.high),
+      medium: sumOf(hostsPages, (p) => p.trurisk?.medium), low: sumOf(hostsPages, (p) => p.trurisk?.low),
+    },
+    byType: byAssetType((t) => ({ total: sumOf(hostsPages, (p) => p.byType?.[t]?.total), scanned: sumOf(hostsPages, (p) => p.byType?.[t]?.scanned) })),
     recentDays: RECENT_SCAN_DAYS,
   };
+}
 
-  const severities = SEVERITIES.map((s) => {
-    const total = sum(detPages, (p) => p.bySev[s]?.total);
+function severitiesOf(detPages: Row[]) {
+  return SEVERITIES.map((s) => {
+    const total = sumOf(detPages, (p) => p.bySev[s]?.total);
     return {
       severity: s,
       slaDays: SLA_DAYS[s],
       slaLabel: SLA[s].label,
       total,
-      overdue: sum(detPages, (p) => p.bySev[s]?.overdue),
-      reopened: sum(detPages, (p) => p.bySev[s]?.reopened),
-      ages: [0, 1, 2, 3].map((i) => sum(detPages, (p) => p.bySev[s]?.ages?.[i])),
-      avgAge: total ? Math.round(sum(detPages, (p) => p.bySev[s]?.ageSum) / total) : null,
+      overdue: sumOf(detPages, (p) => p.bySev[s]?.overdue),
+      reopened: sumOf(detPages, (p) => p.bySev[s]?.reopened),
+      ages: [0, 1, 2, 3].map((i) => sumOf(detPages, (p) => p.bySev[s]?.ages?.[i])),
+      avgAge: total ? Math.round(sumOf(detPages, (p) => p.bySev[s]?.ageSum) / total) : null,
     };
   });
+}
 
-  const qids = mergeQids(detPages);
-  // Chaque chiffre est donné pour les sévérités 3 à 5, et pour la sévérité 5 seule
-  // (sev5), comme les filtres de la console VMDR
-  const flagged = (flag: number) => {
-    let detections = 0, vulns = 0, sev5 = 0, servers = 0;
-    for (const [qid, q] of qids) {
-      if (!(flagsOf(qid) & flag)) continue;
-      detections += q[0];
-      vulns++;
-      if (q[1] === 5) sev5 += q[0];
-      servers += q[6] ?? 0;
-    }
-    return { detections, vulns, sev5, servers };
-  };
-  const truriskCount = sum(hostsPages, (p) => p.truriskCount);
+/**
+ * Vulnérabilités portant un indicateur de la base de connaissances (CISA KEV, ransomware…).
+ * Chaque chiffre est donné pour les sévérités 3 à 5, et pour la sévérité 5 seule (sev5),
+ * comme les filtres de la console VMDR.
+ */
+function flaggedOf(qids: Map<string, QidStat>, kb: KbMap, flag: number) {
+  let detections = 0, vulns = 0, sev5 = 0, servers = 0;
+  for (const [qid, q] of qids) {
+    if (!((kb[qid]?.[1] ?? 0) & flag)) continue;
+    detections += q[0];
+    vulns++;
+    if (q[1] === 5) sev5 += q[0];
+    servers += q[6] ?? 0;
+  }
+  return { detections, vulns, sev5, servers };
+}
 
-  // Délais de correction réels : cumul jour par jour (table qualys_fixed_daily), ou pages de la photo
-  const fixedRows = opts.fixedDaily ?? fixedRowsOfPages(pages);
-  const toFix = (r: FixedRow): FixStat => ({ n: r.n, inSla: r.in_sla, daysSum: Number(r.days_sum), hist: r.hist ?? {} });
-  const windowStartDay = new Date(now - FIXED_WINDOW_DAYS * DAY).toISOString().slice(0, 10);
-  const inWindow = fixedRows.filter((r) => r.day >= windowStartDay);
-  const fixSev = Object.fromEntries(SEVERITIES.map((s) => [s, fixView(mergeFix(inWindow.filter((r) => r.severity === s).map(toFix)))]));
-  const fixAll = fixView(mergeFix(inWindow.map(toFix)));
-  const fixType = Object.fromEntries(ASSET_TYPES.map((t) => [t, fixView(mergeFix(inWindow.filter((r) => r.asset_type === t).map(toFix)))]));
-  // Mois après mois, sur 12 mois au plus
+const toFix = (r: FixedRow): FixStat => ({ n: r.n, inSla: r.in_sla, daysSum: Number(r.days_sum), hist: r.hist ?? {} });
+
+/** Chiffres partiels : premier mois des données commencé en cours de mois, ou mois en cours. */
+function monthPartial(m: string, firstDay: string | null, now: number): "start" | "current" | null {
+  if (firstDay && m === firstDay.slice(0, 7) && !firstDay.endsWith("-01")) return "start";
+  if (m === new Date(now).toISOString().slice(0, 7)) return "current";
+  return null;
+}
+
+/** Corrections mois après mois, sur 12 mois au plus. */
+function monthlyFixes(fixedRows: FixedRow[], now: number) {
   const monthStart = new Date(now - 365 * DAY).toISOString().slice(0, 7);
   const monthCells: Record<string, Record<string, [number, number, number]>> = {};
   for (const r of fixedRows) {
@@ -859,102 +1003,112 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     cell[0] += r.n; cell[1] += r.in_sla; cell[2] += Number(r.days_sum);
   }
   const firstDay = fixedRows.map((r) => r.day).sort((a, b) => a.localeCompare(b))[0] ?? null;
-  const monthly = Object.keys(monthCells).sort((a, b) => a.localeCompare(b)).map((m) => {
+  return Object.keys(monthCells).sort((a, b) => a.localeCompare(b)).map((m) => {
     const cells = Object.values(monthCells[m]);
     const fixed = cells.reduce((t, c) => t + c[0], 0);
     const inSla = cells.reduce((t, c) => t + c[1], 0);
-    const mttrOf = (s: number) => { const c = monthCells[m][s]; return c && c[0] ? round1(c[2] / c[0]) : null; };
-    // Premier mois des données commencé en cours de mois, mois en cours : chiffres partiels
-    const partial = firstDay && m === firstDay.slice(0, 7) && !firstDay.endsWith("-01") ? "start" : m === new Date(now).toISOString().slice(0, 7) ? "current" : null;
-    return { month: m, fixed, slaRate: fixed ? round1((inSla / fixed) * 100) : null, mttr5: mttrOf(5), mttr4: mttrOf(4), mttr3: mttrOf(3), partial };
+    const mttrOf = (s: number) => { const c = monthCells[m][s]; return c?.[0] ? round1(c[2] / c[0]) : null; };
+    return { month: m, fixed, slaRate: fixed ? round1((inSla / fixed) * 100) : null, mttr5: mttrOf(5), mttr4: mttrOf(4), mttr3: mttrOf(3), partial: monthPartial(m, firstDay, now) };
   });
+}
 
-  const byTypeOpen = Object.fromEntries(ASSET_TYPES.map((t) => [t, {
-    total: sum(detPages, (p) => p.byType?.[t]?.total), overdue: sum(detPages, (p) => p.byType?.[t]?.overdue), sev5: sum(detPages, (p) => p.byType?.[t]?.sev5),
-  }]));
-  const ignored = {
-    total: sum(detPages, (p) => p.ignored?.total),
-    sev5: sum(detPages, (p) => p.ignored?.sev5),
-    ages: [0, 1, 2, 3].map((i) => sum(detPages, (p) => p.ignored?.ages?.[i])),
+/** Délais de correction réels sur la fenêtre de 90 jours, puis mois après mois. */
+function fixedOf(fixedRows: FixedRow[], now: number) {
+  const windowStartDay = new Date(now - FIXED_WINDOW_DAYS * DAY).toISOString().slice(0, 10);
+  const inWindow = fixedRows.filter((r) => r.day >= windowStartDay);
+  const view = (rows: FixedRow[]) => fixView(mergeFix(rows.map(toFix)));
+  return {
+    all: view(inWindow),
+    bySev: Object.fromEntries(SEVERITIES.map((s) => [s, view(inWindow.filter((r) => r.severity === s))])),
+    byType: byAssetType((t) => view(inWindow.filter((r) => r.asset_type === t))),
+    monthly: monthlyFixes(fixedRows, now),
   };
+}
 
-  // Obsolescence : vulnérabilités « EOL/Obsolete » de la photo
+/** Obsolescence : vulnérabilités « EOL/Obsolete » de la photo (axe 1, d'après VMDR). */
+function obsolescenceOf(detPages: Row[], qids: Map<string, QidStat>, kb: KbMap) {
   const eolEntries = [...qids.entries()].filter(([qid]) => isEol(kb[qid]?.[0]));
-  const eolHostsByType = Object.fromEntries(ASSET_TYPES.map((t) => [t, sum(detPages, (p) => p.eol?.[t])])) as Record<AssetType, number>;
-  const eolHosts = ASSET_TYPES.reduce((t, k) => t + eolHostsByType[k], 0);
-  const obsolescence = {
+  const byType = byAssetType((t) => sumOf(detPages, (p) => p.eol?.[t]));
+  const products = eolProducts(eolEntries, kb);
+  return {
     // Le nombre d'actifs s'appuie sur la liste des produits en fin de vie de la photo précédente
     hostsTracked: detPages.some((p) => p.eol),
-    hosts: eolHosts,
-    byType: eolHostsByType,
-    products: eolProducts(eolEntries, kb).length,
-    osProducts: eolProducts(eolEntries, kb).filter((p) => p.os).length,
+    hosts: ASSET_TYPES.reduce((t, k) => t + byType[k], 0),
+    byType,
+    products: products.length,
+    osProducts: products.filter((p) => p.os).length,
     detections: eolEntries.reduce((t, [, q]) => t + q[0], 0),
   };
+}
 
-  // Inventaire CSAM (axe 1)
-  const csam = pages.filter((p) => p.kind === "csam").map((p) => p.agg);
-  const csamError: string | null = pages.find((p) => p.kind === "csamerror")?.agg?.message ?? null;
-  const osMap = new Map<string, [number, number, number, number]>();
-  for (const p of csam) for (const [os, c] of Object.entries((p.os ?? {}) as Record<string, [number, number, number, number]>)) {
-    const cur = osMap.get(os);
-    if (!cur) osMap.set(os, [...c] as [number, number, number, number]); else cur[0] += c[0];
+/** Inventaire CSAM (axe 1). */
+function inventoryOf(pages: Page[]) {
+  const csam = aggsOf(pages, "csam");
+  const error = errorOf(pages, "csamerror");
+  const osMap = new Map<string, OsStat>();
+  for (const p of csam) {
+    for (const [os, c] of Object.entries((p.os ?? {}) as Record<string, OsStat>)) {
+      const cur = osMap.get(os);
+      if (cur) cur[0] += c[0];
+      else osMap.set(os, [...c] as OsStat);
+    }
   }
-  const csamTotal = sum(csam, (p) => p.total);
-  const inventory = {
-    collected: csam.length > 0 || Boolean(csamError),
-    error: csamError,
-    total: csamTotal,
-    withAgent: sum(csam, (p) => p.withAgent),
-    agentStale: sum(csam, (p) => p.agentStale),
-    unmanaged: sum(csam, (p) => p.unmanaged),
-    unmanagedNew: sum(csam, (p) => p.unmanagedNew),
-    publicIp: sum(csam, (p) => p.publicIp),
-    byType: Object.fromEntries(ASSET_TYPES.map((t) => [t, {
-      total: sum(csam, (p) => p.byType?.[t]?.total), withAgent: sum(csam, (p) => p.byType?.[t]?.withAgent), unmanaged: sum(csam, (p) => p.byType?.[t]?.unmanaged),
-    }])),
-    osEol: sum(csam, (p) => p.osEol),
-    osEos: sum(csam, (p) => p.osEos),
+  const day = (ms: number) => (ms ? new Date(ms).toISOString().slice(0, 10) : null);
+  return {
+    collected: csam.length > 0 || Boolean(error),
+    error,
+    total: sumOf(csam, (p) => p.total),
+    withAgent: sumOf(csam, (p) => p.withAgent),
+    agentStale: sumOf(csam, (p) => p.agentStale),
+    unmanaged: sumOf(csam, (p) => p.unmanaged),
+    unmanagedNew: sumOf(csam, (p) => p.unmanagedNew),
+    publicIp: sumOf(csam, (p) => p.publicIp),
+    byType: byAssetType((t) => ({
+      total: sumOf(csam, (p) => p.byType?.[t]?.total), withAgent: sumOf(csam, (p) => p.byType?.[t]?.withAgent), unmanaged: sumOf(csam, (p) => p.byType?.[t]?.unmanaged),
+    })),
+    osEol: sumOf(csam, (p) => p.osEol),
+    osEos: sumOf(csam, (p) => p.osEos),
     osOutdated: [...osMap.entries()].sort((a, b) => b[1][0] - a[1][0]).slice(0, TOP_OS).map(([os, c]) => ({
-      os, assets: c[0], endOfSupport: c[1] ? new Date(c[1]).toISOString().slice(0, 10) : null, endOfLife: c[2] ? new Date(c[2]).toISOString().slice(0, 10) : null,
+      os, assets: c[0], endOfSupport: day(c[1]), endOfLife: day(c[2]),
     })),
     recentUnmanaged: csam.flatMap((p) => p.recentUnmanaged ?? []).sort((a: Row, b: Row) => String(b.created).localeCompare(String(a.created))).slice(0, TOP),
     agentStaleDays: AGENT_STALE_DAYS,
     newDays: NEW_ASSET_DAYS,
   };
-  const exposedByType = Object.fromEntries(ASSET_TYPES.map((t) => [t, sum(hostsPages, (p) => p.byType?.[t]?.publicIp)])) as Record<AssetType, number>;
-  const internetExposed = { total: ASSET_TYPES.reduce((t, k) => t + exposedByType[k], 0), byType: exposedByType };
+}
 
-  // Applications web (WAS, axe 5)
-  const was = pages.filter((p) => p.kind === "was").map((p) => p.agg);
-  const wasError: string | null = pages.find((p) => p.kind === "waserror")?.agg?.message ?? null;
-  const appMap = new Map<string, [string, number, number, number, number]>();
+/** Applications web (WAS, axe 5). */
+function webAppsOf(pages: Page[]) {
+  const was = aggsOf(pages, "was");
+  const error = errorOf(pages, "waserror");
+  const appMap = new Map<string, WasApp>();
   for (const p of was) {
-    for (const [id, a] of Object.entries((p.apps ?? {}) as Record<string, [string, number, number, number, number]>)) {
+    for (const [id, a] of Object.entries((p.apps ?? {}) as Record<string, WasApp>)) {
       const cur = appMap.get(id);
-      if (!cur) appMap.set(id, [...a] as [string, number, number, number, number]);
+      if (!cur) appMap.set(id, [...a] as WasApp);
       else { cur[1] += a[1]; cur[2] += a[2]; cur[3] += a[3]; cur[4] += a[4]; }
     }
   }
-  const webApps = {
-    collected: was.length > 0 || Boolean(wasError),
-    error: wasError,
-    open: sum(was, (p) => p.open),
+  const weight = (x: { sev5: number; sev4: number; sev3: number }) => x.sev5 * 1000 + x.sev4 * 10 + x.sev3;
+  return {
+    collected: was.length > 0 || Boolean(error),
+    error,
+    open: sumOf(was, (p) => p.open),
     apps: [...appMap.entries()].map(([id, a]) => ({ id, name: a[0], sev5: a[1], sev4: a[2], sev3: a[3], overdue: a[4] }))
-      .sort((x, y) => y.sev5 * 1000 + y.sev4 * 10 + y.sev3 - (x.sev5 * 1000 + x.sev4 * 10 + x.sev3)),
+      .sort((x, y) => weight(y) - weight(x)),
     fixed: fixView(mergeFix(was.map((p) => p.fix))),
   };
+}
 
-  // Conformité (Policy Audit)
-  // Seules les politiques entièrement lues comptent (la lecture a pu être interrompue)
-  const pcMeta: Row | null = pages.find((p) => p.kind === "pcmeta")?.agg ?? null;
-  const doneSet = pcMeta ? new Set<string>(pcMeta.done ?? []) : null;
-  const posture = pages.filter((p) => p.kind === "posture").map((p) => p.agg).filter((a) => !doneSet || doneSet.has(a.policyId));
-  const policyTitles: Record<string, string> = Object.assign({}, ...pages.filter((p) => p.kind === "policies").map((p) => Object.fromEntries((p.agg.list ?? []).map((x: Row) => [x.id, x.title]))));
-  const pcError: string | null = pages.find((p) => p.kind === "pcerror")?.agg?.message ?? null;
-  type PolicyStat = { id: string; title: string; hosts: number; compliantHosts: number; passed: number; failed: number; errors: number };
+type PolicyStat = { id: string; title: string; hosts: number; compliantHosts: number; passed: number; failed: number; errors: number };
+type ControlStat = { failed: number; passed: number; policies: Set<string> };
+
+const rateOf = (ok: number, ko: number) => (ok + ko ? round1((ok / (ok + ko)) * 100) : null);
+
+/** Résultats par politique et par contrôle des pages de posture retenues. */
+function policyStats(posture: Row[], policyTitles: Record<string, string>) {
   const byPolicy = new Map<string, PolicyStat>();
-  const controlStats = new Map<string, { failed: number; passed: number; policies: Set<string> }>();
+  const controlStats = new Map<string, ControlStat>();
   const glossary: Record<string, [string, string | null]> = {};
   for (const p of posture) {
     const cur: PolicyStat = byPolicy.get(p.policyId) ?? { id: p.policyId, title: policyTitles[p.policyId] ?? `Politique ${p.policyId}`, hosts: 0, compliantHosts: 0, passed: 0, failed: 0, errors: 0 };
@@ -973,92 +1127,129 @@ export function buildResults(pages: { kind: string; agg: Row }[], now: number, o
     const m = mergePosture(posture.filter((p) => p.policyId === id));
     if (m) { cur.hosts = m.hosts; cur.compliantHosts = m.compliantHosts; }
   }
-  const rate = (ok: number, ko: number) => (ok + ko ? round1((ok / (ok + ko)) * 100) : null);
+  return { byPolicy, controlStats, glossary };
+}
+
+/** Politiques non réévaluées cette nuit : dernier résultat connu, avec sa date. */
+function carriedPolicies(previous: Row[], freshIds: Set<string>, pcMeta: Row | null, policyTitles: Record<string, string>) {
+  if (pcMeta && !((pcMeta.total ?? 0) > 0)) return [];
+  return previous.filter((p) => p && !freshIds.has(p.id)).map((p) => ({
+    id: String(p.id), title: policyTitles[p.id] ?? String(p.title ?? `Politique ${p.id}`),
+    hosts: Number(p.hosts) || 0, compliantHosts: Number(p.compliantHosts) || 0,
+    passed: Number(p.passed) || 0, failed: Number(p.failed) || 0, errors: Number(p.errors) || 0,
+    rate: typeof p.rate === "number" ? p.rate : null, evaluatedAt: (p.evaluatedAt as string | undefined) ?? null, stale: true,
+  }));
+}
+
+/** Contrôle de lecture de la nuit (toutes pages lues, politiques terminées ou non). */
+function postureRead(pages: Page[]) {
+  const all = aggsOf(pages, "posture");
+  const ids = [...new Set(all.map((a) => a.policyId))];
+  const total = (k: string) => all.reduce((t, a) => t + (Number(a[k]) || 0), 0);
+  return {
+    pages: all.length,
+    policies: ids.length,
+    emptyPolicies: ids.filter((id) => all.filter((a) => a.policyId === id).every((a) => !Number(a.raw) && !Number(a.records))).length,
+    records: total("records"),
+    raw: total("raw"),
+    hosts: total("hosts"),
+    root: (all.find((a) => a.root)?.root as string | undefined) ?? null,
+  };
+}
+
+/** Conformité (Policy Audit, axe 4). */
+function complianceOf(pages: Page[], now: number, previousPolicies: Row[]) {
+  // Seules les politiques entièrement lues comptent (la lecture a pu être interrompue)
+  const pcMeta: Row | null = pages.find((p) => p.kind === "pcmeta")?.agg ?? null;
+  const doneSet = pcMeta ? new Set<string>(pcMeta.done ?? []) : null;
+  const posture = aggsOf(pages, "posture").filter((a) => !doneSet || doneSet.has(a.policyId));
+  const policyTitles: Record<string, string> = Object.assign({}, ...aggsOf(pages, "policies").map((a) => Object.fromEntries((a.list ?? []).map((x: Row) => [x.id, x.title]))));
+  const pcError = errorOf(pages, "pcerror");
+  const { byPolicy, controlStats, glossary } = policyStats(posture, policyTitles);
   const evaluatedAt = new Date(now).toISOString();
   const fresh = [...byPolicy.values()].filter((p) => p.passed + p.failed > 0)
-    .map((p) => ({ ...p, rate: rate(p.passed, p.failed), evaluatedAt: evaluatedAt as string | null, stale: false }));
-  // Politiques non réévaluées cette nuit : dernier résultat connu, avec sa date
-  const freshIds = new Set(fresh.map((p) => p.id));
-  const carried = (opts.previousPolicies ?? []).filter((p) => p && !freshIds.has(p.id) && (!pcMeta || (pcMeta.total ?? 0) > 0))
-    .map((p) => ({
-      id: String(p.id), title: policyTitles[p.id] ?? String(p.title ?? `Politique ${p.id}`),
-      hosts: Number(p.hosts) || 0, compliantHosts: Number(p.compliantHosts) || 0,
-      passed: Number(p.passed) || 0, failed: Number(p.failed) || 0, errors: Number(p.errors) || 0,
-      rate: typeof p.rate === "number" ? p.rate : null, evaluatedAt: (p.evaluatedAt as string | undefined) ?? null, stale: true,
-    }));
+    .map((p) => ({ ...p, rate: rateOf(p.passed, p.failed), evaluatedAt: evaluatedAt as string | null, stale: false }));
+  const carried = carriedPolicies(previousPolicies, new Set(fresh.map((p) => p.id)), pcMeta, policyTitles);
   const policies = [...fresh, ...carried].sort((a, b) => (a.rate ?? 0) - (b.rate ?? 0));
   const allPassed = policies.reduce((t, p) => t + p.passed, 0), allFailed = policies.reduce((t, p) => t + p.failed, 0);
-  const compliance = {
+  return {
     collected: pages.some((p) => p.kind === "policies") || Boolean(pcError),
     error: pcError,
     /** Politiques évaluées cette nuit / au total ; lecture interrompue (budget de temps) ? */
     evaluated: fresh.length,
     total: pcMeta?.total ?? fresh.length,
     stopped: Boolean(pcMeta?.stopped),
-    rate: rate(allPassed, allFailed),
+    rate: rateOf(allPassed, allFailed),
     passed: allPassed, failed: allFailed,
-    /** Contrôle de lecture de la nuit (toutes pages lues, politiques terminées ou non). */
-    read: (() => {
-      const all = pages.filter((p) => p.kind === "posture").map((p) => p.agg);
-      return {
-        pages: all.length,
-        policies: new Set(all.map((a) => a.policyId)).size,
-        emptyPolicies: [...new Set(all.map((a) => a.policyId))].filter((id) => all.filter((a) => a.policyId === id).every((a) => !Number(a.raw) && !Number(a.records))).length,
-        records: all.reduce((t, a) => t + (Number(a.records) || 0), 0),
-        raw: all.reduce((t, a) => t + (Number(a.raw) || 0), 0),
-        hosts: all.reduce((t, a) => t + (Number(a.hosts) || 0), 0),
-        root: (all.find((a) => a.root)?.root as string | undefined) ?? null,
-      };
-    })(),
+    read: postureRead(pages),
     policies,
     topFailed: [...controlStats.entries()].filter(([, c]) => c.failed > 0).sort((a, b) => b[1].failed - a[1].failed).slice(0, 5)
-      .map(([cid, c]) => ({ cid, statement: glossary[cid]?.[0] || `Contrôle ${cid}`, criticality: glossary[cid]?.[1] ?? null, failed: c.failed, rate: rate(c.passed, c.failed), policies: c.policies.size })),
+      .map(([cid, c]) => ({ cid, statement: glossary[cid]?.[0] || `Contrôle ${cid}`, criticality: glossary[cid]?.[1] ?? null, failed: c.failed, rate: rateOf(c.passed, c.failed), policies: c.policies.size })),
   };
+}
 
+export function buildResults(pages: Page[], now: number, opts: { previousPolicies?: Row[]; fixedDaily?: FixedRow[] } = {}) {
+  const hostsPages = aggsOf(pages, "hosts");
+  const detPages = aggsOf(pages, "detections");
+  const kb = kbOf(pages);
+  const severities = severitiesOf(detPages);
+  const qids = mergeQids(detPages);
+  const truriskCount = sumOf(hostsPages, (p) => p.truriskCount);
+  // Délais de correction réels : cumul jour par jour (table qualys_fixed_daily), ou pages de la photo
+  const fixedRows = opts.fixedDaily ?? fixedRowsOfPages(pages);
+  const exposedByType = byAssetType((t) => sumOf(hostsPages, (p) => p.byType?.[t]?.publicIp));
   const total = severities.reduce((t, s) => t + s.total, 0);
   const reopened = severities.reduce((t, s) => t + s.reopened, 0);
   return {
     generatedAt: new Date(now).toISOString(),
-    coverage,
-    hostsWithVulns: sum(detPages, (p) => p.hostsWithVulns),
-    detections: { total, potential: sum(detPages, (p) => p.potential), qdsCritical: sum(detPages, (p) => p.qdsCritical), vulns: qids.size },
+    coverage: coverageOf(hostsPages),
+    hostsWithVulns: sumOf(detPages, (p) => p.hostsWithVulns),
+    detections: { total, potential: sumOf(detPages, (p) => p.potential), qdsCritical: sumOf(detPages, (p) => p.qdsCritical), vulns: qids.size },
     severities,
-    kev: flagged(KB_FLAGS.kev),
-    ransomware: flagged(KB_FLAGS.ransomware),
-    activeAttacks: flagged(KB_FLAGS.activeAttacks),
+    kev: flaggedOf(qids, kb, KB_FLAGS.kev),
+    ransomware: flaggedOf(qids, kb, KB_FLAGS.ransomware),
+    activeAttacks: flaggedOf(qids, kb, KB_FLAGS.activeAttacks),
     // Axe 2 : exposition aux menaces
     exposure: {
-      truriskAvg: truriskCount ? Math.round(sum(hostsPages, (p) => p.truriskSum) / truriskCount) : null,
+      truriskAvg: truriskCount ? Math.round(sumOf(hostsPages, (p) => p.truriskSum) / truriskCount) : null,
       truriskAssets: truriskCount,
-      armed: { ...flagged(ARMED), exploitPublic: flagged(KB_FLAGS.exploitPublic).detections },
+      armed: { ...flaggedOf(qids, kb, ARMED), exploitPublic: flaggedOf(qids, kb, KB_FLAGS.exploitPublic).detections },
     },
     // Axe 3 : efficacité opérationnelle
     operations: {
       windowDays: FIXED_WINDOW_DAYS,
-      fixed: { all: fixAll, bySev: fixSev, byType: fixType, monthly },
-      open: { byType: byTypeOpen },
+      fixed: fixedOf(fixedRows, now),
+      open: {
+        byType: byAssetType((t) => ({
+          total: sumOf(detPages, (p) => p.byType?.[t]?.total), overdue: sumOf(detPages, (p) => p.byType?.[t]?.overdue), sev5: sumOf(detPages, (p) => p.byType?.[t]?.sev5),
+        })),
+      },
       reopenRate: total ? round1((reopened / total) * 100) : null,
-      ignored,
-      fixedCollected: fixedRows.length > 0 || fixPages.length > 0,
+      ignored: {
+        total: sumOf(detPages, (p) => p.ignored?.total),
+        sev5: sumOf(detPages, (p) => p.ignored?.sev5),
+        ages: [0, 1, 2, 3].map((i) => sumOf(detPages, (p) => p.ignored?.ages?.[i])),
+      },
+      fixedCollected: fixedRows.length > 0 || pages.some((p) => p.kind === "fixed"),
       /** Lecture des corrigées en échec cette nuit (indicateurs sur l'historique déjà en base). */
-      fixedError: (pages.find((p) => p.kind === "fixederror")?.agg?.message as string | undefined) ?? null,
+      fixedError: errorOf(pages, "fixederror"),
     },
     // Axe 1 (en partie) : obsolescence, d'après VMDR
-    obsolescence,
+    obsolescence: obsolescenceOf(detPages, qids, kb),
     // Axe 4 : conformité et durcissement (Policy Audit)
-    compliance,
+    compliance: complianceOf(pages, now, opts.previousPolicies ?? []),
     // Axe 1 : inventaire (CSAM) et exposition Internet
-    inventory,
-    internetExposed,
+    inventory: inventoryOf(pages),
+    internetExposed: { total: ASSET_TYPES.reduce((t, k) => t + exposedByType[k], 0), byType: exposedByType },
     // Axe 5 : sécurité applicative (WAS)
-    webApps,
+    webApps: webAppsOf(pages),
   };
 }
 
 /** Index des vulnérabilités ouvertes de la photo, pour la recherche d'exposition (une ligne par QID). */
-export function vulnIndex(pages: { kind: string; agg: Row }[]) {
-  const qids = mergeQids(pages.filter((p) => p.kind === "detections").map((p) => p.agg));
-  const kb: Record<string, [string, number, string]> = Object.assign({}, ...pages.filter((p) => p.kind === "kb").map((p) => p.agg));
+export function vulnIndex(pages: Page[]) {
+  const qids = mergeQids(aggsOf(pages, "detections"));
+  const kb = kbOf(pages);
   return [...qids.entries()].map(([qid, q]) => ({
     qid: Number(qid), severity: q[1], hosts: q[0], servers: q[6] ?? 0, overdue: q[2],
     first_found: q[3] ? new Date(q[3]).toISOString() : null,
