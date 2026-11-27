@@ -29,11 +29,19 @@ const getPinTitle = (isExpanded: boolean, isPinned: boolean): string | undefined
   return isPinned ? "Réduire" : "Épingler";
 };
 
+/** Initiales tirées de l'adresse e-mail (« prenom.nom@… » → « PN »), à défaut d'initiales saisies dans le profil. */
+function initialsOf(email: string | null | undefined): string {
+  const local = (email ?? "").split("@")[0];
+  const parts = local.split(/[._-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return local.slice(0, 2).toUpperCase() || "?";
+}
+
 // Props en lecture seule
 export default function AppLayout({ children }: { readonly children: ReactNode }) {
   const location = useLocation();
   const { user, signOut } = useAuth();
-  const { canSee, label: profileName } = useAccess();
+  const { canSee } = useAccess();
 
   const [isPinned, setIsPinned] = useState(() => localStorage.getItem("sidebarPinned") === "true");
   const [isHovered, setIsHovered] = useState(false);
@@ -130,10 +138,10 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
             .single();
 
           if (data && !error) {
-            if (data.initials) {
-              setCustomInitials(data.initials);
-              localStorage.setItem('userInitials', data.initials);
-            }
+            // Initiales du compte connecté (celles d'un compte précédent sur ce poste sont oubliées)
+            setCustomInitials(data.initials ?? '');
+            if (data.initials) localStorage.setItem('userInitials', data.initials);
+            else localStorage.removeItem('userInitials');
             if (data.first_name) {
               setFirstName(data.first_name);
             }
@@ -217,12 +225,12 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
           <div className="relative" ref={dropdownRef}>
             <button
               type="button"
+              aria-label="Menu du compte"
               onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
               className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
-              <span className="flex flex-col items-end leading-tight">
-                <span className="text-sm font-medium text-foreground">{user?.email || "Profil"}</span>
-                <span className="text-[11px] text-muted-foreground">Profil : {profileName}</span>
+              <span className="w-9 h-9 rounded-full bg-primary/15 text-primary text-sm font-bold flex items-center justify-center" title={user?.email ?? undefined}>
+                {customInitials || initialsOf(user?.email)}
               </span>
               <ChevronDown className="w-4 h-4 text-muted-foreground" />
             </button>
