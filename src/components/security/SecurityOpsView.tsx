@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAccess } from "@/hooks/useAccess";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchProjects, createProject, updateProject, deleteProject,
@@ -318,6 +319,7 @@ const AuditsTable = ({ filteredApps, activeVulns, setSelectedApp, setShowResolve
 };
 
 const VulnerabilityList = ({ vulns, activeVulns, selectedApp, showResolvedHistory, setShowResolvedHistory, setIsAddVulnOpen, setVulnToClose }: any) => {
+  const { canEdit } = useAccess();
   const displayedVulns = vulns.filter((v: any) => v.appId === selectedApp.id && v.status === (showResolvedHistory ? 'resolu' : 'ouvert'));
 
   return (
@@ -326,9 +328,9 @@ const VulnerabilityList = ({ vulns, activeVulns, selectedApp, showResolvedHistor
         <h4 className="text-sm font-semibold flex items-center gap-2">
           <Bug className="w-4 h-4 text-rose-500" /> Constats & Remédiation
         </h4>
-        <Button size="sm" variant="outline" onClick={() => setIsAddVulnOpen(true)}>
+        {canEdit && (<Button size="sm" variant="outline" onClick={() => setIsAddVulnOpen(true)}>
           <Plus className="w-3 h-3 mr-1" /> Déclarer
-        </Button>
+        </Button>)}
       </div>
 
       <div className="flex p-1 bg-muted/50 rounded-lg">
@@ -370,7 +372,7 @@ const VulnerabilityList = ({ vulns, activeVulns, selectedApp, showResolvedHistor
                     </div>
                     <h5 className="font-semibold text-sm line-clamp-2 text-foreground">{vuln.title}</h5>
                   </div>
-                  {!showResolvedHistory && (
+                  {canEdit && !showResolvedHistory && (
                     <Button variant="ghost" size="icon" className="h-7 w-7 bg-background shadow-sm hover:bg-emerald-50 hover:text-emerald-600 border border-border flex-shrink-0" onClick={() => setVulnToClose(vuln.id)}>
                       <CheckCircle2 className="w-4 h-4" />
                     </Button>
@@ -392,6 +394,7 @@ const VulnerabilityList = ({ vulns, activeVulns, selectedApp, showResolvedHistor
 // 3. COMPOSANT PRINCIPAL (Allégé)
 // ============================================================================
 export default function SecurityOpsView() {
+  const { canEdit } = useAccess();
   const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState("projects");
@@ -545,9 +548,9 @@ export default function SecurityOpsView() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
               </div>
-              <Button size="sm" onClick={() => activeTab === "projects" ? setIsAddProjectOpen(true) : setIsAddAppOpen(true)}>
+              {canEdit && (<Button size="sm" onClick={() => activeTab === "projects" ? setIsAddProjectOpen(true) : setIsAddAppOpen(true)}>
                 <Plus className="w-4 h-4 mr-2" /> {activeTab === "projects" ? "Nouveau Projet" : "Nouveau Périmètre"}
-              </Button>
+              </Button>)}
             </div>
           </div>
 
@@ -570,9 +573,9 @@ export default function SecurityOpsView() {
                 <SheetTitle className="text-xl">{selectedProject?.name}</SheetTitle>
                 <SheetDescription>Détails du projet</SheetDescription>
               </div>
-              <Button variant="ghost" size="icon" onClick={() => setProjectToEdit(selectedProject)}>
+              {canEdit && (<Button variant="ghost" size="icon" onClick={() => setProjectToEdit(selectedProject)}>
                 <Pencil className="w-4 h-4" />
-              </Button>
+              </Button>)}
             </div>
           </SheetHeader>
 
@@ -595,7 +598,7 @@ export default function SecurityOpsView() {
                 <p className="text-xs text-muted-foreground pt-2 border-t border-border mt-2">Demande de PAS le : {formatFrDate(selectedProject.requestDate || selectedProject.createdAt)}</p>
               </div>
 
-              <div className="space-y-3 pt-4 border-t border-border">
+              {canEdit && (<div className="space-y-3 pt-4 border-t border-border">
                 <h4 className="text-sm font-semibold">Faire avancer le PAS</h4>
                 <div className="grid grid-cols-1 gap-2">
                   <Button variant="outline" size="sm" onClick={() => setProjectStatusToUpdate({id: selectedProject.id, status: 'draft', name: selectedProject.name})} className={`justify-start ${selectedProject.pasStatus === 'draft' ? 'border-primary bg-primary/5 text-primary' : ''}`}>
@@ -608,12 +611,12 @@ export default function SecurityOpsView() {
                     ✅ Valider définitivement le PAS
                   </Button>
                 </div>
-              </div>
+              </div>)}
 
               <div className="mt-12 pt-6 border-t border-border">
-                <Button variant="destructive" className="w-full" onClick={() => setProjectToDelete(selectedProject)}>
+                {canEdit && (<Button variant="destructive" className="w-full" onClick={() => setProjectToDelete(selectedProject)}>
                   <Trash2 className="w-4 h-4 mr-2" /> Supprimer le projet
-                </Button>
+                </Button>)}
               </div>
             </div>
           )}
@@ -632,9 +635,9 @@ export default function SecurityOpsView() {
                 </div>
                 <SheetTitle className="text-xl">{selectedApp?.name}</SheetTitle>
               </div>
-              <Button variant="ghost" size="icon" onClick={() => setAppToEdit(selectedApp)}>
+              {canEdit && (<Button variant="ghost" size="icon" onClick={() => setAppToEdit(selectedApp)}>
                 <Pencil className="w-4 h-4" />
-              </Button>
+              </Button>)}
             </div>
           </SheetHeader>
 
@@ -661,9 +664,9 @@ export default function SecurityOpsView() {
                     </div>
                   </div>
                 </div>
-                <Button variant="outline" size="sm" className="w-full bg-primary/5 hover:bg-primary/10 border-primary/20 text-primary" onClick={() => setAppToMarkRiskAnalyzed(selectedApp)}>
+                {canEdit && (<Button variant="outline" size="sm" className="w-full bg-primary/5 hover:bg-primary/10 border-primary/20 text-primary" onClick={() => setAppToMarkRiskAnalyzed(selectedApp)}>
                   <CheckCircle2 className="w-4 h-4 mr-2" /> Marquer l'analyse effectuée aujourd'hui
-                </Button>
+                </Button>)}
               </div>
 
               <div className="space-y-3 pt-4 border-t border-border">
@@ -686,9 +689,9 @@ export default function SecurityOpsView() {
                     </div>
                   </div>
                 </div>
-                <Button variant="outline" size="sm" className="w-full bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 dark:border-blue-800 dark:text-blue-400" onClick={() => setAppToMarkAudited(selectedApp)}>
+                {canEdit && (<Button variant="outline" size="sm" className="w-full bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 dark:border-blue-800 dark:text-blue-400" onClick={() => setAppToMarkAudited(selectedApp)}>
                   <CheckCircle2 className="w-4 h-4 mr-2" /> Marquer l'audit effectué aujourd'hui
-                </Button>
+                </Button>)}
               </div>
 
               <VulnerabilityList
@@ -702,9 +705,9 @@ export default function SecurityOpsView() {
               />
 
               <div className="mt-12 pt-6 border-t border-border">
-                <Button variant="destructive" className="w-full" onClick={() => setAppToDelete(selectedApp)}>
+                {canEdit && (<Button variant="destructive" className="w-full" onClick={() => setAppToDelete(selectedApp)}>
                   <Trash2 className="w-4 h-4 mr-2" /> Retirer le périmètre
-                </Button>
+                </Button>)}
               </div>
             </div>
           )}

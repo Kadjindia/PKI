@@ -998,6 +998,9 @@ Deno.serve(async (req) => {
     const client = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: authHeader } } });
     const { data: { user }, error: authError } = await client.auth.getUser();
     if (authError || !user) return jsonResponse({ error: "Session invalide" }, 401);
+    // Profil : tableaux de bord des outils réservés aux profils RSSI, équipe SSI et DSI
+    const { data: role } = await client.rpc("app_role");
+    if (!["rssi", "ssi", "dsi"].includes(String(role))) return jsonResponse({ error: "Votre profil ne donne pas accès aux tableaux de bord des outils" }, 403);
 
     const action = String(body.action);
     const handler = Object.hasOwn(SCREEN_ACTIONS, action) ? SCREEN_ACTIONS[action] : undefined;

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAccess } from "@/hooks/useAccess";
 import { useKpi } from "@/context/KpiContext";
 import { KpiDefinition, DATA_SOURCE_LABELS, DATA_SOURCE_COLORS, DataSourceType } from "@/types/kpi";
 import {
@@ -140,14 +141,15 @@ function DetailsTabContent({ details, source }: Readonly<{ details: any[]; sourc
 }
 
 function SourceTabContent({ source, setUploadOpen }: Readonly<{ source: any; setUploadOpen: (v: boolean) => void }>) {
+  const { canEdit } = useAccess();
   if (!source) {
     return (
       <div className="text-center py-8 space-y-3 mt-2">
         <p className="text-sm text-muted-foreground">Aucune source associée.</p>
-        <Button type="button" size="sm" className="gap-1.5" onClick={() => setUploadOpen(true)}>
+        {canEdit && (<Button type="button" size="sm" className="gap-1.5" onClick={() => setUploadOpen(true)}>
           <Upload className="w-3.5 h-3.5" />
           Importer un fichier
-        </Button>
+        </Button>)}
       </div>
     );
   }
@@ -304,6 +306,7 @@ function HistoryTabContent({ entries, isPercentage }: Readonly<{ entries: any[];
 // --- COMPOSANT PRINCIPAL ---
 
 export default function KpiDetailDialog({ kpi, open, onClose }: Props) {
+  const { canEdit } = useAccess();
   const { getEntriesForKpi, getPreviousValue, getLatestValue } = useKpi();
 
   const entries = getEntriesForKpi(kpi.id);
@@ -361,7 +364,7 @@ export default function KpiDetailDialog({ kpi, open, onClose }: Props) {
                   <History className="w-3.5 h-3.5" />
                   Sources
                 </Button>
-                <Button
+                {canEdit && (<Button
                   type="button"
                   size="sm"
                   className="gap-1.5 text-xs"
@@ -369,7 +372,7 @@ export default function KpiDetailDialog({ kpi, open, onClose }: Props) {
                 >
                   <Upload className="w-3.5 h-3.5" />
                   Ajouter fichier
-                </Button>
+                </Button>)}
               </div>
             </div>
           </DialogHeader>

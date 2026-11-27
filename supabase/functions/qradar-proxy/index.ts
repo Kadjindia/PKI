@@ -45,6 +45,12 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Session invalide" }), { status: 401, headers: corsHeaders });
     }
 
+    // Profil : tableaux de bord des outils réservés aux profils RSSI, équipe SSI et DSI
+    const { data: role } = await supabaseClient.rpc("app_role");
+    if (!["rssi", "ssi", "dsi"].includes(String(role))) {
+      return new Response(JSON.stringify({ error: "Votre profil ne donne pas accès aux tableaux de bord des outils" }), { status: 403, headers: corsHeaders });
+    }
+
     // 3. Vérification des secrets QRadar
     if (!QRADAR_BASE_URL || !QRADAR_SEC_TOKEN) {
       console.error("Erreur: Secrets QRadar manquants");

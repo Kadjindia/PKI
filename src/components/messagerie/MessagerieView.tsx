@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useAccess } from "@/hooks/useAccess";
 import { useKpi } from "@/context/KpiContext";
 import { toast } from "sonner";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -130,6 +131,7 @@ const getTrend = (current: number, previous: number | null) => {
 // ============================================================================
 
 export default function MessagerieView() {
+  const { canEdit } = useAccess();
   const { entries } = useKpi();
   const queryClient = useQueryClient();
 
@@ -407,9 +409,9 @@ export default function MessagerieView() {
             Analyse des flux, menaces qualifiées et erreurs d'adressage
           </p>
         </div>
-        <Button type="button" onClick={() => setIsAddStatsOpen(true)}>
+        {canEdit && (<Button type="button" onClick={() => setIsAddStatsOpen(true)}>
           <Plus className="w-4 h-4 mr-2" /> Intégrer des données
-        </Button>
+        </Button>)}
       </div>
 
       {/* KPI CARDS */}

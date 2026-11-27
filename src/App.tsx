@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 
 // Layout & Security
 import PrivateRoute from "@/components/PrivateRoute";
+import RequireTab from "@/components/RequireTab";
 import AppLayout from "@/components/layout/AppLayout";
 import IdleTimeout from './components/IdleTimeout';
 
@@ -55,15 +56,15 @@ const App = () => (
                 <PrivateRoute>
                   <AppLayout>
                     <Routes>
-                      <Route path="/" element={<Index />} />
-                      <Route path="/gouvernance" element={<Governance />} />
-                      <Route path="/security-ops" element={<SecurityOps />} />
-                      <Route path="/sensibilisation" element={<Awareness />} />
-                      <Route path="/messagerie" element={<Messagerie />} />
-                      <Route path="/risques" element={<Risks />} />
-                      <Route path="/monitoring" element={<Monitoring />} />
+                      <Route path="/" element={<RequireTab><Index /></RequireTab>} />
+                      <Route path="/gouvernance" element={<RequireTab><Governance /></RequireTab>} />
+                      <Route path="/security-ops" element={<RequireTab><SecurityOps /></RequireTab>} />
+                      <Route path="/sensibilisation" element={<RequireTab><Awareness /></RequireTab>} />
+                      <Route path="/messagerie" element={<RequireTab><Messagerie /></RequireTab>} />
+                      <Route path="/risques" element={<RequireTab><Risks /></RequireTab>} />
+                      <Route path="/monitoring" element={<RequireTab><Monitoring /></RequireTab>} />
                       <Route path="/parametres" element={<Settings />} />
-                      <Route path="/reports" element={<Reports />} />
+                      <Route path="/reports" element={<RequireTab><Reports /></RequireTab>} />
                       <Route path="*" element={<NotFound />} />
                     </Routes>
                   </AppLayout>

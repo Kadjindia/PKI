@@ -15,7 +15,13 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [signingIn, setSigningIn] = useState<boolean>(false);
+
+  // Profil (users.role) : relu à chaque changement d'utilisateur (ouverture, connexion, déconnexion)
+  // Utilisateur dont le profil est chargé : tant qu'il diffère de l'utilisateur courant, on attend
+  const [roleFor, setRoleFor] = useState<string | null>(null);
+  const [sessionLoading, setSessionLoading] = useState<boolean>(true);
+  const userId = user?.id ?? null;
 
   useEffect(() => {
     getCSRFToken();
@@ -23,29 +29,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const checkSession = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const currentUser = session?.user ?? null;
-        setUser(currentUser);
-
-        if (currentUser) {
-          try {
-            const { data } = await supabase
-              .from('users')
-              .select('role')
-              .eq('id', currentUser.id)
-              .maybeSingle();
-
-            setRole(data?.role || 'saisisseur');
-          } catch (err) {
-            console.error("Erreur lors de la récupération du rôle:", err);
-            setRole('saisisseur');
-          }
-        } else {
-          setRole(null);
-        }
+        setUser(session?.user ?? null);
       } catch (err) {
         console.error("Erreur lors de la récupération de la session:", err);
       } finally {
-        setLoading(false);
+        setSessionLoading(false);
       }
     };
 
@@ -53,18 +41,42 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        const currentUser = session?.user ?? null;
-        setUser(currentUser);
-        setLoading(false);
+        setUser(session?.user ?? null);
+        setSessionLoading(false);
       }
     );
 
     return () => subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!userId) {
+      setRole(null);
+      setRoleFor(null);
+      return;
+    }
+    const loadRole = async () => {
+      try {
+        const { data } = await supabase.from('users').select('role').eq('id', userId).maybeSingle();
+        // Sans profil attribué : aucun accès aux données (profil en attente)
+        if (!cancelled) setRole(data?.role ?? null);
+      } catch (err) {
+        console.error("Erreur lors de la récupération du profil:", err);
+        if (!cancelled) setRole(null);
+      } finally {
+        if (!cancelled) setRoleFor(userId);
+      }
+    };
+    void loadRole();
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  const loading = sessionLoading || signingIn || (userId !== null && roleFor !== userId);
+
   const signIn = useCallback(async (email: string, password: string) => {
     try {
-      setLoading(true);
+      setSigningIn(true);
       const csrfToken = getCSRFToken();
       const { error } = await supabase.auth.signInWithPassword({
         email,
@@ -75,9 +87,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         } as any, // Cast nécessaire car le SDK attend un objet standard
       });
       if (error) throw error;
-      setLoading(false);
+      setSigningIn(false);
     } catch (err: any) {
-      setLoading(false);
+      setSigningIn(false);
       throw new Error('Erreur de connexion: ' + err.message);
     }
   }, []);

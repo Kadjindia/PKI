@@ -105,6 +105,14 @@ Deno.serve(async (req) => {
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+    // Profil : la saisie des indicateurs est réservée au RSSI (les autres profils sont en lecture seule)
+    const { data: role } = await userClient.rpc("app_role");
+    if (role !== "rssi") {
+      return new Response(
+        JSON.stringify({ error: "Votre profil est en lecture seule : modification impossible" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,

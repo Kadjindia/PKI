@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { useAccess } from "@/hooks/useAccess";
 import * as XLSX from "xlsx";
 import { DaxEngine } from "@/lib/DaxEngine";
 import { supabase } from "@/integrations/supabase/client";
@@ -618,7 +619,7 @@ const DashboardWidget = React.memo(({ widget, datasets, measures }: { widget: Wi
 // ============================================================================
 const DashboardRibbon = ({
   activeRiskTitle, isRibbonCollapsed, setIsRibbonCollapsed, activeRibbonTab, setActiveRibbonTab,
-  onBack, onAddData, onOpenPowerQuery, onAddWidget, onAddTab, onAppendData
+  onBack, onAddData, onOpenPowerQuery, onAddWidget, onAddTab, onAppendData, readOnly
 }: any) => {
   return (
     <div className="flex flex-col bg-background shadow-sm z-20 relative">
@@ -627,16 +628,17 @@ const DashboardRibbon = ({
           <div className="flex items-center gap-2 pr-4 border-r pb-1">
             <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={onBack}><ArrowLeft className="w-4 h-4" /></Button>
             <span className="font-bold truncate max-w-[200px]">{activeRiskTitle}</span>
+            {readOnly && <span className="text-xs text-muted-foreground">· lecture seule</span>}
           </div>
-          <div className="flex gap-1">
+          {!readOnly && <div className="flex gap-1">
             {['Fichier', 'Accueil', 'Insérer', 'Modélisation', 'Affichage', 'Optimiser', 'Aide'].map(tab => (
               <button type="button" key={tab} onClick={() => { setActiveRibbonTab(tab); if (isRibbonCollapsed) setIsRibbonCollapsed(false); }} className={`px-4 py-1.5 rounded-t-md transition-colors border-b-2 -mb-[1px] font-inherit outline-none cursor-pointer ${activeRibbonTab === tab && !isRibbonCollapsed ? 'border-primary text-primary bg-background font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.02)]' : 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground bg-transparent'}`}>{tab}</button>
             ))}
-          </div>
+          </div>}
         </div>
-        <div className="pb-1 pr-2"><button type="button" onClick={() => setIsRibbonCollapsed(!isRibbonCollapsed)} className="p-1 text-muted-foreground hover:bg-muted hover:text-foreground rounded transition-colors bg-transparent border-none outline-none cursor-pointer" title={isRibbonCollapsed ? "Développer" : "Réduire"}>{isRibbonCollapsed ? <ChevronDown className="w-4 h-4"/> : <ChevronUp className="w-4 h-4"/>}</button></div>
+        {!readOnly && <div className="pb-1 pr-2"><button type="button" onClick={() => setIsRibbonCollapsed(!isRibbonCollapsed)} className="p-1 text-muted-foreground hover:bg-muted hover:text-foreground rounded transition-colors bg-transparent border-none outline-none cursor-pointer" title={isRibbonCollapsed ? "Développer" : "Réduire"}>{isRibbonCollapsed ? <ChevronDown className="w-4 h-4"/> : <ChevronUp className="w-4 h-4"/>}</button></div>}
       </div>
-      <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
+      {!readOnly && <div className={`transition-all duration-300 overflow-hidden ${isRibbonCollapsed ? 'h-0 border-0' : 'h-auto border-b'}`}>
         <div className="flex items-center px-2 py-2 gap-4 bg-background min-h-[85px] overflow-x-auto">
           {activeRibbonTab === 'Fichier' && (<div className="flex items-center text-xs text-muted-foreground px-4 italic">Menu fichier (Enregistrer, Exporter, Imprimer...)</div>)}
           {activeRibbonTab === 'Accueil' && (
@@ -675,7 +677,7 @@ const DashboardRibbon = ({
             <div className="flex items-center text-xs text-muted-foreground px-4 italic">Options spécifiques à venir...</div>
           )}
         </div>
-      </div>
+      </div>}
     </div>
   );
 };
@@ -1007,6 +1009,7 @@ const PowerQueryEditorModal = ({ isOpen, onClose, activeRisk, updateActiveRisk }
 // COMPOSANT PRINCIPAL (VIEW)
 // ============================================================================
 export default function RisksView() {
+  const { canEdit } = useAccess();
   const [risks, setRisks] = useState<TrackedRisk[]>([]);
   const [isInitialized, setIsInitialized] = useState(false);
 
@@ -1077,7 +1080,8 @@ export default function RisksView() {
   }, []);
 
   useEffect(() => {
-    if (!isInitialized) return;
+    // Lecture seule : rien n'est enregistré (les modifications éventuelles restent locales)
+    if (!isInitialized || !canEdit) return;
     const timer = setTimeout(async () => {
       try {
         const recordsToUpsert = risks.map(r => ({ ...r, updated_at: new Date().toISOString() }));
@@ -1093,7 +1097,7 @@ export default function RisksView() {
       }
     }, 1500);
     return () => clearTimeout(timer);
-  }, [risks, isInitialized]);
+  }, [risks, isInitialized, canEdit]);
 
   useEffect(() => {
     if (!activeWidgetId) return;
@@ -1393,7 +1397,7 @@ export default function RisksView() {
             <p className="text-sm text-muted-foreground mt-1">Gérez vos modèles d'analyse et suivez vos indicateurs de risques.</p>
           </div>
           <Dialog open={isAddOpen} onOpenChange={(o) => { setIsAddOpen(o); if(!o) resetWizard(); }}>
-            <DialogTrigger asChild><Button type="button" className="gap-2"><Plus className="w-4 h-4" /> Nouvelle Analyse</Button></DialogTrigger>
+            {canEdit && (<DialogTrigger asChild><Button type="button" className="gap-2"><Plus className="w-4 h-4" /> Nouvelle Analyse</Button></DialogTrigger>)}
             <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
               <DialogHeader>
                 <DialogTitle>Configuration de l'Analyse</DialogTitle>
@@ -1416,9 +1420,9 @@ export default function RisksView() {
                   onClick={() => { setActiveRiskId(risk.id); setActiveTabId(risk.tabs?.[0]?.id || null); setIsFiltersOpen(false); setIsVisOpen(false); setIsDataOpen(false); setActiveWidgetId(null); setShowHiddenDatasets(false); }}
                   className="absolute inset-0 w-full h-full bg-transparent border-none outline-none cursor-pointer z-0 focus:ring-2 focus:ring-primary focus:ring-inset"
                 />
-                <button type="button" onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }} className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-20 transition-all outline-none bg-transparent border-none cursor-pointer block pointer-events-auto" title="Supprimer">
+                {canEdit && (<button type="button" onClick={(e) => { e.stopPropagation(); setRiskToDelete(risk.id); }} className="absolute top-4 right-4 p-1.5 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-rose-100 hover:text-rose-600 z-20 transition-all outline-none bg-transparent border-none cursor-pointer block pointer-events-auto" title="Supprimer">
                   <Trash2 className="w-4 h-4" />
-                </button>
+                </button>)}
                 <CardContent className="p-6 relative z-10 pointer-events-none flex-1">
                   <div className="flex items-center gap-3 mb-4 pr-8"><div className="p-2.5 rounded-lg bg-primary/10 text-primary shrink-0"><Shield className="w-6 h-6" /></div><div className="min-w-0"><h3 className="font-bold text-lg truncate m-0">{risk.title}</h3></div></div>
                   <div className="flex gap-2 mb-4"><Badge variant="outline" className="text-[10px] bg-secondary/50"><Database className="w-3 h-3 mr-1"/> {risk.datasets.length} Sources</Badge><Badge variant="outline" className="text-[10px] bg-secondary/50"><BarChart3 className="w-3 h-3 mr-1"/> {risk.widgets.length} Indicateurs</Badge></div>
@@ -1452,7 +1456,7 @@ export default function RisksView() {
         activeRiskTitle={activeRisk?.title} isRibbonCollapsed={isRibbonCollapsed} setIsRibbonCollapsed={setIsRibbonCollapsed}
         activeRibbonTab={activeRibbonTab} setActiveRibbonTab={setActiveRibbonTab} onBack={() => {setActiveRiskId(null); setActiveWidgetId(null);}}
         onAddData={() => setIsAddDataOpen(true)} onOpenPowerQuery={() => setIsPowerQueryOpen(true)} onAddWidget={addWidgetToStudio}
-        onAddTab={handleAddNewTab} onAppendData={() => setIsAppendOpen(true)}
+        onAddTab={handleAddNewTab} onAppendData={() => setIsAppendOpen(true)} readOnly={!canEdit}
       />
 
       <div className="flex flex-1 overflow-hidden">

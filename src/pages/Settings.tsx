@@ -1,9 +1,12 @@
 import { Moon, Sun } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useEffect, useState } from "react";
+import { useAccess } from "@/hooks/useAccess";
+import UsersAdmin from "@/components/settings/UsersAdmin";
 
 export default function Settings() {
   const [isDark, setIsDark] = useState(true);
+  const { role, label, canEdit } = useAccess();
 
   useEffect(() => {
     const stored = localStorage.getItem("theme");
@@ -22,6 +25,15 @@ export default function Settings() {
           <h1 className="text-2xl font-bold text-foreground">Paramètres</h1>
           <p className="text-muted-foreground mt-1">Configurez l'apparence de votre application</p>
         </div>
+
+        {role ? (
+          <p className="text-sm text-muted-foreground">Votre profil : <b className="text-foreground">{label}</b>{canEdit ? "" : " (lecture seule)"}</p>
+        ) : (
+          <div className="kpi-card max-w-xl border-amber-500/40">
+            <p className="font-medium text-amber-600">Profil en attente</p>
+            <p className="text-sm text-muted-foreground">Votre compte n&apos;a pas encore de profil : demandez au RSSI de vous en attribuer un pour accéder au tableau de bord.</p>
+          </div>
+        )}
 
         <div className="kpi-card max-w-xl">
           <div className="flex items-center justify-between">
@@ -43,6 +55,8 @@ export default function Settings() {
             </div>
           </div>
         </div>
+
+        {canEdit && <UsersAdmin />}
       </div>
   );
 }
