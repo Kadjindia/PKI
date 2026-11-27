@@ -97,9 +97,17 @@ function adminClient(): Admin {
 // Moteur : une étape = lire la réponse attendue, en tirer les chiffres, demander la suite
 // ---------------------------------------------------------------------------
 
+/** Bornes d'une plage d'actifs dans l'adresse (« &id_min=…&id_max=… »). */
+function hostBounds(range: { min?: number; max?: number }): string {
+  let out = "";
+  if (range.min != null) out += "&id_min=" + range.min;
+  if (range.max != null) out += "&id_max=" + range.max;
+  return out;
+}
+
 const firstUrl = {
   hosts: () => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/?action=list&details=All&show_trurisk=1&show_tags=1&show_asset_id=1&truncation_limit=${HOST_PAGE}`,
-  detections: (range: { min?: number; max?: number } = {}) => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}${range.min != null ? `&id_min=${range.min}` : ""}${range.max != null ? `&id_max=${range.max}` : ""}`,
+  detections: (range: { min?: number; max?: number } = {}) => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=New,Active,Re-Opened&include_ignored=1&show_results=0&show_qds=1&truncation_limit=${DETECTION_PAGE}${hostBounds(range)}`,
   fixed: (sinceIso: string) => `${QUALYS_BASE_URL}/api/5.0/fo/asset/host/vm/detection/?action=list&severities=3-5&status=Fixed&detection_updated_since=${sinceIso}&show_results=0&truncation_limit=${DETECTION_PAGE}`,
   policies: () => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/policy/?action=list&details=Basic`,
   posture: (policyId: string) => `${QUALYS_BASE_URL}/api/2.0/fo/compliance/posture/info/?action=list&policy_id=${encodeURIComponent(policyId)}&details=Basic&truncation_limit=${POSTURE_PAGE}`,
@@ -113,7 +121,7 @@ const FIXED_LAG_MS = 24 * 3600 * 1000;
 /** Conformité : une politique est réévaluée au plus une fois par semaine. */
 const COMPLIANCE_REFRESH_MS = 6 * 24 * 3600 * 1000;
 
-const basicAuth = () => `Basic ${btoa(`${QUALYS_USERNAME}:${QUALYS_PASSWORD}`)}`;
+const basicAuth = () => "Basic " + btoa(`${QUALYS_USERNAME}:${QUALYS_PASSWORD}`);
 
 async function request(admin: Admin, url: string): Promise<number> {
   const { data, error } = await admin.rpc("qualys_http_get", { url, auth: basicAuth(), timeout_ms: REQUEST_TIMEOUT_MS });
@@ -141,7 +149,7 @@ async function saveDetail(admin: Admin, state: Row, table: string, rows: Row[], 
   try {
     for (let i = 0; i < rows.length; i += chunk) {
       const part = rows.slice(i, i + chunk).map((r) => (snapId ? { snapshot_id: snapId, ...r } : r));
-      const { error } = await admin.from(table).upsert(part, onConflict ? { onConflict } : undefined);
+      const { error } = await admin.from(table).upsert(part, onConflict ? { onConflict } : undefined); // NOSONAR : lots écrits un par un (taille des requêtes)
       if (error) throw new Error(error.message);
     }
   } catch (e) {
@@ -154,7 +162,7 @@ async function saveDetail(admin: Admin, state: Row, table: string, rows: Row[], 
 async function saveIndex(admin: Admin, snapId: string, rows: Row[]) {
   for (let i = 0; i < rows.length; i += 1000) {
     // upsert : l'étape finale peut être rejouée après une interruption
-    const { error } = await admin.from("qualys_vulns").upsert(rows.slice(i, i + 1000).map((r) => ({ snapshot_id: snapId, ...r })), { onConflict: "snapshot_id,qid" });
+    const { error } = await admin.from("qualys_vulns").upsert(rows.slice(i, i + 1000).map((r) => ({ snapshot_id: snapId, ...r })), { onConflict: "snapshot_id,qid" }); // NOSONAR : lots écrits un par un
     if (error) throw new Error(`Index des vulnérabilités : ${error.message}`);
   }
   const { data: old } = await admin.from("qualys_snapshots").select("id").eq("status", "done")
@@ -187,59 +195,88 @@ async function directFetch(url: string, init: RequestInit, timeoutMs: number): P
   return { status: res.status, body: await res.text() };
 }
 
+type DirectPhase = "csam" | "was" | "wasapps";
+const NEXT_DIRECT: Record<DirectPhase, string> = { csam: "was", was: "wasapps", wasapps: "policies" };
+const WAS_HEADERS = () => ({ Authorization: basicAuth(), "Content-Type": "text/xml", Accept: "application/xml", "X-Requested-With": "pki-dashboard" });
+
+/** Recherche QPS (WAS) : au plus WAS_PAGE résultats, après l'identifiant `after`. */
+function wasRequest(extra: string, after: string | null): string {
+  const afterId = after ? '<Criteria field="id" operator="GREATER">' + Number(after) + "</Criteria>" : "";
+  const criteria = extra + afterId;
+  const filters = criteria ? "<filters>" + criteria + "</filters>" : "";
+  return `<ServiceRequest><preferences><limitResults>${WAS_PAGE}</limitResults></preferences>${filters}</ServiceRequest>`;
+}
+
+/** Réponse QPS en échec (HTTP ou code de réponse) : message d'erreur, sinon null. */
+function qpsError(what: string, res: { status: number; body: string }): string | null {
+  const code = /<responseCode>([A-Z_]+)<\/responseCode>/.exec(res.body)?.[1];
+  if (res.status >= 200 && res.status < 300 && (!code || code === "SUCCESS")) return null;
+  return `${what} : ${code ?? "HTTP " + res.status}`;
+}
+
+/** Une page de l'inventaire CSAM (Gateway). Renvoie false s'il faut réessayer sans exclusion de champs. */
+async function csamStep(admin: Admin, snapId: string, state: Row, timeoutMs: number, now: number): Promise<boolean> {
+  const gw = gatewayUrl(QUALYS_BASE_URL, Deno.env.get("QUALYS_GATEWAY_URL"));
+  const exclude = state.csamPlain ? "" : "&excludeFields=" + CSAM_EXCLUDE;
+  const after = state.next ? "&lastSeenAssetId=" + encodeURIComponent(state.next) : "";
+  const url = `${gw}/rest/2.0/search/am/asset?pageSize=${CSAM_PAGE}${exclude}${after}`;
+  const res = await directFetch(url, { method: "POST", headers: { Authorization: `Bearer ${await gatewayAuth()}`, "Content-Type": "application/json", Accept: "application/json" }, body: "{}" }, timeoutMs);
+  if (res.status === 401) gwCache = null;
+  if (res.status === 400 && !state.csamPlain) { state.csamPlain = true; return false; }
+  if (res.status < 200 || res.status >= 300) throw new Error(`CSAM : HTTP ${res.status}`);
+  const json = JSON.parse(res.body);
+  if (json.responseCode && json.responseCode !== "SUCCESS") throw new Error(`CSAM : ${json.responseCode} ${json.responseMessage ?? ""}`.trim());
+  const { agg, rows, next } = csamPage(json, now);
+  await savePage(admin, snapId, "csam", state.page, agg);
+  await saveDetail(admin, state, "qualys_csam_assets", rows, snapId, 200);
+  state.page++;
+  state.next = next;
+  return true;
+}
+
+/** Une page de l'inventaire complet des applications web (y compris celles sans vulnérabilité). */
+async function wasAppsStep(admin: Admin, snapId: string, state: Row, timeoutMs: number) {
+  const res = await directFetch(`${QUALYS_BASE_URL}/qps/rest/3.0/search/was/webapp`, { method: "POST", headers: WAS_HEADERS(), body: wasRequest("", state.next) }, timeoutMs);
+  const err = qpsError("WAS (applications)", res);
+  if (err) throw new Error(err);
+  const { rows, next } = wasAppsPage(res.body);
+  await saveDetail(admin, state, "qualys_was_apps", rows, snapId);
+  state.page++;
+  state.next = next;
+}
+
+/** Une page des vulnérabilités des applications web. */
+async function wasStep(admin: Admin, snapId: string, state: Row, timeoutMs: number, now: number) {
+  const body = wasRequest('<Criteria field="type" operator="EQUALS">VULNERABILITY</Criteria>', state.next);
+  const res = await directFetch(`${QUALYS_BASE_URL}/qps/rest/3.0/search/was/finding`, { method: "POST", headers: WAS_HEADERS(), body }, timeoutMs);
+  const err = qpsError("WAS", res);
+  if (err) throw new Error(err);
+  const { agg, rows, next } = wasPage(res.body, now, fixedSince().getTime());
+  await savePage(admin, snapId, "was", state.page, agg);
+  await saveDetail(admin, state, "qualys_was_findings", rows, snapId);
+  state.page++;
+  state.next = next;
+}
+
 /** Une page de CSAM ou de WAS. Une erreur persistante est notée (csamerror / waserror) et l'on passe à la suite. */
 async function directStep(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>, deadline: number): Promise<StepOutcome> {
-  const phase = state.phase as "csam" | "was" | "wasapps";
+  const phase = state.phase as DirectPhase;
   // Pas assez de temps dans ce passage pour attendre une réponse : le suivant s'en charge
   const timeoutMs = Math.min(DIRECT_TIMEOUT_MS, deadline - Date.now() - 5_000);
   if (timeoutMs < 30_000) { await save(); return "waiting"; }
   const nextPhase = () => {
-    state.phase = phase === "csam" ? "was" : phase === "was" ? "wasapps" : "policies";
+    state.phase = NEXT_DIRECT[phase];
     if (state.phase === "policies") state.pcStartedAt = new Date().toISOString();
     state.page = 0; state.next = null; state.attempts = 0;
   };
   try {
     const now = Date.now();
     if (phase === "csam") {
-      const gw = gatewayUrl(QUALYS_BASE_URL, Deno.env.get("QUALYS_GATEWAY_URL"));
-      const url = `${gw}/rest/2.0/search/am/asset?pageSize=${CSAM_PAGE}${state.csamPlain ? "" : `&excludeFields=${CSAM_EXCLUDE}`}${state.next ? `&lastSeenAssetId=${encodeURIComponent(state.next)}` : ""}`;
-      const res = await directFetch(url, { method: "POST", headers: { Authorization: `Bearer ${await gatewayAuth()}`, "Content-Type": "application/json", Accept: "application/json" }, body: "{}" }, timeoutMs);
-      if (res.status === 401) gwCache = null;
-      if (res.status === 400 && !state.csamPlain) { state.csamPlain = true; await save(); return "waiting"; }
-      if (res.status < 200 || res.status >= 300) throw new Error(`CSAM : HTTP ${res.status}`);
-      const json = JSON.parse(res.body);
-      if (json.responseCode && json.responseCode !== "SUCCESS") throw new Error(`CSAM : ${json.responseCode} ${json.responseMessage ?? ""}`.trim());
-      const { agg, rows, next } = csamPage(json, now);
-      await savePage(admin, snapId, "csam", state.page, agg);
-      await saveDetail(admin, state, "qualys_csam_assets", rows, snapId, 200);
-      state.page++;
-      state.next = next;
+      if (!(await csamStep(admin, snapId, state, timeoutMs, now))) { await save(); return "waiting"; }
     } else if (phase === "wasapps") {
-      // Inventaire complet des applications web (y compris celles sans vulnérabilité)
-      const filters = state.next ? `<filters><Criteria field="id" operator="GREATER">${Number(state.next)}</Criteria></filters>` : "";
-      const body = `<ServiceRequest><preferences><limitResults>${WAS_PAGE}</limitResults></preferences>${filters}</ServiceRequest>`;
-      const res = await directFetch(`${QUALYS_BASE_URL}/qps/rest/3.0/search/was/webapp`, {
-        method: "POST", headers: { Authorization: basicAuth(), "Content-Type": "text/xml", Accept: "application/xml", "X-Requested-With": "pki-dashboard" }, body,
-      }, timeoutMs);
-      const code = /<responseCode>([A-Z_]+)<\/responseCode>/.exec(res.body)?.[1];
-      if (res.status < 200 || res.status >= 300 || (code && code !== "SUCCESS")) throw new Error(`WAS (applications) : ${code ?? `HTTP ${res.status}`}`);
-      const { rows, next } = wasAppsPage(res.body);
-      await saveDetail(admin, state, "qualys_was_apps", rows, snapId);
-      state.page++;
-      state.next = next;
+      await wasAppsStep(admin, snapId, state, timeoutMs);
     } else {
-      const filters = `<Criteria field="type" operator="EQUALS">VULNERABILITY</Criteria>${state.next ? `<Criteria field="id" operator="GREATER">${Number(state.next)}</Criteria>` : ""}`;
-      const body = `<ServiceRequest><preferences><limitResults>${WAS_PAGE}</limitResults></preferences><filters>${filters}</filters></ServiceRequest>`;
-      const res = await directFetch(`${QUALYS_BASE_URL}/qps/rest/3.0/search/was/finding`, {
-        method: "POST", headers: { Authorization: basicAuth(), "Content-Type": "text/xml", Accept: "application/xml", "X-Requested-With": "pki-dashboard" }, body,
-      }, timeoutMs);
-      const code = /<responseCode>([A-Z_]+)<\/responseCode>/.exec(res.body)?.[1];
-      if (res.status < 200 || res.status >= 300 || (code && code !== "SUCCESS")) throw new Error(`WAS : ${code ?? `HTTP ${res.status}`}`);
-      const { agg, rows, next } = wasPage(res.body, now, fixedSince().getTime());
-      await savePage(admin, snapId, "was", state.page, agg);
-      await saveDetail(admin, state, "qualys_was_findings", rows, snapId);
-      state.page++;
-      state.next = next;
+      await wasStep(admin, snapId, state, timeoutMs, now);
     }
     state.attempts = 0;
     if (!state.next) nextPhase();
@@ -266,7 +303,7 @@ async function enterKb(admin: Admin, snapId: string, state: Row) {
   const rows: Row[] = [];
   let tableOk = true;
   for (let i = 0; i < ids.length; i += 300) {
-    const { data, error } = await admin.from("qualys_kb").select("qid, title, flags, cves, updated_at").in("qid", ids.slice(i, i + 300));
+    const { data, error } = await admin.from("qualys_kb").select("qid, title, flags, cves, updated_at").in("qid", ids.slice(i, i + 300)); // NOSONAR : lots lus un par un
     if (error) { tableOk = false; break; } // table absente : tout est relu chez Qualys
     rows.push(...(data ?? []));
   }
@@ -280,7 +317,7 @@ async function enterKb(admin: Admin, snapId: string, state: Row) {
     if (stale.has(String(k.qid))) continue;
     known.add(String(k.qid));
     cached[String(k.qid)] = [k.title ?? "", Number(k.flags) || 0, ((k.cves ?? []) as string[]).slice(0, 5).join(", ")];
-    if (Object.keys(cached).length >= 1000) { await savePage(admin, snapId, "kb", cachedPage++, cached); cached = {}; }
+    if (Object.keys(cached).length >= 1000) { await savePage(admin, snapId, "kb", cachedPage++, cached); cached = {}; } // NOSONAR : pages écrites une par une
   }
   if (Object.keys(cached).length) await savePage(admin, snapId, "kb", cachedPage, cached);
   state.kbIds = ids.filter((id) => !known.has(id));
@@ -324,12 +361,67 @@ async function mergeFixed(admin: Admin, snapId: string, pages: { kind: string; a
   const since = new Date(Date.now() - 400 * 24 * 3600 * 1000).toISOString().slice(0, 10);
   const rows: FixedRow[] = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error: e } = await admin.from("qualys_fixed_daily").select("day, severity, asset_type, n, in_sla, days_sum, hist").gte("day", since).range(from, from + 999);
+    const { data, error: e } = await admin.from("qualys_fixed_daily").select("day, severity, asset_type, n, in_sla, days_sum, hist").gte("day", since).range(from, from + 999); // NOSONAR : pagination
     if (e) { console.error("Lecture des corrections :", e.message); return undefined; }
     rows.push(...((data ?? []) as FixedRow[]));
     if (!data || data.length < 1000) break;
   }
   return rows;
+}
+
+/** Réponse Qualys en erreur : délai, erreur réseau, HTTP ou message d'erreur Qualys ; sinon null. */
+function responseError(res: Row, content: string): string | null {
+  if (res.timed_out) return "Délai dépassé";
+  if (res.error_msg) return String(res.error_msg);
+  if (res.status_code !== 200) return qualysError(content) ?? `HTTP ${res.status_code}`;
+  return qualysError(content);
+}
+
+/** Limite d'appels simultanés ou horaire atteinte : réessayer plus tard. */
+const isThrottled = (res: Row, content: string) => res.status_code === 409 || /concurrency|rate limit/i.test(qualysError(content) ?? "");
+
+/** Identifiants refusés : inutile de réessayer. */
+const credentialsRefused = (res: Row, err: string) => res.status_code === 401 || /login|password/i.test(err);
+
+/** Délai d'attente d'une réponse dépassé. */
+const responseOverdue = (requestedAt: string) => Date.now() - Date.parse(requestedAt) > REQUEST_TIMEOUT_MS + 5 * 60_000;
+
+/**
+ * Réponse attendue sur une plage d'actifs. Renvoie « progressed » si une page a été lue,
+ * un message s'il faut abandonner la photo, ou null (pas encore de réponse, ou à réessayer).
+ */
+async function readLane(admin: Admin, snapId: string, state: Row, lane: Row, i: number): Promise<"progressed" | { fatal: string } | null> {
+  const res = await response(admin, lane.request);
+  if (!res) {
+    if (responseOverdue(lane.requestedAt)) {
+      lane.request = null;
+      if (++lane.attempts >= MAX_ATTEMPTS) return { fatal: "Qualys ne répond pas." };
+    }
+    return null;
+  }
+  const content = String(res.content ?? "");
+  const id = lane.request;
+  lane.request = null;
+  await admin.rpc("qualys_http_forget", { request_id: id });
+  if (isThrottled(res, content)) {
+    lane.waitUntil = new Date(Date.now() + CONCURRENCY_WAIT_MS).toISOString();
+    return null;
+  }
+  const err = responseError(res, content);
+  if (err) {
+    if (credentialsRefused(res, err)) return { fatal: `Identifiants Qualys refusés : ${err}` };
+    if (++lane.attempts >= MAX_ATTEMPTS) return { fatal: `Qualys : ${err}` };
+    return null;
+  }
+  lane.attempts = 0;
+  const { rows, ...agg } = detectionsPage(content, Date.now(), state.eolQids ?? []);
+  await savePage(admin, snapId, "detections", i * 100_000 + lane.page, agg);
+  await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
+  lane.page++;
+  state.pages++;
+  lane.next = nextPageUrl(content, QUALYS_BASE_URL);
+  if (!lane.next) lane.done = true;
+  return "progressed";
 }
 
 /** Vulnérabilités ouvertes, deux plages d'actifs à la fois (l'abonnement autorise deux appels simultanés). */
@@ -338,41 +430,14 @@ async function advanceLanes(admin: Admin, snapId: string, state: Row, save: (pat
   for (const [i, lane] of (state.lanes as Row[]).entries()) {
     if (lane.done) continue;
     if (lane.request) {
-      const res = await response(admin, lane.request);
-      if (!res) {
-        if (Date.now() - Date.parse(lane.requestedAt) > REQUEST_TIMEOUT_MS + 5 * 60_000) {
-          lane.request = null;
-          if (++lane.attempts >= MAX_ATTEMPTS) return await fail("Qualys ne répond pas.");
-        }
-        continue;
-      }
-      const content = String(res.content ?? "");
-      const id = lane.request;
-      lane.request = null;
-      await admin.rpc("qualys_http_forget", { request_id: id });
-      if (res.status_code === 409 || /concurrency|rate limit/i.test(qualysError(content) ?? "")) {
-        lane.waitUntil = new Date(Date.now() + CONCURRENCY_WAIT_MS).toISOString();
-        continue;
-      }
-      const err = res.timed_out ? "Délai dépassé" : res.error_msg ? String(res.error_msg)
-        : res.status_code !== 200 ? (qualysError(content) ?? `HTTP ${res.status_code}`) : qualysError(content);
-      if (err) {
-        if (res.status_code === 401 || /login|password/i.test(err)) return await fail(`Identifiants Qualys refusés : ${err}`);
-        if (++lane.attempts >= MAX_ATTEMPTS) return await fail(`Qualys : ${err}`);
-        continue;
-      }
-      lane.attempts = 0;
-      const { rows, ...agg } = detectionsPage(content, Date.now(), state.eolQids ?? []);
-      await savePage(admin, snapId, "detections", i * 100_000 + lane.page, agg);
-      await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
-      lane.page++;
-      state.pages++;
-      lane.next = nextPageUrl(content, QUALYS_BASE_URL);
-      if (!lane.next) lane.done = true;
+      const read = await readLane(admin, snapId, state, lane, i); // NOSONAR : deux plages au plus, lues l'une après l'autre
+      if (read && read !== "progressed") return await fail(read.fatal);
+      if (read !== "progressed") continue;
       progressed = true;
     }
-    if (!lane.done && !lane.request && !(lane.waitUntil && Date.parse(lane.waitUntil) > Date.now())) {
-      lane.request = await request(admin, lane.next ?? firstUrl.detections(lane.range));
+    const waiting = lane.waitUntil && Date.parse(lane.waitUntil) > Date.now();
+    if (!lane.done && !lane.request && !waiting) {
+      lane.request = await request(admin, lane.next ?? firstUrl.detections(lane.range)); // NOSONAR : une demande par plage
       lane.requestedAt = new Date().toISOString();
       lane.waitUntil = null;
       progressed = true;
@@ -413,7 +478,9 @@ async function markPolicyRead(admin: Admin, policyId: string) {
 async function pcProgress(admin: Admin): Promise<Row | null> {
   const { data } = await admin.from("qualys_meta").select("value").eq("key", PC_PROGRESS_KEY).maybeSingle();
   const v = data?.value as Row | undefined;
-  if (!v?.policyId || !v.next || !v.agg || !(Date.now() - Date.parse(v.savedAt ?? "") < PC_PROGRESS_MAX_AGE_MS)) return null;
+  const age = Date.now() - Date.parse(v?.savedAt ?? "");
+  // Âge illisible (NaN) : la reprise est ignorée
+  if (!v?.policyId || !v.next || !v.agg || !(age < PC_PROGRESS_MAX_AGE_MS)) return null; // NOSONAR : « >= » laisserait passer une date illisible
   return v;
 }
 
@@ -434,6 +501,298 @@ async function savePcProgress(admin: Admin, snapId: string, state: Row) {
 }
 
 type StepOutcome = "advanced" | "waiting" | "skipped" | "finished";
+
+/** Une étape du calcul : client, photo, état (modifié sur place) et fonctions d'enregistrement. */
+interface Step {
+  admin: Admin; snapId: string; state: Row; deadline: number;
+  save: (patch?: Row) => Promise<void>;
+  fail: (message: string) => Promise<"finished">;
+}
+
+/**
+ * Le temps manque pendant les dernières étapes : on garde tout ce qui est fini plutôt que de tout perdre.
+ * Renvoie l'issue de l'étape si le calcul est arrêté, sinon null.
+ */
+async function stopIfOutOfTime(s: Step, startedAt: string): Promise<StepOutcome | null> {
+  const { admin, snapId, state } = s;
+  const elapsed = Date.now() - Date.parse(startedAt);
+  const nearEnd = elapsed > RUN_TIMEOUT_MS - 20 * 60_000;
+  const inCompliance = state.phase === "policies" || state.phase === "posture";
+  const pcOver = inCompliance && state.pcStartedAt && Date.now() - Date.parse(state.pcStartedAt) > COMPLIANCE_BUDGET_MS;
+  if (pcOver || (nearEnd && ["csam", "was", "wasapps", "policies", "posture"].includes(state.phase))) {
+    if (state.request) await admin.rpc("qualys_http_forget", { request_id: state.request });
+    state.request = null;
+    await savePcProgress(admin, snapId, state);
+    if (inCompliance) {
+      await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone ?? [], total: state.pcTotal ?? state.policyIds?.length ?? 0, stopped: true });
+    } else {
+      await savePage(admin, snapId, `${state.phase}error`, 0, { message: "Interrompu : durée maximale du calcul atteinte." });
+    }
+    state.phase = "final";
+    await s.save();
+    return "advanced";
+  }
+  if (elapsed > RUN_TIMEOUT_MS) return await s.fail("Calcul abandonné : durée maximale dépassée.");
+  return null;
+}
+
+/**
+ * Vulnérabilités corrigées illisibles cette nuit : on le note, le curseur n'avance pas (rien n'est
+ * perdu pour le calcul suivant) et l'historique déjà en base sert aux indicateurs.
+ */
+async function fixedError(s: Step, err: string): Promise<StepOutcome> {
+  const { admin, snapId, state } = s;
+  if (++state.attempts < MAX_ATTEMPTS && !/invalid|unsupported|parameter/i.test(err)) { await s.save(); return "waiting"; }
+  await savePage(admin, snapId, "fixederror", 0, { message: err });
+  await admin.from("qualys_pages").delete().eq("snapshot_id", snapId).eq("kind", "fixed");
+  state.fixedUntil = undefined;
+  state.attempts = 0;
+  state.next = null;
+  await enterKb(admin, snapId, state);
+  await s.save();
+  return "advanced";
+}
+
+/** Paquet de fiches trop lent : redemandé deux fois plus petit ; au plus petit, ces fiches sont sautées pour la nuit. */
+async function kbError(s: Step): Promise<StepOutcome> {
+  const { state } = s;
+  if (state.kbChunk > KB_MIN_CHUNK) {
+    state.kbChunk = Math.max(KB_MIN_CHUNK, Math.floor(state.kbChunk / 2));
+    state.attempts = 0;
+  } else if (++state.attempts >= MAX_ATTEMPTS) {
+    state.kbSkipped = (state.kbSkipped ?? 0) + Math.min(state.kbChunk, state.kbIds.length - state.kbPos);
+    state.kbPos += state.kbChunk;
+    state.attempts = 0;
+    if (state.kbPos >= state.kbIds.length) { state.phase = "csam"; state.page = 0; }
+  }
+  await s.save();
+  return "waiting";
+}
+
+/** Conformité indisponible (droits, module) : on le note et on termine la photo. */
+async function complianceError(s: Step, err: string, status: unknown): Promise<StepOutcome> {
+  const { admin, snapId, state } = s;
+  if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${status}`)) { await s.save(); return "waiting"; }
+  await savePage(admin, snapId, "pcerror", 0, { message: err });
+  // Une reprise devenue illisible ne doit pas bloquer les nuits suivantes
+  await setPcProgress(admin, null);
+  state.attempts = 0;
+  state.phase = "final";
+  await s.save();
+  return "advanced";
+}
+
+/** Réponse en erreur : selon l'étape, on réessaie, on passe à la suite ou on abandonne la photo. */
+async function phaseError(s: Step, res: Row, err: string): Promise<StepOutcome> {
+  const { state } = s;
+  if (state.phase === "fixed") return await fixedError(s, err);
+  if (state.phase === "kb") return await kbError(s);
+  if (state.phase === "policies" || state.phase === "posture") return await complianceError(s, err, res.status_code);
+  if (credentialsRefused(res, err)) return await s.fail(`Identifiants Qualys refusés : ${err}`);
+  if (++state.attempts >= MAX_ATTEMPTS) return await s.fail(`Qualys : ${err}`);
+  await s.save();
+  return "waiting";
+}
+
+/** Fiches de la base de connaissances reçues. */
+async function kbContent(s: Step, content: string) {
+  const { admin, snapId, state } = s;
+  await savePage(admin, snapId, "kb", state.page, kbPage(content));
+  await saveDetail(admin, state, "qualys_kb", kbDetails(content).map((r) => ({ ...r, updated_at: new Date().toISOString() })), null, 200, "qid");
+  state.page++;
+  state.next = null;
+  state.kbPos = (state.kbPos ?? 0) + (state.kbReq ?? KB_CHUNK);
+  if (state.kbPos >= state.kbIds.length) { state.phase = "csam"; state.page = 0; }
+}
+
+/**
+ * Liste des politiques reçue. Les politiques évaluées le moins récemment passent en premier ;
+ * réévaluation hebdomadaire : seules les politiques évaluées il y a plus de 6 jours (ou jamais) sont relues.
+ */
+async function policiesContent(s: Step, content: string) {
+  const { admin, snapId, state } = s;
+  const list = policiesPage(content).slice(0, MAX_POLICIES);
+  await savePage(admin, snapId, "policies", 0, { list });
+  const last = await lastPolicyDates(admin);
+  const due = list.map((x) => x.id).filter((id) => !last[id] || Date.now() - Date.parse(last[id]) > COMPLIANCE_REFRESH_MS);
+  due.sort((a, b) => (last[a] ?? "").localeCompare(last[b] ?? ""));
+  state.policyIds = due;
+  state.pcTotal = list.length;
+  state.policyIdx = 0;
+  state.pcDone = [];
+  state.page = 0;
+  state.next = null;
+  // Politique interrompue la nuit précédente : reprise en premier, là où la lecture s'était arrêtée
+  const prog = await pcProgress(admin);
+  if (prog && list.some((x) => x.id === prog.policyId)) {
+    state.policyIds = [prog.policyId, ...state.policyIds.filter((id: string) => id !== prog.policyId)];
+    // Reprise d'une lecture commencée avec une autre taille de page : on garde la position, pas la taille
+    state.next = String(prog.next).replace(/truncation_limit=\d+/, `truncation_limit=${POSTURE_PAGE}`);
+    await savePage(admin, snapId, "posture", 0, prog.agg);
+    state.page = 1;
+  }
+  if (state.policyIds.length) {
+    state.phase = "posture";
+    return;
+  }
+  await savePage(admin, snapId, "pcmeta", 0, { done: [], total: list.length, stopped: false });
+  state.phase = "final";
+}
+
+/** Page de conformité reçue : page suivante, politique suivante, ou fin de la conformité. */
+async function postureContent(s: Step, content: string) {
+  const { admin, snapId, state } = s;
+  await savePage(admin, snapId, "posture", state.page, posturePage(content, state.policyIds[state.policyIdx]));
+  state.page++;
+  state.next = nextPageUrl(content, QUALYS_BASE_URL);
+  if (state.next) return;
+  state.pcDone = [...(state.pcDone ?? []), state.policyIds[state.policyIdx]];
+  if (state.policyIdx === 0) await setPcProgress(admin, null);
+  await markPolicyRead(admin, state.policyIds[state.policyIdx]);
+  if (++state.policyIdx >= state.policyIds.length) {
+    await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone, total: state.pcTotal ?? state.policyIds.length, stopped: false });
+    state.phase = "final";
+  }
+}
+
+/** Fin de la liste des actifs : vulnérabilités ouvertes, deux moitiés du parc lues en parallèle. */
+async function enterDetections(s: Step) {
+  const { admin, snapId, state } = s;
+  state.eolQids = await knownEolQids(admin);
+  const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
+  const ids = (hp ?? []).flatMap((p: Row) => (p.agg.ids ?? []) as number[]);
+  state.lanes = splitHosts(ids).map((range) => ({ range, next: null, request: null, requestedAt: null, attempts: 0, page: 0, done: false, waitUntil: null }));
+  state.phase = "detections";
+  state.page = 0;
+}
+
+/** Page des actifs, des vulnérabilités (lecture simple) ou des corrigées reçue. */
+async function pagedContent(s: Step, content: string, now: number) {
+  const { admin, snapId, state } = s;
+  let agg: Row;
+  if (state.phase === "hosts") {
+    const { rows, ...rest } = hostsPage(content, now);
+    agg = rest;
+    await saveDetail(admin, state, "qualys_assets", rows, snapId);
+  } else if (state.phase === "detections") {
+    const { rows, ...rest } = detectionsPage(content, now, state.eolQids ?? []);
+    agg = rest;
+    await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
+  } else {
+    agg = fixedPage(content, Date.parse(state.fixedSince ?? fixedSince().toISOString()), Date.parse(state.fixedUntil ?? new Date().toISOString()));
+  }
+  await savePage(admin, snapId, state.phase, state.page, agg);
+  state.page++;
+  state.pages++;
+  if (state.phase === "hosts") state.hostsTotal = (state.hostsTotal ?? 0) + agg.total;
+  state.next = nextPageUrl(content, QUALYS_BASE_URL);
+  if (state.next) return;
+  if (state.phase === "hosts") await enterDetections(s);
+  else if (state.phase === "detections") await enterFixed(admin, state);
+  else await enterKb(admin, snapId, state);
+}
+
+/** Chiffres de la page reçue, puis page suivante ou étape suivante. */
+async function pageContent(s: Step, content: string) {
+  const now = Date.now();
+  s.state.attempts = 0;
+  if (s.state.phase === "kb") await kbContent(s, content);
+  else if (s.state.phase === "policies") await policiesContent(s, content);
+  else if (s.state.phase === "posture") await postureContent(s, content);
+  else await pagedContent(s, content, now);
+  await s.save();
+  return "advanced" as const;
+}
+
+/** 1. Une réponse est attendue : pas encore arrivée, limite d'appels, erreur, ou page à lire. */
+async function readResponse(s: Step): Promise<StepOutcome> {
+  const { admin, state } = s;
+  const res = await response(admin, state.request);
+  if (!res) {
+    if (responseOverdue(state.requestedAt)) {
+      state.request = null;
+      if (++state.attempts >= MAX_ATTEMPTS) return await s.fail("Qualys ne répond pas.");
+    }
+    await s.save();
+    return "waiting";
+  }
+  const content = String(res.content ?? "");
+  const id = state.request;
+  state.request = null;
+  if (isThrottled(res, content)) {
+    // Limite d'appels simultanés ou horaire atteinte : on repassera plus tard
+    state.waitUntil = new Date(Date.now() + CONCURRENCY_WAIT_MS).toISOString();
+    await admin.rpc("qualys_http_forget", { request_id: id });
+    await s.save();
+    return "waiting";
+  }
+  const err = responseError(res, content);
+  await admin.rpc("qualys_http_forget", { request_id: id });
+  if (err) return await phaseError(s, res, err);
+  return await pageContent(s, content);
+}
+
+/**
+ * Détail : indicateurs de menace par actif, puis ménage des photos précédentes, par petits lots,
+ * sur autant de passages que nécessaire.
+ */
+async function detailStep(s: Step) {
+  const { admin, snapId, state, deadline } = s;
+  if (!state.detailRanges) {
+    const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
+    const ids = (hp ?? []).flatMap((p: Row) => (p.agg.ids ?? []) as number[]).sort((a: number, b: number) => a - b);
+    const ranges: [number, number][] = [];
+    for (let i = 0; i < ids.length; i += DETAIL_HOSTS) ranges.push([ids[i], ids[Math.min(i + DETAIL_HOSTS, ids.length) - 1]]);
+    state.detailRanges = ranges;
+    state.detailPos = 0;
+  }
+  while (state.detailPos < state.detailRanges.length && Date.now() < deadline - 25_000) {
+    const [a, b] = state.detailRanges[state.detailPos];
+    const { error: ce } = await admin.rpc("qualys_detail_counts", { snap: snapId, host_min: a, host_max: b }); // NOSONAR : lots successifs, chacun dans le temps imparti
+    if (ce) { state.detailError ??= `Indicateurs du détail : ${ce.message}`.slice(0, 300); state.detailPos = state.detailRanges.length; break; }
+    state.detailPos++;
+  }
+  while (state.detailPos >= state.detailRanges.length && !state.detailDone && Date.now() < deadline - 25_000) {
+    const { data: n, error: pe } = await admin.rpc("qualys_detail_purge", { snap: snapId, max_rows: DETAIL_PURGE }); // NOSONAR : ménage par lots successifs
+    // Un ménage incomplet sera repris à la photo suivante : il ne bloque pas celle-ci
+    if (pe || !Number(n)) state.detailDone = true;
+  }
+  await s.save();
+  return "advanced" as const;
+}
+
+/** 2. Fin : détail par actif (en plusieurs passages), puis photo. */
+async function finalStep(s: Step): Promise<StepOutcome> {
+  const { admin, snapId, state } = s;
+  if (!state.detailDone) return await detailStep(s);
+  const { data: pages, error } = await admin.from("qualys_pages").select("kind, agg").eq("snapshot_id", snapId);
+  if (error) throw new Error(error.message);
+  const fixedDaily = await mergeFixed(admin, snapId, pages ?? [], state);
+  const results = buildResults(pages ?? [], Date.now(), { previousPolicies: await previousPolicies(admin), fixedDaily });
+  await saveIndex(admin, snapId, vulnIndex(pages ?? []));
+  (results as Row).details = { available: !state.detailError, error: state.detailError ?? null, kbSkipped: state.kbSkipped ?? 0 };
+  state.kbIds = undefined;
+  state.eolQids = undefined;
+  state.policyIds = undefined;
+  state.pcDone = undefined;
+  state.lanes = undefined;
+  state.detailRanges = undefined;
+  await s.save({ status: "done", results, summary: summaryOf(results), finished_at: new Date().toISOString() });
+  await admin.from("qualys_pages").delete().eq("snapshot_id", snapId);
+  return "finished";
+}
+
+/** 4. Adresse de la demande suivante, selon l'étape. */
+function nextUrl(state: Row): string {
+  switch (state.phase) {
+    case "kb": return firstUrl.kb(state.kbIds.slice(state.kbPos ?? 0, (state.kbPos ?? 0) + state.kbReq));
+    case "policies": return firstUrl.policies();
+    case "posture": return state.next ?? firstUrl.posture(state.policyIds[state.policyIdx]);
+    case "fixed": return state.next ?? firstUrl.fixed(qualysDate(state.fixedSince));
+    case "detections": return state.next ?? firstUrl.detections();
+    default: return state.next ?? firstUrl.hosts();
+  }
+}
 
 /**
  * Fait avancer la photo en cours d'une étape. Verrou (step_lock_until) : deux passages
@@ -457,246 +816,24 @@ async function advance(admin: Admin, snapId: string, deadline: number): Promise<
     await save({ status: "error", last_error: message, finished_at: new Date().toISOString() });
     return "finished" as const;
   };
+  const s: Step = { admin, snapId, state, deadline, save, fail };
 
-  // Le temps manque pendant les dernières étapes : on garde tout ce qui est fini plutôt que de tout perdre
-  const elapsed = Date.now() - Date.parse(snap.started_at);
-  const nearEnd = elapsed > RUN_TIMEOUT_MS - 20 * 60_000;
-  const pcOver = (state.phase === "policies" || state.phase === "posture") && state.pcStartedAt && Date.now() - Date.parse(state.pcStartedAt) > COMPLIANCE_BUDGET_MS;
-  if (pcOver || (nearEnd && ["csam", "was", "wasapps", "policies", "posture"].includes(state.phase))) {
-    if (state.request) await admin.rpc("qualys_http_forget", { request_id: state.request });
-    state.request = null;
-    await savePcProgress(admin, snapId, state);
-    if (state.phase === "policies" || state.phase === "posture") {
-      await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone ?? [], total: state.pcTotal ?? state.policyIds?.length ?? 0, stopped: true });
-    } else {
-      await savePage(admin, snapId, `${state.phase}error`, 0, { message: "Interrompu : durée maximale du calcul atteinte." });
-    }
-    state.phase = "final";
-    await save();
-    return "advanced";
-  }
-  if (elapsed > RUN_TIMEOUT_MS) return await fail("Calcul abandonné : durée maximale dépassée.");
-
+  const stopped = await stopIfOutOfTime(s, snap.started_at);
+  if (stopped) return stopped;
   // Vulnérabilités ouvertes : deux lectures en parallèle
   if (state.phase === "detections" && state.lanes) return await advanceLanes(admin, snapId, state, save, fail);
-
-  // 1. Une réponse est attendue
-  if (state.request) {
-    const res = await response(admin, state.request);
-    if (!res) {
-      if (Date.now() - Date.parse(state.requestedAt) > REQUEST_TIMEOUT_MS + 5 * 60_000) {
-        state.request = null;
-        if (++state.attempts >= MAX_ATTEMPTS) return await fail("Qualys ne répond pas.");
-      }
-      await save();
-      return "waiting";
-    }
-    const content = String(res.content ?? "");
-    const id = state.request;
-    state.request = null;
-    if (res.status_code === 409 || /concurrency|rate limit/i.test(qualysError(content) ?? "")) {
-      // Limite d'appels simultanés ou horaire atteinte : on repassera plus tard
-      state.waitUntil = new Date(Date.now() + CONCURRENCY_WAIT_MS).toISOString();
-      await admin.rpc("qualys_http_forget", { request_id: id });
-      await save();
-      return "waiting";
-    }
-    const err = res.timed_out ? "Délai dépassé" : res.error_msg ? String(res.error_msg)
-      : res.status_code !== 200 ? (qualysError(content) ?? `HTTP ${res.status_code}`) : qualysError(content);
-    await admin.rpc("qualys_http_forget", { request_id: id });
-    if (err && state.phase === "fixed") {
-      // Vulnérabilités corrigées illisibles cette nuit : on le note, le curseur n'avance pas (rien n'est
-      // perdu pour le calcul suivant) et l'historique déjà en base sert aux indicateurs
-      if (++state.attempts < MAX_ATTEMPTS && !/invalid|unsupported|parameter/i.test(err)) { await save(); return "waiting"; }
-      await savePage(admin, snapId, "fixederror", 0, { message: err });
-      await admin.from("qualys_pages").delete().eq("snapshot_id", snapId).eq("kind", "fixed");
-      state.fixedUntil = undefined;
-      state.attempts = 0;
-      state.next = null;
-      await enterKb(admin, snapId, state);
-      await save();
-      return "advanced";
-    }
-    if (err && state.phase === "kb") {
-      // Paquet trop lent : redemandé deux fois plus petit ; au plus petit, ces fiches sont sautées pour la nuit
-      if (state.kbChunk > KB_MIN_CHUNK) {
-        state.kbChunk = Math.max(KB_MIN_CHUNK, Math.floor(state.kbChunk / 2));
-        state.attempts = 0;
-      } else if (++state.attempts >= MAX_ATTEMPTS) {
-        state.kbSkipped = (state.kbSkipped ?? 0) + Math.min(state.kbChunk, state.kbIds.length - state.kbPos);
-        state.kbPos += state.kbChunk;
-        state.attempts = 0;
-        if (state.kbPos >= state.kbIds.length) { state.phase = "csam"; state.page = 0; }
-      }
-      await save();
-      return "waiting";
-    }
-    if (err && (state.phase === "policies" || state.phase === "posture")) {
-      // Conformité indisponible (droits, module) : on le note et on termine la photo
-      if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${res.status_code}`)) { await save(); return "waiting"; }
-      await savePage(admin, snapId, "pcerror", 0, { message: err });
-      // Une reprise devenue illisible ne doit pas bloquer les nuits suivantes
-      await setPcProgress(admin, null);
-      state.attempts = 0;
-      state.phase = "final";
-      await save();
-      return "advanced";
-    }
-    if (err) {
-      if (res.status_code === 401 || /login|password/i.test(err)) return await fail(`Identifiants Qualys refusés : ${err}`);
-      if (++state.attempts >= MAX_ATTEMPTS) return await fail(`Qualys : ${err}`);
-      await save();
-      return "waiting";
-    }
-    // Chiffres de la page, puis page suivante ou étape suivante
-    const now = Date.now();
-    state.attempts = 0;
-    if (state.phase === "kb") {
-      await savePage(admin, snapId, "kb", state.page, kbPage(content));
-      await saveDetail(admin, state, "qualys_kb", kbDetails(content).map((r) => ({ ...r, updated_at: new Date().toISOString() })), null, 200, "qid");
-      state.page++;
-      state.next = null;
-      state.kbPos = (state.kbPos ?? 0) + (state.kbReq ?? KB_CHUNK);
-      if (state.kbPos >= state.kbIds.length) { state.phase = "csam"; state.page = 0; }
-    } else if (state.phase === "policies") {
-      const list = policiesPage(content).slice(0, MAX_POLICIES);
-      await savePage(admin, snapId, "policies", 0, { list });
-      // Les politiques évaluées le moins récemment passent en premier
-      // Réévaluation hebdomadaire : seules les politiques évaluées il y a plus de 6 jours (ou jamais) sont relues
-      const last = await lastPolicyDates(admin);
-      const due = list.map((x) => x.id).filter((id) => !last[id] || Date.now() - Date.parse(last[id]) > COMPLIANCE_REFRESH_MS);
-      due.sort((a, b) => (last[a] ?? "").localeCompare(last[b] ?? ""));
-      state.policyIds = due;
-      state.pcTotal = list.length;
-      state.policyIdx = 0;
-      state.pcDone = [];
-      state.page = 0;
-      state.next = null;
-      // Politique interrompue la nuit précédente : reprise en premier, là où la lecture s'était arrêtée
-      const prog = await pcProgress(admin);
-      if (prog && list.some((x) => x.id === prog.policyId)) {
-        state.policyIds = [prog.policyId, ...state.policyIds.filter((id: string) => id !== prog.policyId)];
-        // Reprise d'une lecture commencée avec une autre taille de page : on garde la position, pas la taille
-        state.next = String(prog.next).replace(/truncation_limit=\d+/, `truncation_limit=${POSTURE_PAGE}`);
-        await savePage(admin, snapId, "posture", 0, prog.agg);
-        state.page = 1;
-      }
-      if (!state.policyIds.length) { await savePage(admin, snapId, "pcmeta", 0, { done: [], total: list.length, stopped: false }); state.phase = "final"; }
-      else state.phase = "posture";
-    } else if (state.phase === "posture") {
-      await savePage(admin, snapId, "posture", state.page, posturePage(content, state.policyIds[state.policyIdx]));
-      state.page++;
-      state.next = nextPageUrl(content, QUALYS_BASE_URL);
-      if (!state.next) {
-        state.pcDone = [...(state.pcDone ?? []), state.policyIds[state.policyIdx]];
-        if (state.policyIdx === 0) await setPcProgress(admin, null);
-        await markPolicyRead(admin, state.policyIds[state.policyIdx]);
-        if (++state.policyIdx >= state.policyIds.length) {
-          await savePage(admin, snapId, "pcmeta", 0, { done: state.pcDone, total: state.pcTotal ?? state.policyIds.length, stopped: false });
-          state.phase = "final";
-        }
-      }
-    } else {
-      let agg: Row;
-      if (state.phase === "hosts") {
-        const { rows, ...rest } = hostsPage(content, now);
-        agg = rest;
-        await saveDetail(admin, state, "qualys_assets", rows, snapId);
-      } else if (state.phase === "detections") {
-        const { rows, ...rest } = detectionsPage(content, now, state.eolQids ?? []);
-        agg = rest;
-        await saveDetail(admin, state, "qualys_asset_vulns", rows, snapId, 25);
-      } else {
-        agg = fixedPage(content, Date.parse(state.fixedSince ?? fixedSince().toISOString()), Date.parse(state.fixedUntil ?? new Date().toISOString()));
-      }
-      await savePage(admin, snapId, state.phase, state.page, agg);
-      state.page++;
-      state.pages++;
-      if (state.phase === "hosts") state.hostsTotal = (state.hostsTotal ?? 0) + agg.total;
-      state.next = nextPageUrl(content, QUALYS_BASE_URL);
-      if (!state.next) {
-        if (state.phase === "hosts") {
-          state.eolQids = await knownEolQids(admin);
-          // Vulnérabilités ouvertes : deux moitiés du parc lues en parallèle
-          const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
-          const ids = (hp ?? []).flatMap((p: Row) => (p.agg.ids ?? []) as number[]);
-          state.lanes = splitHosts(ids).map((range) => ({ range, next: null, request: null, requestedAt: null, attempts: 0, page: 0, done: false, waitUntil: null }));
-          state.phase = "detections";
-          state.page = 0;
-        } else if (state.phase === "detections") {
-          await enterFixed(admin, state);
-        } else {
-          await enterKb(admin, snapId, state);
-        }
-      }
-    }
-    await save();
-    return "advanced";
-  }
-
+  if (state.request) return await readResponse(s);
   if (state.waitUntil && Date.parse(state.waitUntil) > Date.now()) {
     await save();
     return "waiting";
   }
   state.waitUntil = null;
-
-  // 2. Fin : photo
-  if (state.phase === "final") {
-    // Détail : indicateurs de menace par actif, puis ménage des photos précédentes, par petits lots,
-    // sur autant de passages que nécessaire
-    if (!state.detailDone) {
-      if (!state.detailRanges) {
-        const { data: hp } = await admin.from("qualys_pages").select("agg").eq("snapshot_id", snapId).eq("kind", "hosts");
-        const ids = (hp ?? []).flatMap((p: Row) => (p.agg.ids ?? []) as number[]).sort((a: number, b: number) => a - b);
-        const ranges: [number, number][] = [];
-        for (let i = 0; i < ids.length; i += DETAIL_HOSTS) ranges.push([ids[i], ids[Math.min(i + DETAIL_HOSTS, ids.length) - 1]]);
-        state.detailRanges = ranges;
-        state.detailPos = 0;
-      }
-      while (state.detailPos < state.detailRanges.length && Date.now() < deadline - 25_000) {
-        const [a, b] = state.detailRanges[state.detailPos];
-        const { error: ce } = await admin.rpc("qualys_detail_counts", { snap: snapId, host_min: a, host_max: b });
-        if (ce) { state.detailError ??= `Indicateurs du détail : ${ce.message}`.slice(0, 300); state.detailPos = state.detailRanges.length; break; }
-        state.detailPos++;
-      }
-      while (state.detailPos >= state.detailRanges.length && !state.detailDone && Date.now() < deadline - 25_000) {
-        const { data: n, error: pe } = await admin.rpc("qualys_detail_purge", { snap: snapId, max_rows: DETAIL_PURGE });
-        // Un ménage incomplet sera repris à la photo suivante : il ne bloque pas celle-ci
-        if (pe || !Number(n)) state.detailDone = true;
-      }
-      await save();
-      return "advanced";
-    }
-    const { data: pages, error } = await admin.from("qualys_pages").select("kind, agg").eq("snapshot_id", snapId);
-    if (error) throw new Error(error.message);
-    const fixedDaily = await mergeFixed(admin, snapId, pages ?? [], state);
-    const results = buildResults(pages ?? [], Date.now(), { previousPolicies: await previousPolicies(admin), fixedDaily });
-    await saveIndex(admin, snapId, vulnIndex(pages ?? []));
-    (results as Row).details = { available: !state.detailError, error: state.detailError ?? null, kbSkipped: state.kbSkipped ?? 0 };
-    state.kbIds = undefined;
-    state.eolQids = undefined;
-    state.policyIds = undefined;
-    state.pcDone = undefined;
-    state.lanes = undefined;
-    state.detailRanges = undefined;
-    await save({ status: "done", results, summary: summaryOf(results), finished_at: new Date().toISOString() });
-    await admin.from("qualys_pages").delete().eq("snapshot_id", snapId);
-    return "finished";
-  }
-
+  if (state.phase === "final") return await finalStep(s);
   // 3. Inventaire (CSAM) et applications web (WAS) : appels directs
   if (state.phase === "csam" || state.phase === "was" || state.phase === "wasapps") return await directStep(admin, snapId, state, save, deadline);
-
   // 4. Demande suivante
   if (state.phase === "kb") state.kbReq = state.kbChunk ?? KB_CHUNK;
-  const url = state.phase === "kb"
-    ? firstUrl.kb(state.kbIds.slice(state.kbPos ?? 0, (state.kbPos ?? 0) + state.kbReq))
-    : state.phase === "policies" ? firstUrl.policies()
-    : state.phase === "posture" ? state.next ?? firstUrl.posture(state.policyIds[state.policyIdx])
-    : state.phase === "fixed" ? state.next ?? firstUrl.fixed(qualysDate(state.fixedSince))
-    : state.phase === "detections" ? state.next ?? firstUrl.detections()
-    : state.next ?? firstUrl.hosts();
-  state.request = await request(admin, url);
+  state.request = await request(admin, nextUrl(state));
   state.requestedAt = new Date().toISOString();
   await save();
   return "advanced";
@@ -716,14 +853,14 @@ async function handleCron(admin: Admin, start: boolean) {
   const deadline = Date.now() + CRON_BUDGET_MS;
   let snap = await runningSnapshot(admin);
   while (snap && Date.now() < deadline) {
-    const outcome = await advance(admin, snap.id, deadline);
+    const outcome = await advance(admin, snap.id, deadline); // NOSONAR : étapes successives d'un même calcul
     if (outcome === "skipped" || outcome === "finished") break;
     // Réponse attendue : Qualys met ~1 min 30, on repasse régulièrement tant que le budget le permet
     if (outcome === "waiting") {
       if (Date.now() + POLL_MS > deadline) break;
-      await new Promise((r) => setTimeout(r, POLL_MS));
+      await new Promise((r) => setTimeout(r, POLL_MS)); // NOSONAR : attente voulue de la réponse Qualys
     }
-    snap = await runningSnapshot(admin);
+    snap = await runningSnapshot(admin); // NOSONAR
   }
   return jsonResponse({ running: Boolean(await runningSnapshot(admin)) });
 }
@@ -760,46 +897,56 @@ async function handleHistory(admin: Admin) {
   return jsonResponse({ points: [...byDay.values()] });
 }
 
+const SEARCH_COLS = "qid, severity, hosts, servers, overdue, first_found, title, cves, flags";
+
+/** Vulnérabilités de la photo correspondant à la recherche (QID exact, CVE ou titre), les plus répandues d'abord. */
+async function searchMatches(admin: Admin, snapId: string, q: string): Promise<Row[]> {
+  const like = "%" + q.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
+  const found = new Map<number, Row>();
+  if (/^\d+$/.test(q)) {
+    const { data } = await admin.from("qualys_vulns").select(SEARCH_COLS).eq("snapshot_id", snapId).eq("qid", Number(q));
+    for (const r of data ?? []) found.set(r.qid, r);
+  }
+  for (const col of ["cves", "title"]) {
+    const { data, error } = await admin.from("qualys_vulns").select(SEARCH_COLS).eq("snapshot_id", snapId).ilike(col, like) // NOSONAR : deux colonnes, l'une après l'autre
+      .order("hosts", { ascending: false }).limit(25);
+    if (error) throw new Error(error.message);
+    for (const r of data ?? []) found.set(r.qid, r);
+  }
+  return [...found.values()].sort((a, b) => b.hosts - a.hosts).slice(0, 25);
+}
+
+/** Évolution du nombre d'actifs touchés, photo après photo, pour les vulnérabilités trouvées. */
+async function searchTrend(admin: Admin, snaps: Row[], qids: number[]): Promise<Row[]> {
+  if (!qids.length) return [];
+  const dates = new Map<string, string>(snaps.map((x: Row) => [x.id, x.started_at]));
+  const { data } = await admin.from("qualys_vulns").select("snapshot_id, hosts")
+    .in("snapshot_id", [...dates.keys()]).in("qid", qids).limit(10000);
+  const bySnap = new Map<string, number>();
+  for (const r of data ?? []) bySnap.set(r.snapshot_id, (bySnap.get(r.snapshot_id) ?? 0) + r.hosts);
+  // Photos sans ligne : plus aucun actif touché (après la première apparition)
+  const ordered = [...dates.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  const trend: Row[] = [];
+  let seen = false;
+  for (const [id, date] of ordered) {
+    const n = bySnap.get(id) ?? 0;
+    if (n) seen = true;
+    if (seen) trend.push({ date, hosts: n });
+  }
+  return trend;
+}
+
 /** Recherche d'exposition : une CVE, un QID ou un mot du titre, dans la dernière photo, et sa tendance. */
 async function handleSearch(admin: Admin, raw: unknown) {
-  const q = String(raw ?? "").trim().slice(0, 100);
+  const text = typeof raw === "string" || typeof raw === "number" ? String(raw) : "";
+  const q = text.trim().slice(0, 100);
   if (q.length < 3) return jsonResponse({ error: "Saisir au moins 3 caractères (CVE, QID ou mot du titre)." }, 400);
   const { data: snaps } = await admin.from("qualys_snapshots").select("id, started_at").eq("status", "done")
     .order("started_at", { ascending: false }).limit(KEEP_INDEX);
   const latest = snaps?.[0];
   if (!latest) return jsonResponse({ query: q, date: null, matches: [], trend: [] });
-  const cols = "qid, severity, hosts, servers, overdue, first_found, title, cves, flags";
-  const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-  const found = new Map<number, Row>();
-  if (/^\d+$/.test(q)) {
-    const { data } = await admin.from("qualys_vulns").select(cols).eq("snapshot_id", latest.id).eq("qid", Number(q));
-    for (const r of data ?? []) found.set(r.qid, r);
-  }
-  for (const col of ["cves", "title"]) {
-    const { data, error } = await admin.from("qualys_vulns").select(cols).eq("snapshot_id", latest.id).ilike(col, like)
-      .order("hosts", { ascending: false }).limit(25);
-    if (error) throw new Error(error.message);
-    for (const r of data ?? []) found.set(r.qid, r);
-  }
-  const matches = [...found.values()].sort((a, b) => b.hosts - a.hosts).slice(0, 25);
-  // Évolution du nombre d'actifs touchés, photo après photo, pour les vulnérabilités trouvées
-  const qids = matches.slice(0, 10).map((m) => m.qid);
-  const dates = new Map<string, string>((snaps ?? []).map((s: Row) => [s.id, s.started_at]));
-  const trend: Row[] = [];
-  if (qids.length) {
-    const { data } = await admin.from("qualys_vulns").select("snapshot_id, hosts")
-      .in("snapshot_id", [...dates.keys()]).in("qid", qids).limit(10000);
-    const bySnap = new Map<string, number>();
-    for (const r of data ?? []) bySnap.set(r.snapshot_id, (bySnap.get(r.snapshot_id) ?? 0) + r.hosts);
-    // Photos sans ligne : plus aucun actif touché (après la première apparition)
-    const ordered = [...dates.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
-    let seen = false;
-    for (const [id, date] of ordered) {
-      const n = bySnap.get(id) ?? 0;
-      if (n) seen = true;
-      if (seen) trend.push({ date, hosts: n });
-    }
-  }
+  const matches = await searchMatches(admin, latest.id, q);
+  const trend = await searchTrend(admin, snaps ?? [], matches.slice(0, 10).map((m) => m.qid));
   return jsonResponse({ query: q, date: latest.started_at, matches, trend });
 }
 
@@ -809,6 +956,18 @@ function sameSecret(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) diff |= (a.codePointAt(i) ?? 0) ^ (b.codePointAt(i) ?? 0);
   return diff === 0;
 }
+
+/** Actions de l'écran (utilisateur connecté) ; sans action reconnue : état du calcul. */
+const SCREEN_ACTIONS: Record<string, (admin: Admin, body: Row) => Promise<Response>> = {
+  history: (admin) => handleHistory(admin),
+  search: (admin, body) => handleSearch(admin, body.q),
+  assets: async (admin) => jsonResponse(await handleAssets(admin)),
+  asset: async (admin, body) => jsonResponse(await handleAsset(admin, body.hostId)),
+  vuln: async (admin, body) => jsonResponse(await handleVuln(admin, body.qid)),
+  inventory: async (admin) => jsonResponse(await handleInventory(admin)),
+  "inventory-asset": async (admin, body) => jsonResponse(await handleInventoryAsset(admin, body.assetId)),
+  webapps: async (admin) => jsonResponse(await handleWebApps(admin)),
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -829,15 +988,9 @@ Deno.serve(async (req) => {
     const { data: { user }, error: authError } = await client.auth.getUser();
     if (authError || !user) return jsonResponse({ error: "Session invalide" }, 401);
 
-    if (body.action === "history") return await handleHistory(adminClient());
-    if (body.action === "search") return await handleSearch(adminClient(), body.q);
-    if (body.action === "assets") return jsonResponse(await handleAssets(adminClient()));
-    if (body.action === "asset") return jsonResponse(await handleAsset(adminClient(), body.hostId));
-    if (body.action === "vuln") return jsonResponse(await handleVuln(adminClient(), body.qid));
-    if (body.action === "inventory") return jsonResponse(await handleInventory(adminClient()));
-    if (body.action === "inventory-asset") return jsonResponse(await handleInventoryAsset(adminClient(), body.assetId));
-    if (body.action === "webapps") return jsonResponse(await handleWebApps(adminClient()));
-    return await handleStatus(adminClient());
+    const action = String(body.action);
+    const handler = Object.hasOwn(SCREEN_ACTIONS, action) ? SCREEN_ACTIONS[action] : undefined;
+    return handler ? await handler(adminClient(), body) : await handleStatus(adminClient());
   } catch (err) {
     console.error("Erreur qualys-proxy:", (err as Error).message);
     return jsonResponse({ error: (err as Error).message }, 500);
