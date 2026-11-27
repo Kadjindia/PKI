@@ -424,24 +424,33 @@ async function readLane(admin: Admin, snapId: string, state: Row, lane: Row, i: 
   return "progressed";
 }
 
+/** Une plage d'actifs : lecture de la réponse attendue, puis demande de la page suivante. */
+async function laneStep(admin: Admin, snapId: string, state: Row, lane: Row, i: number): Promise<{ progressed: boolean; fatal?: string }> {
+  if (lane.done) return { progressed: false };
+  let progressed = false;
+  if (lane.request) {
+    const read = await readLane(admin, snapId, state, lane, i);
+    if (read && read !== "progressed") return { progressed: false, fatal: read.fatal };
+    if (read !== "progressed") return { progressed: false };
+    progressed = true;
+  }
+  const waiting = lane.waitUntil && Date.parse(lane.waitUntil) > Date.now();
+  if (!lane.done && !lane.request && !waiting) {
+    lane.request = await request(admin, lane.next ?? firstUrl.detections(lane.range));
+    lane.requestedAt = new Date().toISOString();
+    lane.waitUntil = null;
+    progressed = true;
+  }
+  return { progressed };
+}
+
 /** Vulnérabilités ouvertes, deux plages d'actifs à la fois (l'abonnement autorise deux appels simultanés). */
 async function advanceLanes(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>, fail: (m: string) => Promise<StepOutcome>): Promise<StepOutcome> {
   let progressed = false;
   for (const [i, lane] of (state.lanes as Row[]).entries()) {
-    if (lane.done) continue;
-    if (lane.request) {
-      const read = await readLane(admin, snapId, state, lane, i); // NOSONAR : deux plages au plus, lues l'une après l'autre
-      if (read && read !== "progressed") return await fail(read.fatal);
-      if (read !== "progressed") continue;
-      progressed = true;
-    }
-    const waiting = lane.waitUntil && Date.parse(lane.waitUntil) > Date.now();
-    if (!lane.done && !lane.request && !waiting) {
-      lane.request = await request(admin, lane.next ?? firstUrl.detections(lane.range)); // NOSONAR : une demande par plage
-      lane.requestedAt = new Date().toISOString();
-      lane.waitUntil = null;
-      progressed = true;
-    }
+    const r = await laneStep(admin, snapId, state, lane, i); // NOSONAR : deux plages au plus, traitées l'une après l'autre
+    if (r.fatal) return await fail(r.fatal);
+    if (r.progressed) progressed = true;
   }
   if ((state.lanes as Row[]).every((l) => l.done)) {
     state.lanes = undefined;
@@ -570,7 +579,7 @@ async function kbError(s: Step): Promise<StepOutcome> {
 }
 
 /** Conformité indisponible (droits, module) : on le note et on termine la photo. */
-async function complianceError(s: Step, err: string, status: unknown): Promise<StepOutcome> {
+async function complianceError(s: Step, err: string, status: number): Promise<StepOutcome> {
   const { admin, snapId, state } = s;
   if (++state.attempts < MAX_ATTEMPTS && !/not authorized|permission|subscri|401|403/i.test(`${err} ${status}`)) { await s.save(); return "waiting"; }
   await savePage(admin, snapId, "pcerror", 0, { message: err });
@@ -587,7 +596,7 @@ async function phaseError(s: Step, res: Row, err: string): Promise<StepOutcome> 
   const { state } = s;
   if (state.phase === "fixed") return await fixedError(s, err);
   if (state.phase === "kb") return await kbError(s);
-  if (state.phase === "policies" || state.phase === "posture") return await complianceError(s, err, res.status_code);
+  if (state.phase === "policies" || state.phase === "posture") return await complianceError(s, err, Number(res.status_code));
   if (credentialsRefused(res, err)) return await s.fail(`Identifiants Qualys refusés : ${err}`);
   if (++state.attempts >= MAX_ATTEMPTS) return await s.fail(`Qualys : ${err}`);
   await s.save();
