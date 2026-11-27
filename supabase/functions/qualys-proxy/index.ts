@@ -447,11 +447,13 @@ async function laneStep(admin: Admin, snapId: string, state: Row, lane: Row, i: 
 /** Vulnérabilités ouvertes, deux plages d'actifs à la fois (l'abonnement autorise deux appels simultanés). */
 async function advanceLanes(admin: Admin, snapId: string, state: Row, save: (patch?: Row) => Promise<unknown>, fail: (m: string) => Promise<StepOutcome>): Promise<StepOutcome> {
   let progressed = false;
+  let fatal: string | undefined;
   for (const [i, lane] of (state.lanes as Row[]).entries()) {
     const r = await laneStep(admin, snapId, state, lane, i); // NOSONAR : deux plages au plus, traitées l'une après l'autre
-    if (r.fatal) return await fail(r.fatal);
+    if (r.fatal) { fatal = r.fatal; break; }
     if (r.progressed) progressed = true;
   }
+  if (fatal) return await fail(fatal);
   if ((state.lanes as Row[]).every((l) => l.done)) {
     state.lanes = undefined;
     await enterFixed(admin, state);
