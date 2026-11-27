@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAccess } from "@/hooks/useAccess";
 import { useKpi } from "@/context/KpiContext";
 import { KpiDefinition, CATEGORY_COLORS, DATA_SOURCE_LABELS, DATA_SOURCE_COLORS } from "@/types/kpi";
 import { TrendingUp, TrendingDown, Minus, Search, Upload, FileSpreadsheet, Keyboard } from "lucide-react";
@@ -91,6 +92,7 @@ function TrendIndicator({ trend, trendPercent, value }: Readonly<{ trend: number
 }
 
 export default function KpiCard({ kpi }: KpiCardProps) {
+  const { canEdit } = useAccess();
   const { getLatestValue, getPreviousValue, getEntriesForKpi } = useKpi();
   const [detailOpen, setDetailOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -136,7 +138,7 @@ export default function KpiCard({ kpi }: KpiCardProps) {
 
         {/* Action buttons (z-20 pour rester cliquables par-dessus le bouton overlay) */}
         <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-20">
-          <button
+          {canEdit && (<button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
@@ -146,7 +148,7 @@ export default function KpiCard({ kpi }: KpiCardProps) {
             title="Ajouter une source (fichier)"
           >
             <Upload className="w-3.5 h-3.5 text-primary" />
-          </button>
+          </button>)}
           <div className="p-1.5">
             <Search className="w-3.5 h-3.5 text-primary" />
           </div>

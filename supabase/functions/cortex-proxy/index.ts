@@ -50,6 +50,12 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Session invalide" }), { status: 401, headers: corsHeaders });
     }
 
+    // Profil : tableaux de bord des outils réservés aux profils RSSI, équipe SSI et DSI
+    const { data: role } = await supabaseClient.rpc("app_role");
+    if (!["rssi", "ssi", "dsi"].includes(String(role))) {
+      return new Response(JSON.stringify({ error: "Votre profil ne donne pas accès aux tableaux de bord des outils" }), { status: 403, headers: corsHeaders });
+    }
+
     // 3. Secrets Cortex (AVEC .trim() POUR NETTOYER LES ESPACES CACHÉS)
     if (!CORTEX_FQDN || !CORTEX_API_KEY_ID || !CORTEX_API_KEY) {
       console.error("Erreur: Secrets Cortex manquants");

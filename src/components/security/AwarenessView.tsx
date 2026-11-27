@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useAccess } from "@/hooks/useAccess";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchPhishingCampaigns, createPhishingCampaign, deletePhishingCampaign,
@@ -699,20 +700,21 @@ const ProfilageTabContent = ({ profiles, uniqueDepartments }: any) => {
 };
 
 const ElearningTabContent = ({ elearningModules, sessionModules, handleLmsExcelUpload, setIsAddModuleOpen, setNewModule, newModule, setSelectedModule, setModuleToDelete, setIsAttendanceModalOpen }: any) => {
+  const { canEdit } = useAccess();
   return (
     <>
       <Input type="file" id="lms-upload" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleLmsExcelUpload} />
       <div>
         <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Monitor className="w-5 h-5 text-primary" /> Parcours E-Learning </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <div className="relative">
+          {canEdit && (<div className="relative">
             <Card className="border-dashed border-2 hover:bg-muted/50 transition-colors min-h-[200px] flex flex-col items-center justify-center p-6 h-full cursor-pointer">
               <label htmlFor="lms-upload" className="absolute inset-0 w-full h-full cursor-pointer z-10" aria-label="Importer un fichier Excel pour un nouveau parcours" />
               <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4 relative z-0 pointer-events-none"><Upload className="w-6 h-6 text-primary" /></div>
               <p className="font-semibold text-primary relative z-0 pointer-events-none">Nouveau parcours</p>
               <p className="text-xs text-muted-foreground text-center mt-1 relative z-0 pointer-events-none">Cliquer pour importer un fichier Excel</p>
             </Card>
-          </div>
+          </div>)}
 
           {elearningModules.map((m: ElearningModule) => {
             const completed = safeNum(m.completedCount);
@@ -729,9 +731,9 @@ const ElearningTabContent = ({ elearningModules, sessionModules, handleLmsExcelU
                       <div className="flex flex-col gap-2">
                         <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
                       </div>
-                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
+                      {canEdit && (<Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
                         <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
-                      </Button>
+                      </Button>)}
                     </div>
                     <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
                   </CardHeader>
@@ -777,14 +779,14 @@ const ElearningTabContent = ({ elearningModules, sessionModules, handleLmsExcelU
         <h3 className="text-lg font-semibold flex items-center gap-2 mb-4"><Mic className="w-5 h-5 text-amber-500" /> Sessions de Sensibilisation</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 
-          <div className="relative">
+          {canEdit && (<div className="relative">
             <Card className="border-dashed border-2 border-amber-500/30 bg-amber-500/5 flex flex-col items-center justify-center p-6 hover:bg-amber-500/10 transition-colors min-h-[200px]">
               <button type="button" aria-label="Nouvelle session" onClick={() => { setIsAddModuleOpen(true); setNewModule({...newModule, formatType: "Webinaire"}); }} className="absolute inset-0 w-full h-full bg-transparent border-none z-0 cursor-pointer appearance-none outline-none focus:ring-2 focus:ring-amber-500 focus:ring-inset" />
               <div className="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center mb-4 relative z-10 pointer-events-none"><Plus className="w-6 h-6 text-amber-600" /></div>
               <p className="font-semibold text-amber-700 relative z-10 pointer-events-none">Nouvelle session</p>
               <p className="text-xs text-amber-700/70 text-center mt-1 relative z-10 pointer-events-none">Déclarer un Webinaire ou du Présentiel</p>
             </Card>
-          </div>
+          </div>)}
 
           {sessionModules.map((m: ElearningModule) => {
             const completed = safeNum(m.completedCount);
@@ -804,9 +806,9 @@ const ElearningTabContent = ({ elearningModules, sessionModules, handleLmsExcelU
                         <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 w-fit">{icon} {formatType}</Badge>
                         <Badge variant="secondary" className="mb-2 w-fit">{m.targetAudience}</Badge>
                       </div>
-                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
+                      {canEdit && (<Button variant="ghost" size="sm" className="h-8 w-8 p-0 z-20" onClick={(e) => { e.stopPropagation(); setModuleToDelete(m); }}>
                         <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive" />
-                      </Button>
+                      </Button>)}
                     </div>
                     <CardTitle className="text-lg leading-tight">{m.name}</CardTitle>
                   </CardHeader>
@@ -833,11 +835,13 @@ const ElearningTabContent = ({ elearningModules, sessionModules, handleLmsExcelU
                     </div>
                   </CardContent>
 
-                  <div className="p-4 bg-muted/30 border-t flex gap-2 relative z-10 pointer-events-auto">
-                    <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); setIsAttendanceModalOpen(true); }}>
-                      <CheckSquare className="w-3 h-3 mr-2" /> Présences
-                    </Button>
-                  </div>
+                  {canEdit && (
+                    <div className="p-4 bg-muted/30 border-t flex gap-2 relative z-10 pointer-events-auto">
+                      <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); setSelectedModule(m); setIsAttendanceModalOpen(true); }}>
+                        <CheckSquare className="w-3 h-3 mr-2" /> Présences
+                      </Button>
+                    </div>
+                  )}
                 </Card>
               </div>
             );
@@ -852,6 +856,7 @@ const ElearningTabContent = ({ elearningModules, sessionModules, handleLmsExcelU
 // COMPOSANT PRINCIPAL
 // ============================================================================
 export default function AwarenessView() {
+  const { canEdit } = useAccess();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState("phishing");
   const [phishingView, setPhishingView] = useState<"historique" | "bilan">("historique");
@@ -1096,6 +1101,7 @@ export default function AwarenessView() {
   };
 
   const renderTabActions = () => {
+    if (!canEdit) return null;
     if (activeTab === "profilage") {
       return (
         <div className="flex gap-2 mb-2">
@@ -1247,9 +1253,9 @@ export default function AwarenessView() {
               </div>
 
               <div className="mt-12 pt-6 border-t border-border">
-                <Button variant="destructive" className="w-full" onClick={() => setCampaignToDelete(selectedCampaign)}>
+                {canEdit && (<Button variant="destructive" className="w-full" onClick={() => setCampaignToDelete(selectedCampaign)}>
                   <Trash2 className="w-4 h-4 mr-2" /> Supprimer et annuler l'impact
-                </Button>
+                </Button>)}
               </div>
             </div>
           )}
@@ -1348,14 +1354,14 @@ export default function AwarenessView() {
                 )}
 
                 <div className="mt-8 pt-6 border-t flex flex-col gap-2">
-                  {formatType !== "E-Learning" && (
+                  {canEdit && formatType !== "E-Learning" && (
                     <Button variant="default" className="w-full" onClick={() => setIsAttendanceModalOpen(true)}>
                       <CheckSquare className="w-4 h-4 mr-2" /> Déclarer des présences
                     </Button>
                   )}
-                  <Button variant="outline" className="w-full text-primary border-primary/20 hover:bg-primary/5" onClick={() => toast.success("Relance envoyée aux retardataires")}>
+                  {canEdit && (<Button variant="outline" className="w-full text-primary border-primary/20 hover:bg-primary/5" onClick={() => toast.success("Relance envoyée aux retardataires")}>
                     <Mail className="w-4 h-4 mr-2" /> Relancer les {inProgress} retardataires
-                  </Button>
+                  </Button>)}
                 </div>
               </div>
             );

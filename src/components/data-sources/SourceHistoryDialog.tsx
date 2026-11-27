@@ -1,4 +1,5 @@
 import { KpiDefinition, KpiEntry, DATA_SOURCE_LABELS, DATA_SOURCE_COLORS, DataSourceType } from "@/types/kpi";
+import { useAccess } from "@/hooks/useAccess";
 import { useKpi } from "@/context/KpiContext";
 import {
   Dialog,
@@ -51,6 +52,7 @@ function safeStringify(val: unknown): string {
 
 export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
   const { getEntriesForKpi, removeEntry } = useKpi();
+  const { canEdit } = useAccess();
   const entries = getEntriesForKpi(kpi.id);
   const [previewEntry, setPreviewEntry] = useState<KpiEntry | null>(null);
 
@@ -133,7 +135,7 @@ export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
                               <Eye className="w-3.5 h-3.5" />
                             </Button>
                           )}
-                          <Button
+                          {canEdit && (<Button
                             type="button"
                             variant="ghost"
                             size="icon"
@@ -141,7 +143,7 @@ export default function SourceHistoryDialog({ kpi, open, onClose }: Props) {
                             onClick={() => removeEntry(entry.id)}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
+                          </Button>)}
                         </div>
                       </TableCell>
                     </TableRow>

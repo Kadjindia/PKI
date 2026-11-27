@@ -6,6 +6,7 @@ import {
   User, Lock, ChevronDown, Activity, FileText
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { useAccess } from "@/hooks/useAccess";
 import ProfileModal from "@/components/profile/ProfileModal";
 import { supabase } from "@/integrations/supabase/client";
 import logoSi from "@/assets/logo-si.png";
@@ -32,6 +33,7 @@ const getPinTitle = (isExpanded: boolean, isPinned: boolean): string | undefined
 export default function AppLayout({ children }: { readonly children: ReactNode }) {
   const location = useLocation();
   const { user, signOut } = useAuth();
+  const { canSee, label: profileName } = useAccess();
 
   const [isPinned, setIsPinned] = useState(() => localStorage.getItem("sidebarPinned") === "true");
   const [isHovered, setIsHovered] = useState(false);
@@ -166,7 +168,7 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
         </div>
 
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto overflow-x-hidden">
-          {NAV_ITEMS.map((item) => {
+          {NAV_ITEMS.filter((item) => canSee(item.path)).map((item) => {
             const Icon = item.icon;
             return (
               <Link key={item.path} to={item.path} className={`nav-link flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors ${location.pathname === item.path ? "active bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`} title={!isExpanded ? item.label : undefined}>
@@ -218,8 +220,9 @@ export default function AppLayout({ children }: { readonly children: ReactNode }
               onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
               className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
-              <span className="text-sm font-medium text-foreground">
-                {user?.email || "Profil"}
+              <span className="flex flex-col items-end leading-tight">
+                <span className="text-sm font-medium text-foreground">{user?.email || "Profil"}</span>
+                <span className="text-[11px] text-muted-foreground">Profil : {profileName}</span>
               </span>
               <ChevronDown className="w-4 h-4 text-muted-foreground" />
             </button>

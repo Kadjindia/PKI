@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAccess } from "@/hooks/useAccess";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { fetchPolicies, createPolicy, deletePolicy, updatePolicy, Policy, fetchGaps, createGap, updateGapStatus, PolicyGap } from "@/lib/supabase-governance";
 import { toast } from "sonner";
@@ -122,6 +123,7 @@ const getComplianceTextColor = (compliance: number) => {
 // 2. COMPOSANT PRINCIPAL (La Vue)
 // ============================================================================
 export default function GovernanceView() {
+  const { canEdit } = useAccess();
   const queryClient = useQueryClient();
 
   // --- ÉTATS GLOBAUX ---
@@ -306,9 +308,9 @@ export default function GovernanceView() {
                 Registre des Écarts ({openGapsCount})
               </TabsTrigger>
             </TabsList>
-            <Button type="button" className="mb-2" size="sm" onClick={() => setIsAddPolicyOpen(true)}>
+            {canEdit && (<Button type="button" className="mb-2" size="sm" onClick={() => setIsAddPolicyOpen(true)}>
               <Plus className="w-4 h-4 mr-2" /> Ajouter une politique
-            </Button>
+            </Button>)}
           </div>
 
           <TabsContent value="policies" className="m-0">
@@ -378,9 +380,9 @@ export default function GovernanceView() {
                       </div>
                       <div className="flex items-center gap-3">
                         <Badge variant="outline">{gap.status}</Badge>
-                        <Button type="button" variant="ghost" size="sm" onClick={() => setGapToClose(gap.id)}>
+                        {canEdit && (<Button type="button" variant="ghost" size="sm" onClick={() => setGapToClose(gap.id)}>
                           <CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2" /> Clôturer
-                        </Button>
+                        </Button>)}
                       </div>
                     </div>
                   )
@@ -432,7 +434,7 @@ export default function GovernanceView() {
                   </div>
                 </div>
 
-                <Button
+                {canEdit && (<Button
                   type="button"
                   variant="outline"
                   size="sm"
@@ -442,7 +444,7 @@ export default function GovernanceView() {
                 >
                   <CheckCircle2 className="w-4 h-4 mr-2" />
                   Marquer comme révisée aujourd'hui
-                </Button>
+                </Button>)}
               </div>
 
               <div className="space-y-3 pt-2">
@@ -450,9 +452,9 @@ export default function GovernanceView() {
                   <h4 className="text-sm font-semibold flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-500" /> Écarts associés
                   </h4>
-                  <Button type="button" size="sm" variant="outline" onClick={() => setIsAddGapOpen(true)}>
+                  {canEdit && (<Button type="button" size="sm" variant="outline" onClick={() => setIsAddGapOpen(true)}>
                     <Plus className="w-3 h-3 mr-1" /> Déclarer
-                  </Button>
+                  </Button>)}
                 </div>
 
                 {gaps.some(g => g.policyId === selectedPolicy.id && g.status !== 'resolu') ? (
@@ -464,9 +466,9 @@ export default function GovernanceView() {
                             {getSeverityBadge(gap.severity)}
                             <span className="text-[10px] text-muted-foreground uppercase">{gap.status}</span>
                           </div>
-                          <Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => setGapToClose(gap.id)}>
+                          {canEdit && (<Button type="button" variant="ghost" size="icon" className="h-6 w-6" onClick={() => setGapToClose(gap.id)}>
                             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                          </Button>
+                          </Button>)}
                         </div>
                         <p>{gap.description}</p>
                       </div>
@@ -478,10 +480,10 @@ export default function GovernanceView() {
               </div>
 
               <div className="mt-12 pt-6 border-t border-border">
-                <Button type="button" variant="destructive" className="w-full" onClick={() => setPolicyToDelete(selectedPolicy)}>
+                {canEdit && (<Button type="button" variant="destructive" className="w-full" onClick={() => setPolicyToDelete(selectedPolicy)}>
                   <Trash2 className="w-4 h-4 mr-2" />
                   Supprimer du référentiel
-                </Button>
+                </Button>)}
               </div>
             </div>
           )}

@@ -1286,6 +1286,11 @@ Deno.serve(async (req) => {
     if (authError || !user) {
       return jsonResponse({ error: "Session invalide" }, 401);
     }
+    // Profil : tableaux de bord des outils réservés aux profils RSSI, équipe SSI et DSI
+    const { data: role } = await supabaseClient.rpc("app_role");
+    if (!["rssi", "ssi", "dsi"].includes(String(role))) {
+      return jsonResponse({ error: "Votre profil ne donne pas accès aux tableaux de bord des outils" }, 403);
+    }
 
     // Posture des données : lecture de la dernière photo, ou nouveau calcul
     // Inventaire des comptes : { action: "posture-inventory", list: "admins" | … }

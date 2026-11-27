@@ -40,6 +40,15 @@ Deno.serve(async (req) => {
     });
   }
 
+  // Profil : tableaux de bord des outils réservés aux profils RSSI, équipe SSI et DSI
+  const { data: role } = await supabaseClient.rpc("app_role");
+  if (!["rssi", "ssi", "dsi"].includes(String(role))) {
+    return new Response(JSON.stringify({ error: "Votre profil ne donne pas accès aux tableaux de bord des outils" }), {
+      status: 403,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   if (!BITSIGHT_TOKEN || !BITSIGHT_COMPANY_GUID) {
     return new Response(JSON.stringify({ error: "BitSight non configuré côté serveur" }), {
       status: 500,
